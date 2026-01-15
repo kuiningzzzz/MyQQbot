@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  myqqbot:
+    build: .
+    container_name: myqqbot
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
