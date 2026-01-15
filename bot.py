@@ -1,25 +1,27 @@
 import asyncio
 import json
-from fastapi import FastAPI
-from websockets import serve
-
-app = FastAPI()
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 class QQGenShinBot:
     def __init__(self):
         self.connected_clients = set()
         
-    async def handle_websocket(self, websocket, path):
+    async def handle_websocket(self, websocket: WebSocket):
         """处理go-cqhttp的WebSocket连接"""
+        await websocket.accept()
         self.connected_clients.add(websocket)
         try:
-            async for message in websocket:
+            while True:
+                message = await websocket.receive_text()
                 event = json.loads(message)
                 await self.handle_event(event, websocket)
+        except WebSocketDisconnect:
+            pass
         finally:
-            self.connected_clients.remove(websocket)
+            self.connected_clients.discard(websocket)
     
-    async def handle_event(self, event, ws):
+    async def handle_event(self, event, ws: WebSocket):
         """处理QQ事件"""
         event_type = event.get('post_type')
         
@@ -44,7 +46,7 @@ class QQGenShinBot:
         else:
             return "查询原神相关信息，可输入：\n1. 原神角色\n2. 原神版本\n3. 原神活动"
     
-    async def send_private_msg(self, user_id, message, ws):
+    async def send_private_msg(self, user_id, message, ws: WebSocket):
         """发送私聊消息"""
         payload = {
             "action": "send_private_msg",
@@ -53,16 +55,32 @@ class QQGenShinBot:
                 "message": message
             }
         }
-        await ws.send(json.dumps(payload))
+        await ws.send_text(json.dumps(payload))
 
 # 创建bot实例
 bot = QQGenShinBot()
 
-# 启动WebSocket服务器
-@app.on_event("startup")
-async def startup_event():
-    start_server = serve(bot.handle_websocket, "0.0.0.0", 8081)
-    await start_server
+# 使用 lifespan 事件处理器
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 启动时执行
+    print("Bot 启动成功，监听端口 8081")
+    yield
+    # 关闭时执行
+    print("Bot 正在关闭...")
+
+app = FastAPI(lifespan=lifespan)
+
+# WebSocket 路由
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket 连接端点，用于 go-cqhttp 连接"""
+    await bot.handle_websocket(websocket)
+
+# 健康检查接口
+@app.get("/")
+async def root():
+    return {"status": "running", "message": "QQ Genshin Bot is running"}
 
 if __name__ == "__main__":
     import uvicorn
