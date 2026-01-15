@@ -46,12 +46,20 @@ class QQGenShinBot:
         if event_type == 'message':
             msg = event.get('message', '')
             user_id = event.get('user_id')
-            logger.info(f"收到用户 {user_id} 的消息: {msg}")
+            message_type = event.get('message_type')  # 'private' 或 'group'
+            group_id = event.get('group_id')  # 群聊时才有
+            
+            logger.info(f"收到来自 {message_type} 的消息 - 用户 {user_id}: {msg}")
             
             # 示例：处理查询命令
             if '原神' in msg or 'genshin' in msg.lower():
                 reply = await self.query_genshin_info(msg)
-                await self.send_private_msg(user_id, reply, ws)
+                
+                # 根据消息类型选择回复方式
+                if message_type == 'group':
+                    await self.send_group_msg(group_id, reply, ws)
+                else:
+                    await self.send_private_msg(user_id, reply, ws)
                 
     async def query_genshin_info(self, query):
         """模拟原神信息查询"""
@@ -73,7 +81,19 @@ class QQGenShinBot:
                 "message": message
             }
         }
-        logger.info(f"发送消息给用户 {user_id}: {message}")
+        logger.info(f"发送私聊消息给用户 {user_id}: {message}")
+        await ws.send_text(json.dumps(payload))
+    
+    async def send_group_msg(self, group_id, message, ws: WebSocket):
+        """发送群聊消息"""
+        payload = {
+            "action": "send_group_msg",
+            "params": {
+                "group_id": group_id,
+                "message": message
+            }
+        }
+        logger.info(f"发送群聊消息到群 {group_id}: {message}")
         await ws.send_text(json.dumps(payload))
 
 # 创建bot实例
