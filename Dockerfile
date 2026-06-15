@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.4
+
 # 使用官方 Python 运行时作为父镜像
 FROM python:3.11-slim
 
@@ -17,7 +19,8 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 COPY requirements.txt .
 
 # 安装依赖
-RUN pip install --no-cache-dir --progress-bar off -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --progress-bar off -r requirements.txt
 
 # 复制项目文件
 COPY . .
