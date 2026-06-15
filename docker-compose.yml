@@ -10,6 +10,9 @@ services:
     ports:
       - "8081:8081"
       - "10010:10010"
+    volumes:
+      - ./data:/app/data
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
+      - MYQQBOT_PUBLIC_BASE_URL=${MYQQBOT_PUBLIC_BASE_URL:-http://127.0.0.1:8081}

@@ -20,6 +20,8 @@ src/
 - `data/features.json`：Feature 开关状态。
 - `data/jm/`：JM 下载缓存和生成的 PDF。
 
+Docker 部署时，`docker-compose.yml` 会把项目目录下的 `./data` 挂载到容器内的 `/app/data`。因此重建镜像或重启容器不会删除 feature 开关和已生成文件。
+
 ## 运行
 
 ```bash
@@ -62,6 +64,14 @@ MYQQBOT_PUBLIC_BASE_URL=http://127.0.0.1:8081
 ```
 
 这样发送文件时会把 `file` 参数指向 `/files/文件名` 的 URL，而不是 bot 本机的绝对路径。
+
+`docker-compose.yml` 默认已经设置：
+
+```yaml
+- MYQQBOT_PUBLIC_BASE_URL=http://127.0.0.1:8081
+```
+
+如果 NapCat 不在同一台宿主机上，请改成它能访问到的地址，例如 `http://服务器IP:8081`。
 
 ## 文档
 

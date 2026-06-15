@@ -152,4 +152,4 @@ class QQBot:
         if not public_base_url:
             return str(file_path.resolve())
 
-        return f"{public_base_url.rstrip('/')}/files/{quote(file_path.name)}"
+        return f"{public_base_url.rstrip('/')}/files/{quote(file_path.name, safe='')}"
