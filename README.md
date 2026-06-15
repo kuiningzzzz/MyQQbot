@@ -20,7 +20,7 @@ src/
 
 - `data/features.json`：Feature 开关状态。
 - `data/help.json`：`/help` 返回的聊天记录文本。
-- `data/jm/`：JM 下载缓存和生成的 PDF。
+- `data/jm/tasks/`：JM 任务目录。每个任务都有独立的下载缓存和生成 PDF。
 
 Docker 部署时，`docker-compose.yml` 会把项目目录下的 `./data` 挂载到容器内的 `/app/data`。因此重建镜像或重启容器不会删除 feature 开关和已生成文件。
 
@@ -67,7 +67,15 @@ docker compose up --build
 /jm 123456
 ```
 
-机器人会下载对应 JM 漫画，导出 PDF，然后发送到当前群聊或私聊。
+机器人会把请求加入 JM 队列。队列为空时会立即开始处理；队列非空时会回复“已添加至处理队列”，并发送当前队列状态。
+
+查询队列：
+
+```text
+/jm status
+```
+
+队列状态会以聊天记录形式列出处理中和待处理任务，包括序号、请求时间和漫画 ID。JM 队列同时只处理一个任务，前一个任务完成后才会处理下一个。
 
 该功能依赖 [JMComic-Crawler-Python](https://github.com/hect0x7/JMComic-Crawler-Python) 的 `jmcomic` 包。该库从 v2.6.19 起支持 `Feature.export_pdf`，可在下载完成后自动导出 PDF。
 
@@ -87,7 +95,7 @@ MYQQBOT_PUBLIC_BASE_URL=http://127.0.0.1:8081
 
 如果 NapCat 不在同一台宿主机上，请改成它能访问到的地址，例如 `http://服务器IP:8081`。
 
-成功发出 PDF 发送动作后，JM 功能会延迟清空 `data/jm/downloads` 和 `data/jm/pdfs`。默认延迟 300 秒，避免 NapCat 还没下载完文件就被删除。可以通过环境变量调整：
+成功发出 PDF 发送动作后，JM 功能会延迟清理该任务自己的目录。默认延迟 300 秒，避免 NapCat 还没下载完文件就被删除。可以通过环境变量调整：
 
 ```yaml
 - JM_CLEANUP_DELAY_SECONDS=300

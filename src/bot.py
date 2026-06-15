@@ -185,4 +185,12 @@ class QQBot:
         if not public_base_url:
             return str(file_path.resolve())
 
-        return f"{public_base_url.rstrip('/')}/files/{quote(file_path.name, safe='')}"
+        public_file_root = Path("data/jm").resolve()
+        resolved_path = file_path.resolve()
+        try:
+            relative_path = resolved_path.relative_to(public_file_root)
+        except ValueError:
+            relative_path = Path(file_path.name)
+
+        encoded_path = "/".join(quote(part, safe="") for part in relative_path.parts)
+        return f"{public_base_url.rstrip('/')}/files/{encoded_path}"

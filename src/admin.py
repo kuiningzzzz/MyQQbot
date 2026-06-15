@@ -254,7 +254,7 @@ HTML = """
         const extra = document.createElement("div");
         extra.className = "feature-extra";
         extra.innerHTML = `
-          <p>清理会删除 data/jm/downloads 和 data/jm/pdfs 中的所有文件。</p>
+          <p>清理会删除 data/jm/tasks 中已完成或失败的空闲任务目录，不会删除正在处理或等待处理的任务。</p>
           <button class="danger" type="button">手动清理存储垃圾</button>
           <span class="status"></span>
         `;

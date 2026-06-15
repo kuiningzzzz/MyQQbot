@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 
 feature_manager = FeatureManager.default()
 bot = QQBot(feature_manager)
-pdf_dir = Path("data/jm/pdfs")
-pdf_dir.mkdir(parents=True, exist_ok=True)
+jm_files_dir = Path("data/jm")
+jm_files_dir.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
@@ -33,7 +33,7 @@ async def lifespan(app: FastAPI):
 
 
 bot_app = FastAPI(lifespan=lifespan, title="MyQQbot Backend")
-bot_app.mount("/files", StaticFiles(directory=pdf_dir), name="files")
+bot_app.mount("/files", StaticFiles(directory=jm_files_dir), name="files")
 admin_app = create_admin_app(feature_manager)
 
 

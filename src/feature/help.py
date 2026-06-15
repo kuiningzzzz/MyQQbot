@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_HELP_MESSAGES = [
     "/help - 查看当前支持的指令",
     "/jm 号码 - 下载对应 JM 漫画，导出 PDF 并发送到当前会话",
+    "/jm status - 查看 JM 当前处理队列",
     "/hello - 回复 hello",
 ]
 
