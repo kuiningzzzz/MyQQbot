@@ -13,7 +13,7 @@ src/
     base.py            # Feature 抽象
     manager.py         # Feature 注册、开关和调度
     help.py            # /help -> 发送可配置的帮助聊天记录
-    jm_pdf.py          # /jm 号码 -> 下载漫画 PDF 并以聊天记录发送
+    jm_pdf.py          # /jm 号码 -> 下载漫画 PDF 并发送
 ```
 
 运行时数据会写入 `data/`：
@@ -67,7 +67,7 @@ docker compose up --build
 /jm 123456
 ```
 
-机器人会下载对应 JM 漫画，导出 PDF，然后以 QQ 合并转发/聊天记录的形式发送到当前群聊或私聊。聊天记录内部包含生成的 PDF 文件。
+机器人会下载对应 JM 漫画，导出 PDF，然后发送到当前群聊或私聊。
 
 该功能依赖 [JMComic-Crawler-Python](https://github.com/hect0x7/JMComic-Crawler-Python) 的 `jmcomic` 包。该库从 v2.6.19 起支持 `Feature.export_pdf`，可在下载完成后自动导出 PDF。
 
@@ -77,7 +77,7 @@ docker compose up --build
 MYQQBOT_PUBLIC_BASE_URL=http://127.0.0.1:8081
 ```
 
-这样发送文件聊天记录时会把 `file` 参数指向 `/files/文件名` 的 URL，而不是 bot 本机的绝对路径。
+这样发送文件时会把 `file` 参数指向 `/files/文件名` 的 URL，而不是 bot 本机的绝对路径。
 
 `docker-compose.yml` 默认已经设置：
 

@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class JmPdfFeature(Feature):
     name = "jm_pdf"
     title = "JM 漫画 PDF"
-    description = "收到 /jm 号码 后下载对应 JM 漫画，导出 PDF 并以聊天记录发送到当前会话。"
+    description = "收到 /jm 号码 后下载对应 JM 漫画，导出 PDF 并发送到当前会话。"
     default_enabled = False
 
     command_pattern = re.compile(r"^/jm\s+(\d+)$")
@@ -42,8 +42,8 @@ class JmPdfFeature(Feature):
             await ctx.bot.reply(ctx, f"JM{album_id} 下载或导出失败，请查看后端日志。")
             return True
 
-        await ctx.bot.reply(ctx, f"JM{album_id} 已生成 PDF，正在发送聊天记录。")
-        await ctx.bot.send_forward_file_msg(ctx, pdf_path)
+        await ctx.bot.reply(ctx, f"JM{album_id} 已生成 PDF，正在发送文件。")
+        await ctx.bot.send_file(ctx, pdf_path)
         return True
 
     def download_pdf(self, album_id: str) -> Path:
