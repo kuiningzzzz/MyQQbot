@@ -13,8 +13,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制项目文件
 COPY . .
 
-# 暴露 8081 端口
+# 暴露机器人和管理 WebUI 端口
 EXPOSE 8081
+EXPOSE 10010
 
 # 启动应用
-CMD ["python", "bot.py"]
+CMD ["python", "-m", "src.main"]

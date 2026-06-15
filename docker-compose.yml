@@ -4,6 +4,7 @@ services:
     container_name: myqqbot
     ports:
       - "8081:8081"
+      - "10010:10010"
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
