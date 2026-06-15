@@ -122,6 +122,39 @@ class QQBot:
         logger.info("发送群聊消息到群 %s: %s", group_id, message)
         await ws.send_text(json.dumps(payload, ensure_ascii=False))
 
+    async def send_forward_msg(self, ctx: MessageContext, messages: list[str]):
+        nodes = [
+            {
+                "type": "node",
+                "data": {
+                    "name": "MyQQbot",
+                    "uin": str(ctx.event.get("self_id") or ctx.user_id or 0),
+                    "content": message,
+                },
+            }
+            for message in messages
+        ]
+
+        if ctx.message_type == "group":
+            payload = {
+                "action": "send_group_forward_msg",
+                "params": {
+                    "group_id": ctx.group_id,
+                    "messages": nodes,
+                },
+            }
+        else:
+            payload = {
+                "action": "send_private_forward_msg",
+                "params": {
+                    "user_id": ctx.user_id,
+                    "messages": nodes,
+                },
+            }
+
+        logger.info("发送帮助聊天记录，共 %s 条", len(nodes))
+        await ctx.websocket.send_text(json.dumps(payload, ensure_ascii=False))
+
     async def send_file(self, ctx: MessageContext, file_path: Path, name: str | None = None):
         file_name = name or file_path.name
         file_ref = self.resolve_file_reference(file_path)

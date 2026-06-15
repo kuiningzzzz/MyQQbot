@@ -12,12 +12,14 @@ src/
   feature/
     base.py            # Feature 抽象
     manager.py         # Feature 注册、开关和调度
+    help.py            # /help -> 发送可配置的帮助聊天记录
     jm_pdf.py          # /jm 号码 -> 下载漫画 PDF 并发送
 ```
 
 运行时数据会写入 `data/`：
 
 - `data/features.json`：Feature 开关状态。
+- `data/help.json`：`/help` 返回的聊天记录文本。
 - `data/jm/`：JM 下载缓存和生成的 PDF。
 
 Docker 部署时，`docker-compose.yml` 会把项目目录下的 `./data` 挂载到容器内的 `/app/data`。因此重建镜像或重启容器不会删除 feature 开关和已生成文件。
@@ -42,6 +44,18 @@ docker compose up --build
 ```
 
 ## 当前 Feature
+
+### 帮助菜单
+
+默认开启。
+
+在群聊或私聊发送：
+
+```text
+/help
+```
+
+机器人会用 QQ 合并转发/聊天记录的形式返回当前支持的指令合集。管理 WebUI 里可以修改 `/help` 返回的文本内容，每一行会作为聊天记录中的一条消息发送。
 
 ### JM 漫画 PDF
 

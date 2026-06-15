@@ -9,6 +9,10 @@ class ToggleRequest(BaseModel):
     enabled: bool
 
 
+class HelpRequest(BaseModel):
+    messages: list[str]
+
+
 def create_admin_app(feature_manager: FeatureManager) -> FastAPI:
     app = FastAPI(title="MyQQbot Admin")
 
@@ -27,6 +31,18 @@ def create_admin_app(feature_manager: FeatureManager) -> FastAPI:
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="feature not found") from exc
         return info.__dict__
+
+    @app.get("/api/help")
+    async def get_help_messages():
+        return {"messages": feature_manager.get_help_messages()}
+
+    @app.post("/api/help")
+    async def save_help_messages(body: HelpRequest):
+        try:
+            messages = feature_manager.set_help_messages(body.messages)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=404, detail="help feature not found") from exc
+        return {"messages": messages}
 
     return app
 
@@ -119,6 +135,51 @@ HTML = """
       color: #b42318;
       margin-top: 16px;
     }
+    .panel {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 18px 20px;
+      margin-top: 24px;
+    }
+    .panel h2 {
+      margin: 0 0 8px;
+      font-size: 20px;
+    }
+    .panel p {
+      margin: 0 0 14px;
+      color: #667085;
+      line-height: 1.5;
+    }
+    textarea {
+      width: 100%;
+      min-height: 180px;
+      box-sizing: border-box;
+      resize: vertical;
+      border: 1px solid #d0d5dd;
+      border-radius: 8px;
+      padding: 12px;
+      color: #1f2937;
+      font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    button {
+      margin-top: 12px;
+      border: 0;
+      border-radius: 8px;
+      background: #2563eb;
+      color: white;
+      padding: 10px 16px;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:disabled {
+      background: #98a2b3;
+      cursor: not-allowed;
+    }
+    .status {
+      margin-left: 12px;
+      color: #667085;
+    }
   </style>
 </head>
 <body>
@@ -126,11 +187,23 @@ HTML = """
     <h1>MyQQbot Feature 管理</h1>
     <div class="hint">动态开关机器人功能，状态会保存到 data/features.json。</div>
     <section id="features"></section>
+    <section class="panel">
+      <h2>/help 返回内容</h2>
+      <p>每一行会作为 QQ 聊天记录中的一条消息发送，空行会被忽略。</p>
+      <textarea id="helpMessages" spellcheck="false"></textarea>
+      <div>
+        <button id="saveHelp" type="button">保存 /help 文本</button>
+        <span id="helpStatus" class="status"></span>
+      </div>
+    </section>
     <div id="error" class="error"></div>
   </main>
   <script>
     const featuresEl = document.querySelector("#features");
     const errorEl = document.querySelector("#error");
+    const helpMessagesEl = document.querySelector("#helpMessages");
+    const saveHelpEl = document.querySelector("#saveHelp");
+    const helpStatusEl = document.querySelector("#helpStatus");
 
     async function loadFeatures() {
       errorEl.textContent = "";
@@ -173,7 +246,47 @@ HTML = """
       }
     }
 
+    async function loadHelpMessages() {
+      helpStatusEl.textContent = "";
+      const res = await fetch("/api/help");
+      if (!res.ok) throw new Error("加载 /help 文本失败");
+      const data = await res.json();
+      helpMessagesEl.value = data.messages.join("\\n");
+    }
+
+    async function saveHelpMessages() {
+      helpStatusEl.textContent = "保存中...";
+      saveHelpEl.disabled = true;
+      const messages = helpMessagesEl.value
+        .split("\\n")
+        .map(line => line.trim())
+        .filter(Boolean);
+      const res = await fetch("/api/help", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({messages}),
+      });
+      saveHelpEl.disabled = false;
+      if (!res.ok) {
+        helpStatusEl.textContent = "保存失败，请稍后重试。";
+        return;
+      }
+      const data = await res.json();
+      helpMessagesEl.value = data.messages.join("\\n");
+      helpStatusEl.textContent = "已保存";
+    }
+
+    saveHelpEl.addEventListener("click", () => {
+      saveHelpMessages().catch(err => {
+        saveHelpEl.disabled = false;
+        helpStatusEl.textContent = err.message;
+      });
+    });
+
     loadFeatures().catch(err => {
+      errorEl.textContent = err.message;
+    });
+    loadHelpMessages().catch(err => {
       errorEl.textContent = err.message;
     });
   </script>

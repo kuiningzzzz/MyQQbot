@@ -4,6 +4,7 @@ from pathlib import Path
 
 from src.bot import MessageContext
 from src.feature.base import Feature, FeatureInfo
+from src.feature.help import HelpFeature
 from src.feature.jm_pdf import JmPdfFeature
 
 logger = logging.getLogger(__name__)
@@ -14,10 +15,12 @@ class FeatureManager:
         self.state_path = state_path
         self.features: dict[str, Feature] = {}
         self.enabled: dict[str, bool] = {}
+        self.help_feature: HelpFeature | None = None
 
     @classmethod
     def default(cls) -> "FeatureManager":
         manager = cls(Path("data/features.json"))
+        manager.register(HelpFeature(Path("data/help.json")))
         manager.register(JmPdfFeature())
         manager.load_state()
         return manager
@@ -25,6 +28,8 @@ class FeatureManager:
     def register(self, feature: Feature):
         self.features[feature.name] = feature
         self.enabled.setdefault(feature.name, feature.default_enabled)
+        if isinstance(feature, HelpFeature):
+            self.help_feature = feature
 
     def load_state(self):
         if not self.state_path.exists():
@@ -70,6 +75,17 @@ class FeatureManager:
 
     def list_features(self) -> list[FeatureInfo]:
         return [self.info(name) for name in self.features]
+
+    def get_help_messages(self) -> list[str]:
+        if self.help_feature is None:
+            return []
+        return self.help_feature.messages.copy()
+
+    def set_help_messages(self, messages: list[str]) -> list[str]:
+        if self.help_feature is None:
+            raise RuntimeError("help feature is not registered")
+        self.help_feature.save_messages(messages)
+        return self.help_feature.messages.copy()
 
     async def handle_event(self, ctx: MessageContext) -> bool:
         for name, feature in self.features.items():
