@@ -91,7 +91,7 @@ class QQBot:
         if handled:
             return
 
-        if ctx.msg == "hello":
+        if ctx.msg == "/hello":
             await self.reply(ctx, "hello")
 
     async def reply(self, ctx: MessageContext, message: str):
