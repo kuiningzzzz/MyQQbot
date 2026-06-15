@@ -1,9 +1,7 @@
-import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 # 配置日志
 logging.basicConfig(
@@ -13,12 +11,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class QQGenShinBot:
+class QQBot:
     def __init__(self):
         self.connected_clients = set()
+
+    def extract_text_message(self, event):
+        """按 napcat 的 message=array 格式提取纯文本。"""
+        message_segments = event.get('message', [])
+        if not isinstance(message_segments, list):
+            return ''
+
+        text_parts = []
+        for seg in message_segments:
+            if not isinstance(seg, dict):
+                continue
+            if seg.get('type') != 'text':
+                continue
+            data = seg.get('data') or {}
+            text_parts.append(str(data.get('text', '')))
+
+        return ''.join(text_parts).strip().lower()
         
     async def handle_websocket(self, websocket: WebSocket):
-        """处理go-cqhttp的WebSocket连接"""
+        """处理WebSocket连接"""
         logger.info(f"收到来自 {websocket.client.host} 的 WebSocket 连接请求")
         try:
             await websocket.accept()
@@ -38,39 +53,23 @@ class QQGenShinBot:
             self.connected_clients.discard(websocket)
     
     async def handle_event(self, event, ws: WebSocket):
-        """处理QQ事件"""
+        """处理QQ消息事件：收到 hello 就回复 hello"""
         event_type = event.get('post_type')
-        logger.info(f"处理事件类型: {event_type}")
-        
-        # 处理消息事件
-        if event_type == 'message':
-            msg = event.get('message', '')
-            user_id = event.get('user_id')
-            message_type = event.get('message_type')  # 'private' 或 'group'
-            group_id = event.get('group_id')  # 群聊时才有
-            
-            logger.info(f"收到来自 {message_type} 的消息 - 用户 {user_id}: {msg}")
-            
-            # 示例：处理查询命令
-            if '原神' in msg or 'genshin' in msg.lower():
-                reply = await self.query_genshin_info(msg)
-                
-                # 根据消息类型选择回复方式
-                if message_type == 'group':
-                    await self.send_group_msg(group_id, reply, ws)
-                else:
-                    await self.send_private_msg(user_id, reply, ws)
-                
-    async def query_genshin_info(self, query):
-        """模拟原神信息查询"""
-        # 这里实现你的原神查询逻辑
-        # 可以是数据库查询、API调用等
-        if '角色' in query:
-            return "角色列表：派蒙、旅行者、安柏、凯亚..."
-        elif '版本' in query:
-            return "当前版本：4.7「决战！铁甲熔火帝皇」"
-        else:
-            return "查询原神相关信息，可输入：\n1. 原神角色\n2. 原神版本\n3. 原神活动"
+        if event_type != 'message':
+            return
+
+        msg = self.extract_text_message(event)
+        user_id = event.get('user_id')
+        message_type = event.get('message_type')  # 'private' 或 'group'
+        group_id = event.get('group_id')  # 群聊时才有
+
+        logger.info(f"收到来自 {message_type} 的消息 - 用户 {user_id}: {msg}")
+
+        if msg == 'hello':
+            if message_type == 'group':
+                await self.send_group_msg(group_id, 'hello', ws)
+            else:
+                await self.send_private_msg(user_id, 'hello', ws)
     
     async def send_private_msg(self, user_id, message, ws: WebSocket):
         """发送私聊消息"""
@@ -97,17 +96,17 @@ class QQGenShinBot:
         await ws.send_text(json.dumps(payload))
 
 # 创建bot实例
-bot = QQGenShinBot()
+bot = QQBot()
 
 # 使用 lifespan 事件处理器
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动时执行
-    logger.info("QQ Genshin Bot 启动成功，监听端口 8081")
+    logger.info("QQ Bot 启动成功，监听端口 8081")
     logger.info("WebSocket 端点: ws://0.0.0.0:8081/ws 或 ws://0.0.0.0:8081/ws/")
     yield
     # 关闭时执行
-    logger.info("QQ Genshin Bot 正在关闭...")
+    logger.info("QQ Bot 正在关闭...")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -123,7 +122,7 @@ async def websocket_endpoint(websocket: WebSocket):
 async def root():
     return {
         "status": "running", 
-        "message": "QQ Genshin Bot is running",
+        "message": "QQ Bot is running",
         "websocket_endpoint": "/ws or /ws/",
         "connected_clients": len(bot.connected_clients)
     }
