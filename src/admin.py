@@ -44,6 +44,17 @@ def create_admin_app(feature_manager: FeatureManager) -> FastAPI:
             raise HTTPException(status_code=404, detail="help feature not found") from exc
         return {"messages": messages}
 
+    @app.post("/api/jm/cleanup")
+    async def cleanup_jm_storage():
+        try:
+            await feature_manager.cleanup_jm_storage()
+        except RuntimeError as exc:
+            message = str(exc)
+            if message == "jm feature is busy":
+                raise HTTPException(status_code=409, detail="JM 功能正在执行任务，请稍后再清理") from exc
+            raise HTTPException(status_code=404, detail="jm feature not found") from exc
+        return {"ok": True}
+
     return app
 
 
@@ -79,11 +90,13 @@ HTML = """
       border: 1px solid #e5e7eb;
       border-radius: 8px;
       padding: 18px 20px;
+      margin-bottom: 12px;
+    }
+    .feature-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 20px;
-      margin-bottom: 12px;
     }
     .feature h2 {
       margin: 0 0 6px;
@@ -135,21 +148,10 @@ HTML = """
       color: #b42318;
       margin-top: 16px;
     }
-    .panel {
-      background: white;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 18px 20px;
-      margin-top: 24px;
-    }
-    .panel h2 {
-      margin: 0 0 8px;
-      font-size: 20px;
-    }
-    .panel p {
-      margin: 0 0 14px;
-      color: #667085;
-      line-height: 1.5;
+    .feature-extra {
+      margin-top: 16px;
+      padding-top: 16px;
+      border-top: 1px solid #e5e7eb;
     }
     textarea {
       width: 100%;
@@ -180,6 +182,9 @@ HTML = """
       margin-left: 12px;
       color: #667085;
     }
+    .danger {
+      background: #b42318;
+    }
   </style>
 </head>
 <body>
@@ -187,23 +192,12 @@ HTML = """
     <h1>MyQQbot Feature 管理</h1>
     <div class="hint">动态开关机器人功能，状态会保存到 data/features.json。</div>
     <section id="features"></section>
-    <section class="panel">
-      <h2>/help 返回内容</h2>
-      <p>每一行会作为 QQ 聊天记录中的一条消息发送，空行会被忽略。</p>
-      <textarea id="helpMessages" spellcheck="false"></textarea>
-      <div>
-        <button id="saveHelp" type="button">保存 /help 文本</button>
-        <span id="helpStatus" class="status"></span>
-      </div>
-    </section>
     <div id="error" class="error"></div>
   </main>
   <script>
     const featuresEl = document.querySelector("#features");
     const errorEl = document.querySelector("#error");
-    const helpMessagesEl = document.querySelector("#helpMessages");
-    const saveHelpEl = document.querySelector("#saveHelp");
-    const helpStatusEl = document.querySelector("#helpStatus");
+    let helpMessages = [];
 
     async function loadFeatures() {
       errorEl.textContent = "";
@@ -218,18 +212,56 @@ HTML = """
         const row = document.createElement("article");
         row.className = "feature";
         row.innerHTML = `
-          <div>
-            <h2>${feature.title}</h2>
-            <p>${feature.description}</p>
+          <div class="feature-head">
+            <div>
+              <h2>${feature.title}</h2>
+              <p>${feature.description}</p>
+            </div>
+            <label class="switch" title="开关 ${feature.title}">
+              <input type="checkbox" ${feature.enabled ? "checked" : ""}>
+              <span class="slider"></span>
+            </label>
           </div>
-          <label class="switch" title="开关 ${feature.title}">
-            <input type="checkbox" ${feature.enabled ? "checked" : ""}>
-            <span class="slider"></span>
-          </label>
         `;
         const input = row.querySelector("input");
         input.addEventListener("change", () => toggleFeature(feature.name, input.checked));
+        appendFeatureControls(row, feature);
         featuresEl.appendChild(row);
+      }
+    }
+
+    function appendFeatureControls(row, feature) {
+      if (feature.name === "help") {
+        const extra = document.createElement("div");
+        extra.className = "feature-extra";
+        extra.innerHTML = `
+          <p>每一行会作为 QQ 聊天记录中的一条消息发送，空行会被忽略。</p>
+          <textarea spellcheck="false"></textarea>
+          <div>
+            <button type="button">保存 /help 文本</button>
+            <span class="status"></span>
+          </div>
+        `;
+        const textarea = extra.querySelector("textarea");
+        const button = extra.querySelector("button");
+        const status = extra.querySelector(".status");
+        textarea.value = helpMessages.join("\\n");
+        button.addEventListener("click", () => saveHelpMessages(textarea, button, status));
+        row.appendChild(extra);
+      }
+
+      if (feature.name === "jm_pdf") {
+        const extra = document.createElement("div");
+        extra.className = "feature-extra";
+        extra.innerHTML = `
+          <p>清理会删除 data/jm/downloads 和 data/jm/pdfs 中的所有文件。</p>
+          <button class="danger" type="button">手动清理存储垃圾</button>
+          <span class="status"></span>
+        `;
+        const button = extra.querySelector("button");
+        const status = extra.querySelector(".status");
+        button.addEventListener("click", () => cleanupJmStorage(button, status));
+        row.appendChild(extra);
       }
     }
 
@@ -247,17 +279,16 @@ HTML = """
     }
 
     async function loadHelpMessages() {
-      helpStatusEl.textContent = "";
       const res = await fetch("/api/help");
       if (!res.ok) throw new Error("加载 /help 文本失败");
       const data = await res.json();
-      helpMessagesEl.value = data.messages.join("\\n");
+      helpMessages = data.messages;
     }
 
-    async function saveHelpMessages() {
-      helpStatusEl.textContent = "保存中...";
-      saveHelpEl.disabled = true;
-      const messages = helpMessagesEl.value
+    async function saveHelpMessages(textarea, button, status) {
+      status.textContent = "保存中...";
+      button.disabled = true;
+      const messages = textarea.value
         .split("\\n")
         .map(line => line.trim())
         .filter(Boolean);
@@ -266,28 +297,46 @@ HTML = """
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({messages}),
       });
-      saveHelpEl.disabled = false;
+      button.disabled = false;
       if (!res.ok) {
-        helpStatusEl.textContent = "保存失败，请稍后重试。";
+        status.textContent = "保存失败，请稍后重试。";
         return;
       }
       const data = await res.json();
-      helpMessagesEl.value = data.messages.join("\\n");
-      helpStatusEl.textContent = "已保存";
+      helpMessages = data.messages;
+      textarea.value = data.messages.join("\\n");
+      status.textContent = "已保存";
     }
 
-    saveHelpEl.addEventListener("click", () => {
-      saveHelpMessages().catch(err => {
-        saveHelpEl.disabled = false;
-        helpStatusEl.textContent = err.message;
-      });
+    async function cleanupJmStorage(button, status) {
+      status.textContent = "清理中...";
+      button.disabled = true;
+      const res = await fetch("/api/jm/cleanup", {method: "POST"});
+      button.disabled = false;
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        status.textContent = data.detail || "清理失败，请稍后重试。";
+        return;
+      }
+      status.textContent = "已清理";
+    }
+
+    async function init() {
+      await loadHelpMessages();
+      await loadFeatures();
+    }
+
+    init().catch(err => {
+      errorEl.textContent = err.message;
     });
 
-    loadFeatures().catch(err => {
-      errorEl.textContent = err.message;
-    });
-    loadHelpMessages().catch(err => {
-      errorEl.textContent = err.message;
+    window.addEventListener("unhandledrejection", event => {
+      const reason = event.reason;
+      if (reason instanceof Error) {
+        errorEl.textContent = reason.message;
+      } else {
+        errorEl.textContent = "操作失败，请稍后重试。";
+      }
     });
   </script>
 </body>

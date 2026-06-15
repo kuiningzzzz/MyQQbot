@@ -1,5 +1,6 @@
 import json
 import logging
+import asyncio
 from pathlib import Path
 
 from src.bot import MessageContext
@@ -16,6 +17,7 @@ class FeatureManager:
         self.features: dict[str, Feature] = {}
         self.enabled: dict[str, bool] = {}
         self.help_feature: HelpFeature | None = None
+        self.jm_feature: JmPdfFeature | None = None
 
     @classmethod
     def default(cls) -> "FeatureManager":
@@ -30,6 +32,8 @@ class FeatureManager:
         self.enabled.setdefault(feature.name, feature.default_enabled)
         if isinstance(feature, HelpFeature):
             self.help_feature = feature
+        if isinstance(feature, JmPdfFeature):
+            self.jm_feature = feature
 
     def load_state(self):
         if not self.state_path.exists():
@@ -86,6 +90,14 @@ class FeatureManager:
             raise RuntimeError("help feature is not registered")
         self.help_feature.save_messages(messages)
         return self.help_feature.messages.copy()
+
+    async def cleanup_jm_storage(self):
+        if self.jm_feature is None:
+            raise RuntimeError("jm feature is not registered")
+        if self.jm_feature.has_active_jobs:
+            raise RuntimeError("jm feature is busy")
+
+        await asyncio.to_thread(self.jm_feature.cleanup_dirs)
 
     async def handle_event(self, ctx: MessageContext) -> bool:
         for name, feature in self.features.items():

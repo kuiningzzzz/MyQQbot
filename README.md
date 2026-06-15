@@ -87,6 +87,12 @@ MYQQBOT_PUBLIC_BASE_URL=http://127.0.0.1:8081
 
 如果 NapCat 不在同一台宿主机上，请改成它能访问到的地址，例如 `http://服务器IP:8081`。
 
+成功发出 PDF 发送动作后，JM 功能会延迟清空 `data/jm/downloads` 和 `data/jm/pdfs`。默认延迟 300 秒，避免 NapCat 还没下载完文件就被删除。可以通过环境变量调整：
+
+```yaml
+- JM_CLEANUP_DELAY_SECONDS=300
+```
+
 ## 文档
 
 - [QQ Bot 基础开发指南](docs/QQBot基础开发指南.md)

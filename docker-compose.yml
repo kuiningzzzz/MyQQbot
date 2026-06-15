@@ -16,3 +16,4 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - MYQQBOT_PUBLIC_BASE_URL=${MYQQBOT_PUBLIC_BASE_URL:-http://127.0.0.1:8081}
+      - JM_CLEANUP_DELAY_SECONDS=${JM_CLEANUP_DELAY_SECONDS:-300}
