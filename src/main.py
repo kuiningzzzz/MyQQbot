@@ -11,12 +11,14 @@ from src.admin import create_admin_app
 from src.bot import QQBot
 from src.feature.catalog import create_default_plugins
 from src.feature.manager import FeatureManager
+from src.logging_service import install_application_log_handler
 
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] [%(levelname)s]: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+install_application_log_handler()
 logger = logging.getLogger(__name__)
 
 plugins = create_default_plugins()
@@ -67,10 +69,22 @@ async def root():
 
 async def serve():
     bot_server = uvicorn.Server(
-        uvicorn.Config(bot_app, host="0.0.0.0", port=8081, log_level="info")
+        uvicorn.Config(
+            bot_app,
+            host="0.0.0.0",
+            port=8081,
+            log_level="info",
+            log_config=None,
+        )
     )
     admin_server = uvicorn.Server(
-        uvicorn.Config(admin_app, host="0.0.0.0", port=10010, log_level="info")
+        uvicorn.Config(
+            admin_app,
+            host="0.0.0.0",
+            port=10010,
+            log_level="info",
+            log_config=None,
+        )
     )
     await asyncio.gather(bot_server.serve(), admin_server.serve())
 

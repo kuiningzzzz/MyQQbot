@@ -59,3 +59,7 @@ class HelpFeature(Feature):
 
         write_json(self.state_path, {"messages": normalized})
         self.messages = normalized
+
+    def reset_messages(self) -> list[str]:
+        self.save_messages(DEFAULT_HELP_MESSAGES)
+        return self.messages.copy()
