@@ -114,6 +114,15 @@ docker compose up --build
 
 “AI 功能”使用一张 WebUI 卡片和同一套 OpenAI-compatible API 配置，卡片内可以分别启用或关闭群聊总结与 AI 聊天。默认 URL 和模型分别为 `https://api.deepseek.com` 与 `deepseek-chat`；URL 可以填写服务根地址或完整的 `/chat/completions` 地址。
 
+共享模型设置还包括：
+
+- 思考模式：跟随服务默认、明确启用或明确禁用。
+- 思考强度：`high` 或 `max`，仅在明确启用思考时发送。
+- 输入上下文 Token 预算：默认 16000，用保守估算从最旧消息开始裁剪，范围 1024–128000。
+- 最大生成 Token：默认 8192，范围 256–65536；DeepSeek 思考模式下该额度由思维链和最终回答共同使用。
+
+思考模式遵循 [DeepSeek 官方参数说明](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode)。启用思考时不会发送无效的 `temperature`。如果模型因达到 `max_tokens` 而只有 `reasoning_content`、没有最终 `content`，日志和聊天错误会明确提示提高最大生成 Token 或降低思考强度。
+
 功能会持续保存各群聊和私聊最近 200 条消息，以便启用后立即具备上下文。历史记录包含群昵称和用户 ID。图片当前保存为 `[图片]` 或 NapCat 提供的图片摘要，尚未执行实际 OCR；带完整节点的合并转发会展开为一条多行消息，只有转发 ID 时保存占位符。
 
 #### 群聊总结

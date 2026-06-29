@@ -11,6 +11,7 @@ from src.feature.summary.config import SummaryConfig
 from src.feature.summary.history import (
     GroupHistoryStore,
     conversation_key,
+    format_prompt_history,
     message_from_context,
 )
 
@@ -121,11 +122,15 @@ class SummaryFeature(Feature):
             return True
         async with lock:
             await ctx.bot.reply(ctx, f"正在总结最近 {len(messages)} 条群聊消息...")
-            history_text = "\n".join(message.as_prompt_line() for message in messages)
+            config = self.config.load()
+            history_text = format_prompt_history(
+                messages,
+                config.context_token_limit,
+            )
             try:
                 result = await asyncio.to_thread(
                     self.client.summarize,
-                    self.config.load(),
+                    config,
                     SYSTEM_PROMPT,
                     history_text,
                 )
@@ -146,4 +151,8 @@ class SummaryFeature(Feature):
             "summary_enabled": config.summary_enabled,
             "chat_enabled": config.chat_enabled,
             "chat_history_limit": config.chat_history_limit,
+            "thinking_mode": config.thinking_mode,
+            "reasoning_effort": config.reasoning_effort,
+            "context_token_limit": config.context_token_limit,
+            "max_tokens": config.max_tokens,
         }

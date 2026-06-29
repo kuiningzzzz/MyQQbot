@@ -16,6 +16,10 @@ class SummaryConfigData:
     summary_enabled: bool = True
     chat_enabled: bool = True
     chat_history_limit: int = 200
+    thinking_mode: str = "inherit"
+    reasoning_effort: str = "high"
+    context_token_limit: int = 16000
+    max_tokens: int = 8192
 
 
 class SummaryConfig:
@@ -42,6 +46,24 @@ class SummaryConfig:
             chat_history_limit=_normalize_history_limit(
                 data.get("chat_history_limit", defaults.chat_history_limit)
             ),
+            thinking_mode=_normalize_thinking_mode(
+                data.get("thinking_mode", defaults.thinking_mode)
+            ),
+            reasoning_effort=_normalize_reasoning_effort(
+                data.get("reasoning_effort", defaults.reasoning_effort)
+            ),
+            context_token_limit=_normalize_int(
+                data.get("context_token_limit", defaults.context_token_limit),
+                1024,
+                128000,
+                defaults.context_token_limit,
+            ),
+            max_tokens=_normalize_int(
+                data.get("max_tokens", defaults.max_tokens),
+                256,
+                65536,
+                defaults.max_tokens,
+            ),
         )
 
     def save(
@@ -52,6 +74,10 @@ class SummaryConfig:
         summary_enabled: bool | None = None,
         chat_enabled: bool | None = None,
         chat_history_limit: int | None = None,
+        thinking_mode: str | None = None,
+        reasoning_effort: str | None = None,
+        context_token_limit: int | None = None,
+        max_tokens: int | None = None,
     ) -> SummaryConfigData:
         current = self.load()
         value = SummaryConfigData(
@@ -64,6 +90,26 @@ class SummaryConfig:
                 current.chat_history_limit
                 if chat_history_limit is None
                 else _normalize_history_limit(chat_history_limit)
+            ),
+            thinking_mode=(
+                current.thinking_mode
+                if thinking_mode is None
+                else _normalize_thinking_mode(thinking_mode)
+            ),
+            reasoning_effort=(
+                current.reasoning_effort
+                if reasoning_effort is None
+                else _normalize_reasoning_effort(reasoning_effort)
+            ),
+            context_token_limit=(
+                current.context_token_limit
+                if context_token_limit is None
+                else _normalize_int(context_token_limit, 1024, 128000, 16000)
+            ),
+            max_tokens=(
+                current.max_tokens
+                if max_tokens is None
+                else _normalize_int(max_tokens, 256, 65536, 8192)
             ),
         )
         if not value.api_url or not value.model:
@@ -82,6 +128,10 @@ class SummaryConfig:
                     summary_enabled=current.summary_enabled,
                     chat_enabled=current.chat_enabled,
                     chat_history_limit=current.chat_history_limit,
+                    thinking_mode=current.thinking_mode,
+                    reasoning_effort=current.reasoning_effort,
+                    context_token_limit=current.context_token_limit,
+                    max_tokens=current.max_tokens,
                 )
             ),
         )
@@ -93,3 +143,21 @@ def _normalize_history_limit(value: object) -> int:
     except (TypeError, ValueError):
         number = 200
     return min(200, max(10, number))
+
+
+def _normalize_thinking_mode(value: object) -> str:
+    mode = str(value or "inherit").strip().lower()
+    return mode if mode in {"inherit", "enabled", "disabled"} else "inherit"
+
+
+def _normalize_reasoning_effort(value: object) -> str:
+    effort = str(value or "high").strip().lower()
+    return effort if effort in {"high", "max"} else "high"
+
+
+def _normalize_int(value: object, minimum: int, maximum: int, default: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return min(maximum, max(minimum, number))

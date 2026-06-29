@@ -111,6 +111,29 @@ def conversation_key(ctx: MessageContext) -> str | None:
     return None
 
 
+def format_prompt_history(messages: list[GroupMessage], token_budget: int) -> str:
+    """Keep the newest messages within a conservative token estimate."""
+    selected: list[str] = []
+    used = 0
+    for message in reversed(messages):
+        line = message.as_prompt_line()
+        cost = estimate_tokens(line)
+        if selected and used + cost > token_budget:
+            break
+        if not selected and cost > token_budget:
+            line = line[-token_budget * 3 :]
+            cost = estimate_tokens(line)
+        selected.append(line)
+        used += cost
+    return "\n".join(reversed(selected))
+
+
+def estimate_tokens(text: str) -> int:
+    # DeepSeek's exact tokenizer is model-specific. UTF-8 bytes / 3 deliberately
+    # overestimates most English text while approximating one token per CJK char.
+    return max(1, (len(text.encode("utf-8")) + 2) // 3)
+
+
 def message_from_context(ctx: MessageContext) -> GroupMessage | None:
     content = render_segments(ctx.event.get("message"))
     if not content:
