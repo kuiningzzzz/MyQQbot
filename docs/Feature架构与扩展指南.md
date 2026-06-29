@@ -58,6 +58,7 @@ src/feature/
 │   ├── feature.py
 │   ├── client.py
 │   ├── config.py
+│   ├── oauth.py
 │   ├── admin.py
 │   └── plugin.py
 ├── catalog.py            # 默认插件列表，即应用组合入口
@@ -495,4 +496,3 @@ for group in batched(items, 100):
 - [ ] 没有修改核心模块去识别该功能名称。
 - [ ] 新的通用能力确实不包含业务语义，再考虑放入 `atom`。
 - [ ] 更新 README 中的指令、配置和运行时数据说明。
-
