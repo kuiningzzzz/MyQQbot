@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.bot import MessageContext
-from src.feature.base import Feature
+from src.feature.atom import Feature
 
 logger = logging.getLogger(__name__)
 

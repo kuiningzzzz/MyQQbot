@@ -3,7 +3,7 @@ import logging
 from pathlib import Path
 
 from src.bot import MessageContext
-from src.feature.base import Feature
+from src.feature.atom import Feature, read_json, write_json
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class HelpFeature(Feature):
             return DEFAULT_HELP_MESSAGES.copy()
 
         try:
-            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            data = read_json(self.state_path)
         except (OSError, json.JSONDecodeError):
             logger.exception("读取 help 配置失败，将使用默认帮助文本")
             return DEFAULT_HELP_MESSAGES.copy()
@@ -56,9 +56,5 @@ class HelpFeature(Feature):
         if not normalized:
             normalized = DEFAULT_HELP_MESSAGES.copy()
 
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
-            json.dumps({"messages": normalized}, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        write_json(self.state_path, {"messages": normalized})
         self.messages = normalized

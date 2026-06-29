@@ -10,11 +10,19 @@ src/
   bot.py               # WebSocket 消息处理和 OneBot 动作发送
   admin.py             # Feature 管理 WebUI
   feature/
-    base.py            # Feature 抽象
-    manager.py         # Feature 注册、开关和调度
-    help.py            # /help -> 发送可配置的帮助聊天记录
-    jm_pdf.py          # /jm 号码 -> 下载漫画 PDF 并发送
+    atom/               # Feature 抽象、JSON 文件读写等通用原子能力
+      base.py
+      json_file.py
+    help/               # /help 功能及其内部实现
+      feature.py
+    jm/                 # /jm 功能及其内部实现
+      feature.py
+    manager.py          # Feature 注册、开关、调度和应用层编排
 ```
+
+`atom` 中的代码不依赖任何具体业务 Feature。新增功能时，应建立独立的功能目录，
+并由目录内的 `__init__.py` 暴露主要 Feature 类；只有被多个功能复用、且不包含业务语义的
+小能力才放入 `atom`。最后在 `FeatureManager.default()` 中注册功能即可。
 
 运行时数据会写入 `data/`：
 

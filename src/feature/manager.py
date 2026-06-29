@@ -1,12 +1,12 @@
+import asyncio
 import json
 import logging
-import asyncio
 from pathlib import Path
 
 from src.bot import MessageContext
-from src.feature.base import Feature, FeatureInfo
+from src.feature.atom import Feature, FeatureInfo, read_json, write_json
 from src.feature.help import HelpFeature
-from src.feature.jm_pdf import JmPdfFeature
+from src.feature.jm import JmPdfFeature
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class FeatureManager:
             return
 
         try:
-            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            data = read_json(self.state_path)
         except (OSError, json.JSONDecodeError):
             logger.exception("读取 feature 状态失败，将使用默认状态")
             return
@@ -51,11 +51,7 @@ class FeatureManager:
                 self.enabled[name] = bool(value)
 
     def save_state(self):
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(
-            json.dumps(self.enabled, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        write_json(self.state_path, self.enabled)
 
     def set_enabled(self, name: str, enabled: bool) -> FeatureInfo:
         if name not in self.features:
