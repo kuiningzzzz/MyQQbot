@@ -103,6 +103,47 @@ class GroupHistoryStore:
         return self.directory / f"{safe_key}.json"
 
 
+class DynamicHistoryWindow:
+    """Keep a stable message prefix while a conversation window grows."""
+
+    def __init__(self):
+        self._anchors: dict[str, GroupMessage] = {}
+
+    def select(
+        self,
+        key: str,
+        messages: list[GroupMessage],
+        minimum: int,
+        maximum: int,
+        token_budget: int,
+    ) -> list[GroupMessage]:
+        anchor = self._anchors.get(key)
+        if anchor is not None:
+            try:
+                start = messages.index(anchor)
+            except ValueError:
+                start = -1
+            if start >= 0:
+                candidate = messages[start:]
+                if (
+                    len(candidate) <= maximum
+                    and estimate_message_tokens(candidate) <= token_budget
+                ):
+                    return candidate
+
+        candidate = messages[-minimum:]
+        while len(candidate) > 1 and estimate_message_tokens(candidate) > token_budget:
+            candidate = candidate[1:]
+        if candidate:
+            self._anchors[key] = candidate[0]
+        else:
+            self._anchors.pop(key, None)
+        return candidate
+
+    def reset(self, key: str) -> None:
+        self._anchors.pop(key, None)
+
+
 def conversation_key(ctx: MessageContext) -> str | None:
     if ctx.message_type == "group" and ctx.group_id is not None:
         return f"group-{ctx.group_id}"
@@ -132,6 +173,10 @@ def estimate_tokens(text: str) -> int:
     # DeepSeek's exact tokenizer is model-specific. UTF-8 bytes / 3 deliberately
     # overestimates most English text while approximating one token per CJK char.
     return max(1, (len(text.encode("utf-8")) + 2) // 3)
+
+
+def estimate_message_tokens(messages: list[GroupMessage]) -> int:
+    return sum(estimate_tokens(message.as_prompt_line()) for message in messages)
 
 
 def message_from_context(ctx: MessageContext) -> GroupMessage | None:

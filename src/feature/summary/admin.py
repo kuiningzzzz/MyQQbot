@@ -13,7 +13,8 @@ class AiConfigRequest(BaseModel):
     api_key: str | None = None
     summary_enabled: bool
     chat_enabled: bool
-    chat_history_limit: int
+    chat_window_min: int
+    chat_window_max: int
     thinking_mode: str
     reasoning_effort: str
     context_token_limit: int
@@ -41,8 +42,11 @@ class SummaryAdmin:
 
         @app.post("/api/summary/config")
         async def save_config(body: AiConfigRequest):
-            if not 10 <= body.chat_history_limit <= 200:
-                raise HTTPException(status_code=400, detail="上下文消息数必须在10至200之间")
+            if not 10 <= body.chat_window_min <= body.chat_window_max <= 200:
+                raise HTTPException(
+                    status_code=400,
+                    detail="动态窗口必须满足 10 ≤ 起始消息数 ≤ 最大消息数 ≤ 200",
+                )
             if body.thinking_mode not in {"inherit", "enabled", "disabled"}:
                 raise HTTPException(status_code=400, detail="思考模式配置无效")
             if body.reasoning_effort not in {"high", "max"}:
@@ -58,7 +62,8 @@ class SummaryAdmin:
                     body.api_key,
                     body.summary_enabled,
                     body.chat_enabled,
-                    body.chat_history_limit,
+                    body.chat_window_min,
+                    body.chat_window_max,
                     body.thinking_mode,
                     body.reasoning_effort,
                     body.context_token_limit,
@@ -140,9 +145,13 @@ class SummaryAdmin:
     <div class="token-guide">
       <h3>AI 聊天</h3>
       <label><input class="ai-chat-enabled" type="checkbox"> 启用 AI 聊天、人设指令和自动回复</label>
-      <label>每次读取的最近消息数（10-200）
-        <input class="ai-history-limit" type="text" inputmode="numeric" placeholder="200">
+      <label>动态窗口起始消息数（10-200）
+        <input class="ai-window-min" type="text" inputmode="numeric" placeholder="150">
       </label>
+      <label>动态窗口最大消息数（10-200）
+        <input class="ai-window-max" type="text" inputmode="numeric" placeholder="200">
+      </label>
+      <p>窗口从起始数量开始，只在尾部追加新消息；超过最大数量时重置为最新的起始数量，以提高前缀缓存命中率。</p>
     </div>
 
     <div class="token-guide ai-character-editor">
@@ -170,7 +179,7 @@ featureAdminControls.summary = async row => {
   const q = selector => row.querySelector(selector);
   const apiUrl = q(".ai-api-url"), model = q(".ai-model"), apiKey = q(".ai-api-key");
   const summaryEnabled = q(".ai-summary-enabled"), chatEnabled = q(".ai-chat-enabled");
-  const historyLimit = q(".ai-history-limit"), configStatus = q(".ai-config-status");
+  const windowMin = q(".ai-window-min"), windowMax = q(".ai-window-max"), configStatus = q(".ai-config-status");
   const thinkingMode = q(".ai-thinking-mode"), reasoningEffort = q(".ai-reasoning-effort");
   const contextTokenLimit = q(".ai-context-token-limit"), maxTokens = q(".ai-max-tokens");
   const save = q(".ai-save"), clearKey = q(".ai-clear-key"), saveStatus = q(".ai-save-status");
@@ -184,7 +193,8 @@ featureAdminControls.summary = async row => {
     const response = await fetch("/api/summary/config");
     if (!response.ok) throw new Error("加载 AI 配置失败");
     const data = await response.json();
-    apiUrl.value = data.api_url; model.value = data.model; historyLimit.value = data.chat_history_limit;
+    apiUrl.value = data.api_url; model.value = data.model;
+    windowMin.value = data.chat_window_min; windowMax.value = data.chat_window_max;
     summaryEnabled.checked = data.summary_enabled; chatEnabled.checked = data.chat_enabled;
     thinkingMode.value = data.thinking_mode; reasoningEffort.value = data.reasoning_effort;
     contextTokenLimit.value = data.context_token_limit; maxTokens.value = data.max_tokens;
@@ -215,13 +225,13 @@ featureAdminControls.summary = async row => {
   q(".ai-character-new").addEventListener("click", () => showCharacter(null));
   thinkingMode.addEventListener("change", () => { reasoningEffort.disabled = thinkingMode.value !== "enabled"; });
   save.addEventListener("click", async () => {
-    const limit = Number(historyLimit.value);
+    const minimum = Number(windowMin.value), maximum = Number(windowMax.value);
     const contextLimit = Number(contextTokenLimit.value), outputLimit = Number(maxTokens.value);
-    if (!Number.isInteger(limit) || limit < 10 || limit > 200) { saveStatus.textContent = "消息数必须是10至200的整数"; return; }
+    if (!Number.isInteger(minimum) || !Number.isInteger(maximum) || minimum < 10 || maximum > 200 || minimum > maximum) { saveStatus.textContent = "动态窗口需满足 10 ≤ 起始数 ≤ 最大数 ≤ 200"; return; }
     if (!Number.isInteger(contextLimit) || contextLimit < 1024 || contextLimit > 128000) { saveStatus.textContent = "上下文 Token 预算必须是1024至128000的整数"; return; }
     if (!Number.isInteger(outputLimit) || outputLimit < 256 || outputLimit > 65536) { saveStatus.textContent = "最大生成 Token 必须是256至65536的整数"; return; }
     save.disabled = true; saveStatus.textContent = "保存中...";
-    const body = {api_url: apiUrl.value.trim(), model: model.value.trim(), summary_enabled: summaryEnabled.checked, chat_enabled: chatEnabled.checked, chat_history_limit: limit, thinking_mode: thinkingMode.value, reasoning_effort: reasoningEffort.value, context_token_limit: contextLimit, max_tokens: outputLimit};
+    const body = {api_url: apiUrl.value.trim(), model: model.value.trim(), summary_enabled: summaryEnabled.checked, chat_enabled: chatEnabled.checked, chat_window_min: minimum, chat_window_max: maximum, thinking_mode: thinkingMode.value, reasoning_effort: reasoningEffort.value, context_token_limit: contextLimit, max_tokens: outputLimit};
     if (apiKey.value.trim()) body.api_key = apiKey.value.trim();
     const response = await fetch("/api/summary/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
     save.disabled = false; const data = await response.json().catch(() => ({}));

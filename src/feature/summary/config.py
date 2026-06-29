@@ -15,7 +15,8 @@ class SummaryConfigData:
     api_key: str = ""
     summary_enabled: bool = True
     chat_enabled: bool = True
-    chat_history_limit: int = 200
+    chat_window_min: int = 150
+    chat_window_max: int = 200
     thinking_mode: str = "inherit"
     reasoning_effort: str = "high"
     context_token_limit: int = 16000
@@ -43,8 +44,11 @@ class SummaryConfig:
             api_key=str(data.get("api_key") or "").strip(),
             summary_enabled=bool(data.get("summary_enabled", defaults.summary_enabled)),
             chat_enabled=bool(data.get("chat_enabled", defaults.chat_enabled)),
-            chat_history_limit=_normalize_history_limit(
-                data.get("chat_history_limit", defaults.chat_history_limit)
+            chat_window_min=_normalize_history_limit(
+                data.get("chat_window_min", defaults.chat_window_min)
+            ),
+            chat_window_max=_normalize_history_limit(
+                data.get("chat_window_max", defaults.chat_window_max)
             ),
             thinking_mode=_normalize_thinking_mode(
                 data.get("thinking_mode", defaults.thinking_mode)
@@ -73,7 +77,8 @@ class SummaryConfig:
         api_key: str | None = None,
         summary_enabled: bool | None = None,
         chat_enabled: bool | None = None,
-        chat_history_limit: int | None = None,
+        chat_window_min: int | None = None,
+        chat_window_max: int | None = None,
         thinking_mode: str | None = None,
         reasoning_effort: str | None = None,
         context_token_limit: int | None = None,
@@ -86,10 +91,15 @@ class SummaryConfig:
             api_key=current.api_key if api_key is None else api_key.strip(),
             summary_enabled=current.summary_enabled if summary_enabled is None else summary_enabled,
             chat_enabled=current.chat_enabled if chat_enabled is None else chat_enabled,
-            chat_history_limit=(
-                current.chat_history_limit
-                if chat_history_limit is None
-                else _normalize_history_limit(chat_history_limit)
+            chat_window_min=(
+                current.chat_window_min
+                if chat_window_min is None
+                else _normalize_history_limit(chat_window_min)
+            ),
+            chat_window_max=(
+                current.chat_window_max
+                if chat_window_max is None
+                else _normalize_history_limit(chat_window_max)
             ),
             thinking_mode=(
                 current.thinking_mode
@@ -114,6 +124,8 @@ class SummaryConfig:
         )
         if not value.api_url or not value.model:
             raise ValueError("API URL 和模型名不能为空")
+        if value.chat_window_min > value.chat_window_max:
+            raise ValueError("动态窗口起始消息数不能大于最大消息数")
         write_json(self.path, asdict(value))
         return value
 
@@ -127,7 +139,8 @@ class SummaryConfig:
                     model=current.model,
                     summary_enabled=current.summary_enabled,
                     chat_enabled=current.chat_enabled,
-                    chat_history_limit=current.chat_history_limit,
+                    chat_window_min=current.chat_window_min,
+                    chat_window_max=current.chat_window_max,
                     thinking_mode=current.thinking_mode,
                     reasoning_effort=current.reasoning_effort,
                     context_token_limit=current.context_token_limit,
