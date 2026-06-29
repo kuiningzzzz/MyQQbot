@@ -32,7 +32,7 @@ class PixivQueueTask:
     request_time: datetime
     ctx: MessageContext
     task_dir: Path
-    announced_start: bool = False
+    announced_start: bool = True
 
     @property
     def image_dir(self) -> Path:
