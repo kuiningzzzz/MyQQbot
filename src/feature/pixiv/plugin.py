@@ -1,14 +1,13 @@
 from src.feature.atom import FeaturePlugin, StaticResource
 from src.feature.pixiv.admin import PixivAdmin
 from src.feature.pixiv.feature import PixivFeature
-from src.feature.pixiv.oauth import PixivOAuth
 
 
 def create_plugin() -> FeaturePlugin:
     feature = PixivFeature()
     return FeaturePlugin(
         feature=feature,
-        admin=PixivAdmin(feature, PixivOAuth()),
+        admin=PixivAdmin(feature),
         static_resources=(
             StaticResource(
                 route=feature.public_route,

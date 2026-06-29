@@ -163,7 +163,7 @@ Pixiv 队列同时只处理一个任务。队列忙时，新请求会收到“�
 
 获取 token 可参考 [PixivPy README 中推荐的 OAuth 工具](https://github.com/upbit/pixivpy#pixivpy3)。后端只向 WebUI 返回“已配置/未配置”状态，不会回传 token 原文。token 会以明文保存在被 Git 忽略的 `data/pixiv/config.json` 中，因此仍应限制 `data/` 目录和管理 WebUI 的访问权限。
 
-管理 WebUI 也提供 PKCE 授权助手：它生成一次性 Pixiv 授权链接，用户在 Pixiv 页面登录后，将浏览器网络面板中 callback 请求的完整 URL 粘贴回管理页，后端会换取并直接保存 refresh token。机器人不会接触 Pixiv 密码，refresh token 也不会回传给浏览器。该流程依赖 Pixiv 未公开的 App API，Pixiv 调整登录流程后可能需要同步更新。
+管理 WebUI 的 Pixiv 详细设置中提供本地获取 token 的操作教程。OAuth 登录和 token 交换应在能够正常访问 Pixiv 的个人电脑上完成，然后只把最终得到的 refresh token 粘贴到管理页面保存。服务器不负责 OAuth 交换，也不需要接触 Pixiv 用户名或密码。
 
 图片发送后默认延迟 300 秒清理任务目录，可通过以下变量调整：
 

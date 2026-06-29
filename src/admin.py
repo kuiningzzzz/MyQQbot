@@ -135,7 +135,10 @@ HTML = """
     .status { margin-left: 12px; }
     .danger { background: #b42318; }
     .secondary { background: #667085; margin-left: 8px; }
-    .oauth-link { display: inline-block; margin: 12px 0 0 10px; }
+    .token-guide { margin: 14px 0; padding: 14px 16px; border: 1px solid #bfdbfe; border-radius: 8px; background: #eff6ff; }
+    .token-guide h3 { margin: 0 0 8px; font-size: 16px; }
+    .token-guide ol { margin: 8px 0; padding-left: 22px; line-height: 1.7; }
+    .token-guide code { padding: 2px 5px; border-radius: 4px; background: #dbeafe; }
     .error { color: #b42318; margin-top: 16px; }
     .log-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; }
     .log-toolbar button { margin: 0; }

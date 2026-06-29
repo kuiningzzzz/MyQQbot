@@ -58,7 +58,6 @@ src/feature/
 │   ├── feature.py
 │   ├── client.py
 │   ├── config.py
-│   ├── oauth.py
 │   ├── admin.py
 │   └── plugin.py
 ├── catalog.py            # 默认插件列表，即应用组合入口
