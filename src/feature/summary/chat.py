@@ -45,6 +45,9 @@ class AiChatService:
         self.client = client
         self._active_until: dict[str, float] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._pending: dict[str, tuple[MessageContext, bool, int]] = {}
+        self._revisions: dict[str, int] = {}
+        self._updates: dict[str, asyncio.Event] = {}
 
     async def handle(self, ctx: MessageContext) -> bool:
         key = conversation_key(ctx)
@@ -53,12 +56,12 @@ class AiChatService:
         if _is_self_message(ctx):
             return False
         if ctx.msg == "/character":
-            self._cancel_generation(key)
+            self._invalidate_generation(key)
             self._active_until.pop(key, None)
             await self.send_character_list(ctx)
             return True
         if ctx.msg.startswith("/change-character"):
-            self._cancel_generation(key)
+            self._invalidate_generation(key)
             await self.change_character(ctx, key)
             return True
         if ctx.msg.startswith("/"):
@@ -67,54 +70,68 @@ class AiChatService:
         forced = self._is_direct_trigger(ctx, key)
         now = time.monotonic()
         active = self._active_until.get(key, 0) > now
-        if not forced and not active:
+        current_task = self._tasks.get(key)
+        generating = current_task is not None and not current_task.done()
+        if not forced and not active and not generating:
             self._active_until.pop(key, None)
             return False
         self._active_until[key] = now + self.active_seconds
-        self._cancel_generation(key)
-        task = asyncio.create_task(self._generate_and_reply(ctx, key, forced))
-        self._tasks[key] = task
-        task.add_done_callback(lambda finished, conversation=key: self._task_done(conversation, finished))
+        revision = self._revisions.get(key, 0) + 1
+        self._revisions[key] = revision
+        self._pending[key] = (ctx, forced, revision)
+        self._updates.setdefault(key, asyncio.Event()).set()
+        task = self._tasks.get(key)
+        if task is None or task.done():
+            task = asyncio.create_task(self._run_conversation(key))
+            self._tasks[key] = task
+            task.add_done_callback(
+                lambda finished, conversation=key: self._task_done(
+                    conversation,
+                    finished,
+                )
+            )
         return True
 
-    async def _generate_and_reply(
-        self,
-        ctx: MessageContext,
-        key: str,
-        forced: bool,
-    ) -> None:
-        decision = await self._decide(ctx, key, forced)
-        if not self._is_current_task(key):
-            return
-        if not decision.reply:
-            self._active_until.pop(key, None)
-            return
-
-        self._active_until[key] = time.monotonic() + self.active_seconds
-        character = self.selections.get(key, self.characters)
-        for index, message in enumerate(decision.messages):
-            if not self._is_current_task(key):
+    async def _run_conversation(self, key: str) -> None:
+        while key in self._pending:
+            ctx, forced, revision = self._pending.pop(key)
+            update = self._updates.setdefault(key, asyncio.Event())
+            update.clear()
+            logger.info("会话 %s 开始生成 AI 回复，版本 %s", key, revision)
+            decision = await self._decide(ctx, key, forced)
+            if revision != self._revisions.get(key):
+                logger.info("会话 %s 丢弃过期 AI 回复，版本 %s", key, revision)
+                continue
+            if not decision.reply:
+                logger.info("会话 %s 的 AI 决定不回复，进入休眠", key)
+                self._active_until.pop(key, None)
                 return
-            await ctx.bot.reply(ctx, message)
-            self.history.append_conversation(
-                key,
-                GroupMessage(
-                    timestamp=int(datetime.now().timestamp()),
-                    sender=character.name,
-                    user_id=_self_id(ctx),
-                    content=message,
-                ),
-            )
-            if index < len(decision.messages) - 1:
-                await asyncio.sleep(1)
 
-    def _cancel_generation(self, key: str) -> None:
-        task = self._tasks.pop(key, None)
-        if task is not None and not task.done():
-            task.cancel()
+            self._active_until[key] = time.monotonic() + self.active_seconds
+            character = self.selections.get(key, self.characters)
+            for index, message in enumerate(decision.messages):
+                if revision != self._revisions.get(key):
+                    break
+                await ctx.bot.reply(ctx, message)
+                self.history.append_conversation(
+                    key,
+                    GroupMessage(
+                        timestamp=int(datetime.now().timestamp()),
+                        sender=character.name,
+                        user_id=_self_id(ctx),
+                        content=message,
+                    ),
+                )
+                if index < len(decision.messages) - 1:
+                    try:
+                        await asyncio.wait_for(update.wait(), timeout=1)
+                    except TimeoutError:
+                        pass
 
-    def _is_current_task(self, key: str) -> bool:
-        return self._tasks.get(key) is asyncio.current_task()
+    def _invalidate_generation(self, key: str) -> None:
+        self._revisions[key] = self._revisions.get(key, 0) + 1
+        self._pending.pop(key, None)
+        self._updates.setdefault(key, asyncio.Event()).set()
 
     def _task_done(self, key: str, task: asyncio.Task[None]) -> None:
         if self._tasks.get(key) is task:
@@ -128,6 +145,17 @@ class AiChatService:
                 key,
                 exc_info=(type(error), error, error.__traceback__),
             )
+        if key in self._pending and key not in self._tasks:
+            next_task = asyncio.create_task(self._run_conversation(key))
+            self._tasks[key] = next_task
+            next_task.add_done_callback(
+                lambda finished, conversation=key: self._task_done(
+                    conversation,
+                    finished,
+                )
+            )
+        elif key not in self._pending:
+            self._updates.pop(key, None)
 
     async def send_character_list(self, ctx: MessageContext) -> None:
         messages = [
