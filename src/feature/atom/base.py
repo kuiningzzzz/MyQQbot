@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from src.bot import MessageContext
+from src.feature.atom.context import MessageContext
 
 
 @dataclass(frozen=True)

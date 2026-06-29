@@ -12,20 +12,39 @@ src/
   feature/
     atom/               # Feature 抽象、JSON 文件读写等通用原子能力
       base.py
+      plugin.py
+      serial_queue.py
       json_file.py
     help/               # /help 功能及其内部实现
+      admin.py
       feature.py
+      plugin.py
+    hello/              # /hello 示例功能
+      feature.py
+      plugin.py
     jm/                 # /jm 功能及其内部实现
+      admin.py
       feature.py
+      plugin.py
     pixiv/              # /pixiv 队列和 Pixiv API 下载适配器
+      admin.py
       client.py
       feature.py
-    manager.py          # Feature 注册、开关、调度和应用层编排
+      plugin.py
+    catalog.py          # 唯一的功能组合入口
+    manager.py          # 通用 Feature 注册、开关和消息调度
 ```
 
 `atom` 中的代码不依赖任何具体业务 Feature。新增功能时，应建立独立的功能目录，
 并由目录内的 `__init__.py` 暴露主要 Feature 类；只有被多个功能复用、且不包含业务语义的
-小能力才放入 `atom`。最后在 `FeatureManager.default()` 中注册功能即可。
+小能力才放入 `atom`。
+
+每个功能目录通过 `plugin.py` 组合自己的 Feature、管理端扩展和静态资源。应用核心只认识
+`FeaturePlugin`，不会导入具体功能。新增功能后，只需在 `feature/catalog.py` 的组合入口加入
+一个 `create_plugin()`；不需要修改 `main.py`、`admin.py`、`bot.py` 或 `manager.py`。
+
+依赖方向保持为：应用入口依赖通用插件协议，插件组合各自功能，具体功能依赖 `atom`；
+`atom`、Bot 和 FeatureManager 均不反向导入任何具体功能。
 
 运行时数据会写入 `data/`：
 

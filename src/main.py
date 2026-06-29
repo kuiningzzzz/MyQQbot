@@ -9,7 +9,8 @@ from fastapi.staticfiles import StaticFiles
 
 from src.admin import create_admin_app
 from src.bot import QQBot
-from src.feature import FeatureManager
+from src.feature.catalog import create_default_plugins
+from src.feature.manager import FeatureManager
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,12 +19,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-feature_manager = FeatureManager.default()
+plugins = create_default_plugins()
+feature_manager = FeatureManager(
+    state_path=Path("data/features.json"),
+    features=(plugin.feature for plugin in plugins),
+)
+feature_manager.load_state()
 bot = QQBot(feature_manager)
-jm_files_dir = Path("data/jm")
-jm_files_dir.mkdir(parents=True, exist_ok=True)
-pixiv_files_dir = Path("data/pixiv")
-pixiv_files_dir.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
@@ -35,13 +37,15 @@ async def lifespan(app: FastAPI):
 
 
 bot_app = FastAPI(lifespan=lifespan, title="MyQQbot Backend")
-bot_app.mount("/files", StaticFiles(directory=jm_files_dir), name="files")
-bot_app.mount(
-    "/pixiv-files",
-    StaticFiles(directory=pixiv_files_dir),
-    name="pixiv-files",
-)
-admin_app = create_admin_app(feature_manager)
+for plugin in plugins:
+    for resource in plugin.static_resources:
+        resource.directory.mkdir(parents=True, exist_ok=True)
+        bot_app.mount(
+            resource.route,
+            StaticFiles(directory=resource.directory),
+            name=resource.name,
+        )
+admin_app = create_admin_app(feature_manager, plugins)
 
 
 @bot_app.websocket("/ws")

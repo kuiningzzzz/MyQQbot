@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from src.bot import MessageContext
-from src.feature.atom import Feature
+from src.feature.atom import Feature, FeatureBusyError, MessageContext, SerialTaskQueue
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +35,7 @@ class JmPdfFeature(Feature):
     title = "JM 漫画 PDF"
     description = "收到 /jm 号码 后下载对应 JM 漫画，导出 PDF 并发送到当前会话。"
     default_enabled = False
+    public_route = "/files"
 
     command_pattern = re.compile(r"^/jm\s+(\d+)$")
 
@@ -44,9 +44,7 @@ class JmPdfFeature(Feature):
         self.tasks_dir = self.root_dir / "tasks"
         self.cleanup_delay_seconds = int(os.getenv("JM_CLEANUP_DELAY_SECONDS", "300"))
         self._next_sequence = 1
-        self._active_task: JmQueueTask | None = None
-        self._pending_tasks: list[JmQueueTask] = []
-        self._worker_task: asyncio.Task | None = None
+        self.queue = SerialTaskQueue(self.process_task)
 
     async def handle(self, ctx: MessageContext) -> bool:
         if ctx.msg == "/jm status":
@@ -58,9 +56,7 @@ class JmPdfFeature(Feature):
             return False
 
         task = self.create_task(match.group(1), ctx)
-        was_idle = self._active_task is None and not self._pending_tasks
-        self._pending_tasks.append(task)
-        self.ensure_worker()
+        was_idle = self.queue.enqueue(task)
 
         if was_idle:
             await ctx.bot.reply(ctx, f"开始处理 JM{task.album_id}，下载和生成 PDF 可能需要一点时间。")
@@ -84,19 +80,6 @@ class JmPdfFeature(Feature):
             task_dir=task_dir,
         )
 
-    def ensure_worker(self):
-        if self._worker_task is None or self._worker_task.done():
-            self._worker_task = asyncio.create_task(self.run_queue())
-
-    async def run_queue(self):
-        while self._pending_tasks:
-            task = self._pending_tasks.pop(0)
-            self._active_task = task
-            try:
-                await self.process_task(task)
-            finally:
-                self._active_task = None
-
     async def process_task(self, task: JmQueueTask):
         try:
             if not task.announced_start:
@@ -109,7 +92,12 @@ class JmPdfFeature(Feature):
             pdf_path = await asyncio.to_thread(self.download_pdf, task)
 
             await task.ctx.bot.reply(task.ctx, f"JM{task.album_id} 已生成 PDF，正在发送文件。")
-            await task.ctx.bot.send_file(task.ctx, pdf_path)
+            await task.ctx.bot.send_file(
+                task.ctx,
+                pdf_path,
+                public_file_root=self.root_dir,
+                public_route=self.public_route,
+            )
             self.schedule_task_cleanup(task)
         except ImportError:
             await task.ctx.bot.reply(
@@ -142,11 +130,7 @@ class JmPdfFeature(Feature):
         await ctx.bot.send_forward_msg(ctx, messages)
 
     def current_tasks(self) -> list[tuple[str, JmQueueTask]]:
-        tasks: list[tuple[str, JmQueueTask]] = []
-        if self._active_task is not None:
-            tasks.append(("处理中", self._active_task))
-        tasks.extend(("待处理", task) for task in self._pending_tasks)
-        return tasks
+        return self.queue.snapshot()
 
     def download_pdf(self, task: JmQueueTask) -> Path:
         from jmcomic import Feature as JmFeature
@@ -202,7 +186,12 @@ dir_rule:
 
     @property
     def has_active_jobs(self) -> bool:
-        return self._active_task is not None
+        return self.queue.busy
+
+    async def cleanup_storage(self):
+        if self.has_active_jobs:
+            raise FeatureBusyError("jm feature has queued work")
+        await asyncio.to_thread(self.cleanup_dirs)
 
     def cleanup_dirs(self):
         self.tasks_dir.mkdir(parents=True, exist_ok=True)

@@ -1,28 +1,18 @@
 import json
 import logging
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from src.feature.atom.context import MessageContext
+
 if TYPE_CHECKING:
     from src.feature.manager import FeatureManager
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class MessageContext:
-    bot: "QQBot"
-    event: dict[str, Any]
-    websocket: WebSocket
-    msg: str
-    message_type: str | None
-    user_id: int | None
-    group_id: int | None
 
 
 class QQBot:
@@ -87,12 +77,7 @@ class QQBot:
             ctx.msg,
         )
 
-        handled = await self.feature_manager.handle_event(ctx)
-        if handled:
-            return
-
-        if ctx.msg == "/hello":
-            await self.reply(ctx, "hello")
+        await self.feature_manager.handle_event(ctx)
 
     async def reply(self, ctx: MessageContext, message: str):
         if ctx.message_type == "group":
@@ -166,9 +151,23 @@ class QQBot:
         ]
         await self.send_forward_msg(ctx, messages)
 
-    async def send_file(self, ctx: MessageContext, file_path: Path, name: str | None = None):
+    async def send_file(
+        self,
+        ctx: MessageContext,
+        file_path: Path,
+        name: str | None = None,
+        public_file_root: Path | None = None,
+        public_route: str | None = None,
+    ):
         file_name = name or file_path.name
-        file_ref = self.resolve_file_reference(file_path)
+        if public_file_root is not None and public_route is not None:
+            file_ref = self.resolve_public_file_reference(
+                file_path,
+                public_file_root,
+                public_route,
+            )
+        else:
+            file_ref = str(file_path.resolve())
         if ctx.message_type == "group":
             payload = {
                 "action": "upload_group_file",
@@ -190,9 +189,6 @@ class QQBot:
 
         logger.info("发送文件 %s", file_path)
         await ctx.websocket.send_text(json.dumps(payload, ensure_ascii=False))
-
-    def resolve_file_reference(self, file_path: Path) -> str:
-        return self.resolve_public_file_reference(file_path, Path("data/jm"), "/files")
 
     def resolve_public_file_reference(
         self,

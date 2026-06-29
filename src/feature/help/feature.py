@@ -2,8 +2,7 @@ import json
 import logging
 from pathlib import Path
 
-from src.bot import MessageContext
-from src.feature.atom import Feature, read_json, write_json
+from src.feature.atom import Feature, MessageContext, read_json, write_json
 
 logger = logging.getLogger(__name__)
 

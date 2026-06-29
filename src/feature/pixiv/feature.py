@@ -7,8 +7,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from src.bot import MessageContext
-from src.feature.atom import Feature, batched
+from src.feature.atom import (
+    Feature,
+    FeatureBusyError,
+    MessageContext,
+    SerialTaskQueue,
+    batched,
+)
 from src.feature.pixiv.client import (
     PixivAuthenticationRequired,
     PixivClient,
@@ -39,6 +44,7 @@ class PixivFeature(Feature):
     title = "Pixiv 图片"
     description = "收到 /pixiv 作品ID 后下载对应图片，并以 QQ 聊天记录发送。"
     default_enabled = False
+    public_route = "/pixiv-files"
 
     command_pattern = re.compile(r"^/pixiv\s+(\d+)$")
     forward_batch_size = 100
@@ -56,9 +62,7 @@ class PixivFeature(Feature):
         self.config = PixivConfig(config_path or self.root_dir / "config.json")
         self.client = client or PixivClient(self.config.load_refresh_token())
         self._next_sequence = 1
-        self._active_task: PixivQueueTask | None = None
-        self._pending_tasks: list[PixivQueueTask] = []
-        self._worker_task: asyncio.Task | None = None
+        self.queue = SerialTaskQueue(self.process_task)
 
     async def handle(self, ctx: MessageContext) -> bool:
         if ctx.msg == "/pixiv status":
@@ -70,9 +74,7 @@ class PixivFeature(Feature):
             return False
 
         task = self.create_task(match.group(1), ctx)
-        was_idle = self._active_task is None and not self._pending_tasks
-        self._pending_tasks.append(task)
-        self.ensure_worker()
+        was_idle = self.queue.enqueue(task)
 
         if was_idle:
             await ctx.bot.reply(
@@ -100,19 +102,6 @@ class PixivFeature(Feature):
             ctx=ctx,
             task_dir=task_dir,
         )
-
-    def ensure_worker(self):
-        if self._worker_task is None or self._worker_task.done():
-            self._worker_task = asyncio.create_task(self.run_queue())
-
-    async def run_queue(self):
-        while self._pending_tasks:
-            task = self._pending_tasks.pop(0)
-            self._active_task = task
-            try:
-                await self.process_task(task)
-            finally:
-                self._active_task = None
 
     async def process_task(self, task: PixivQueueTask):
         try:
@@ -155,11 +144,13 @@ class PixivFeature(Feature):
             task.ctx.bot.resolve_public_file_reference(
                 image_path,
                 self.root_dir,
-                "/pixiv-files",
+                self.public_route,
             )
             for image_path in work.image_paths
         ]
-        batch_count = (len(image_refs) + self.forward_batch_size - 1) // self.forward_batch_size
+        batch_count = (
+            len(image_refs) + self.forward_batch_size - 1
+        ) // self.forward_batch_size
         await task.ctx.bot.reply(
             task.ctx,
             f"Pixiv {work.illust_id}《{work.title}》/ {work.author}，共 "
@@ -199,11 +190,7 @@ class PixivFeature(Feature):
         await ctx.bot.send_forward_msg(ctx, messages)
 
     def current_tasks(self) -> list[tuple[str, PixivQueueTask]]:
-        tasks: list[tuple[str, PixivQueueTask]] = []
-        if self._active_task is not None:
-            tasks.append(("处理中", self._active_task))
-        tasks.extend(("待处理", task) for task in self._pending_tasks)
-        return tasks
+        return self.queue.snapshot()
 
     def schedule_task_cleanup(self, task: PixivQueueTask):
         asyncio.create_task(self.cleanup_task_later(task))
@@ -223,7 +210,12 @@ class PixivFeature(Feature):
 
     @property
     def has_active_jobs(self) -> bool:
-        return self._active_task is not None
+        return self.queue.busy
+
+    async def cleanup_storage(self):
+        if self.has_active_jobs:
+            raise FeatureBusyError("pixiv feature has queued work")
+        await asyncio.to_thread(self.cleanup_dirs)
 
     @property
     def has_refresh_token(self) -> bool:

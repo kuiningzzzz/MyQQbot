@@ -1,44 +1,26 @@
-import asyncio
+from collections.abc import Iterable
 import json
 import logging
 from pathlib import Path
 
-from src.bot import MessageContext
-from src.feature.atom import Feature, FeatureInfo, read_json, write_json
-from src.feature.help import HelpFeature
-from src.feature.jm import JmPdfFeature
-from src.feature.pixiv import PixivFeature
+from src.feature.atom import Feature, FeatureInfo, MessageContext, read_json, write_json
 
 logger = logging.getLogger(__name__)
 
 
 class FeatureManager:
-    def __init__(self, state_path: Path):
+    def __init__(self, state_path: Path, features: Iterable[Feature] = ()):
         self.state_path = state_path
         self.features: dict[str, Feature] = {}
         self.enabled: dict[str, bool] = {}
-        self.help_feature: HelpFeature | None = None
-        self.jm_feature: JmPdfFeature | None = None
-        self.pixiv_feature: PixivFeature | None = None
-
-    @classmethod
-    def default(cls) -> "FeatureManager":
-        manager = cls(Path("data/features.json"))
-        manager.register(HelpFeature(Path("data/help.json")))
-        manager.register(JmPdfFeature())
-        manager.register(PixivFeature())
-        manager.load_state()
-        return manager
+        for feature in features:
+            self.register(feature)
 
     def register(self, feature: Feature):
+        if feature.name in self.features:
+            raise ValueError(f"duplicate feature name: {feature.name}")
         self.features[feature.name] = feature
         self.enabled.setdefault(feature.name, feature.default_enabled)
-        if isinstance(feature, HelpFeature):
-            self.help_feature = feature
-        if isinstance(feature, JmPdfFeature):
-            self.jm_feature = feature
-        if isinstance(feature, PixivFeature):
-            self.pixiv_feature = feature
 
     def load_state(self):
         if not self.state_path.exists():
@@ -49,6 +31,10 @@ class FeatureManager:
             data = read_json(self.state_path)
         except (OSError, json.JSONDecodeError):
             logger.exception("读取 feature 状态失败，将使用默认状态")
+            return
+
+        if not isinstance(data, dict):
+            logger.error("Feature 状态必须是 JSON 对象，将使用默认状态")
             return
 
         for name, value in data.items():
@@ -80,48 +66,6 @@ class FeatureManager:
 
     def list_features(self) -> list[FeatureInfo]:
         return [self.info(name) for name in self.features]
-
-    def get_help_messages(self) -> list[str]:
-        if self.help_feature is None:
-            return []
-        return self.help_feature.messages.copy()
-
-    def set_help_messages(self, messages: list[str]) -> list[str]:
-        if self.help_feature is None:
-            raise RuntimeError("help feature is not registered")
-        self.help_feature.save_messages(messages)
-        return self.help_feature.messages.copy()
-
-    async def cleanup_jm_storage(self):
-        if self.jm_feature is None:
-            raise RuntimeError("jm feature is not registered")
-        if self.jm_feature.has_active_jobs:
-            raise RuntimeError("jm feature is busy")
-
-        await asyncio.to_thread(self.jm_feature.cleanup_dirs)
-
-    async def cleanup_pixiv_storage(self):
-        if self.pixiv_feature is None:
-            raise RuntimeError("pixiv feature is not registered")
-        if self.pixiv_feature.has_active_jobs:
-            raise RuntimeError("pixiv feature is busy")
-
-        await asyncio.to_thread(self.pixiv_feature.cleanup_dirs)
-
-    def get_pixiv_token_status(self) -> bool:
-        if self.pixiv_feature is None:
-            raise RuntimeError("pixiv feature is not registered")
-        return self.pixiv_feature.has_refresh_token
-
-    def set_pixiv_refresh_token(self, refresh_token: str) -> None:
-        if self.pixiv_feature is None:
-            raise RuntimeError("pixiv feature is not registered")
-        self.pixiv_feature.save_refresh_token(refresh_token)
-
-    def clear_pixiv_refresh_token(self) -> None:
-        if self.pixiv_feature is None:
-            raise RuntimeError("pixiv feature is not registered")
-        self.pixiv_feature.clear_refresh_token()
 
     async def handle_event(self, ctx: MessageContext) -> bool:
         for name, feature in self.features.items():
