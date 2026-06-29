@@ -13,6 +13,10 @@ class HelpRequest(BaseModel):
     messages: list[str]
 
 
+class PixivTokenRequest(BaseModel):
+    refresh_token: str
+
+
 def create_admin_app(feature_manager: FeatureManager) -> FastAPI:
     app = FastAPI(title="MyQQbot Admin")
 
@@ -54,6 +58,47 @@ def create_admin_app(feature_manager: FeatureManager) -> FastAPI:
                 raise HTTPException(status_code=409, detail="JM 功能正在执行任务，请稍后再清理") from exc
             raise HTTPException(status_code=404, detail="jm feature not found") from exc
         return {"ok": True}
+
+    @app.post("/api/pixiv/cleanup")
+    async def cleanup_pixiv_storage():
+        try:
+            await feature_manager.cleanup_pixiv_storage()
+        except RuntimeError as exc:
+            message = str(exc)
+            if message == "pixiv feature is busy":
+                raise HTTPException(
+                    status_code=409,
+                    detail="Pixiv 功能正在执行任务，请稍后再清理",
+                ) from exc
+            raise HTTPException(status_code=404, detail="pixiv feature not found") from exc
+        return {"ok": True}
+
+    @app.get("/api/pixiv/token")
+    async def get_pixiv_token_status():
+        try:
+            configured = feature_manager.get_pixiv_token_status()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=404, detail="pixiv feature not found") from exc
+        return {"configured": configured}
+
+    @app.post("/api/pixiv/token")
+    async def save_pixiv_token(body: PixivTokenRequest):
+        token = body.refresh_token.strip()
+        if not token:
+            raise HTTPException(status_code=400, detail="refresh token 不能为空")
+        try:
+            feature_manager.set_pixiv_refresh_token(token)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=404, detail="pixiv feature not found") from exc
+        return {"configured": True}
+
+    @app.delete("/api/pixiv/token")
+    async def clear_pixiv_token():
+        try:
+            feature_manager.clear_pixiv_refresh_token()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=404, detail="pixiv feature not found") from exc
+        return {"configured": False}
 
     return app
 
@@ -153,16 +198,21 @@ HTML = """
       padding-top: 16px;
       border-top: 1px solid #e5e7eb;
     }
-    textarea {
+    textarea, input[type="password"] {
       width: 100%;
-      min-height: 180px;
       box-sizing: border-box;
-      resize: vertical;
       border: 1px solid #d0d5dd;
       border-radius: 8px;
       padding: 12px;
       color: #1f2937;
       font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    textarea {
+      min-height: 180px;
+      resize: vertical;
+    }
+    input[type="password"] {
+      margin-top: 10px;
     }
     button {
       margin-top: 12px;
@@ -185,6 +235,10 @@ HTML = """
     .danger {
       background: #b42318;
     }
+    .secondary {
+      background: #667085;
+      margin-left: 8px;
+    }
   </style>
 </head>
 <body>
@@ -198,6 +252,7 @@ HTML = """
     const featuresEl = document.querySelector("#features");
     const errorEl = document.querySelector("#error");
     let helpMessages = [];
+    let pixivTokenConfigured = false;
 
     async function loadFeatures() {
       errorEl.textContent = "";
@@ -263,6 +318,34 @@ HTML = """
         button.addEventListener("click", () => cleanupJmStorage(button, status));
         row.appendChild(extra);
       }
+
+      if (feature.name === "pixiv") {
+        const extra = document.createElement("div");
+        extra.className = "feature-extra";
+        extra.innerHTML = `
+          <p>Pixiv refresh token：${pixivTokenConfigured ? "已配置" : "未配置"}。后端不会向页面回传已保存的 token。</p>
+          <input type="password" autocomplete="new-password" placeholder="粘贴新的 Pixiv refresh token">
+          <div>
+            <button class="save-token" type="button">保存 token</button>
+            <button class="secondary clear-token" type="button">清除 token</button>
+            <span class="token-status status"></span>
+          </div>
+          <p>清理会删除 data/pixiv/tasks 中的空闲任务目录，不会删除正在处理或等待处理的任务。</p>
+          <button class="danger" type="button">手动清理 Pixiv 存储垃圾</button>
+          <span class="cleanup-status status"></span>
+        `;
+        const tokenInput = extra.querySelector('input[type="password"]');
+        const saveButton = extra.querySelector(".save-token");
+        const clearButton = extra.querySelector(".clear-token");
+        const tokenStatus = extra.querySelector(".token-status");
+        const cleanupButton = extra.querySelector(".danger");
+        const cleanupStatus = extra.querySelector(".cleanup-status");
+        clearButton.disabled = !pixivTokenConfigured;
+        saveButton.addEventListener("click", () => savePixivToken(tokenInput, saveButton, clearButton, tokenStatus));
+        clearButton.addEventListener("click", () => clearPixivToken(tokenInput, clearButton, tokenStatus));
+        cleanupButton.addEventListener("click", () => cleanupPixivStorage(cleanupButton, cleanupStatus));
+        row.appendChild(extra);
+      }
     }
 
     async function toggleFeature(name, enabled) {
@@ -283,6 +366,53 @@ HTML = """
       if (!res.ok) throw new Error("加载 /help 文本失败");
       const data = await res.json();
       helpMessages = data.messages;
+    }
+
+    async function loadPixivTokenStatus() {
+      const res = await fetch("/api/pixiv/token");
+      if (!res.ok) throw new Error("加载 Pixiv token 状态失败");
+      const data = await res.json();
+      pixivTokenConfigured = data.configured;
+    }
+
+    async function savePixivToken(input, saveButton, clearButton, status) {
+      const refreshToken = input.value.trim();
+      if (!refreshToken) {
+        status.textContent = "请输入 refresh token";
+        return;
+      }
+      status.textContent = "保存中...";
+      saveButton.disabled = true;
+      const res = await fetch("/api/pixiv/token", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({refresh_token: refreshToken}),
+      });
+      saveButton.disabled = false;
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        status.textContent = data.detail || "保存失败，请稍后重试。";
+        return;
+      }
+      input.value = "";
+      pixivTokenConfigured = true;
+      clearButton.disabled = false;
+      status.textContent = "已保存并立即生效";
+    }
+
+    async function clearPixivToken(input, clearButton, status) {
+      status.textContent = "清除中...";
+      clearButton.disabled = true;
+      const res = await fetch("/api/pixiv/token", {method: "DELETE"});
+      if (!res.ok) {
+        clearButton.disabled = false;
+        const data = await res.json().catch(() => ({}));
+        status.textContent = data.detail || "清除失败，请稍后重试。";
+        return;
+      }
+      input.value = "";
+      pixivTokenConfigured = false;
+      status.textContent = "已清除";
     }
 
     async function saveHelpMessages(textarea, button, status) {
@@ -321,8 +451,22 @@ HTML = """
       status.textContent = "已清理";
     }
 
+    async function cleanupPixivStorage(button, status) {
+      status.textContent = "清理中...";
+      button.disabled = true;
+      const res = await fetch("/api/pixiv/cleanup", {method: "POST"});
+      button.disabled = false;
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        status.textContent = data.detail || "清理失败，请稍后重试。";
+        return;
+      }
+      status.textContent = "已清理";
+    }
+
     async function init() {
       await loadHelpMessages();
+      await loadPixivTokenStatus();
       await loadFeatures();
     }
 

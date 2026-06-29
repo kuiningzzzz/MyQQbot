@@ -122,7 +122,11 @@ class QQBot:
         logger.info("发送群聊消息到群 %s: %s", group_id, message)
         await ws.send_text(json.dumps(payload, ensure_ascii=False))
 
-    async def send_forward_msg(self, ctx: MessageContext, messages: list[str]):
+    async def send_forward_msg(
+        self,
+        ctx: MessageContext,
+        messages: list[str | list[dict[str, Any]]],
+    ):
         nodes = [
             {
                 "type": "node",
@@ -152,8 +156,15 @@ class QQBot:
                 },
             }
 
-        logger.info("发送帮助聊天记录，共 %s 条", len(nodes))
+        logger.info("发送合并转发消息，共 %s 条", len(nodes))
         await ctx.websocket.send_text(json.dumps(payload, ensure_ascii=False))
+
+    async def send_image_forward_msg(self, ctx: MessageContext, image_refs: list[str]):
+        messages = [
+            [{"type": "image", "data": {"file": image_ref}}]
+            for image_ref in image_refs
+        ]
+        await self.send_forward_msg(ctx, messages)
 
     async def send_file(self, ctx: MessageContext, file_path: Path, name: str | None = None):
         file_name = name or file_path.name
@@ -181,11 +192,19 @@ class QQBot:
         await ctx.websocket.send_text(json.dumps(payload, ensure_ascii=False))
 
     def resolve_file_reference(self, file_path: Path) -> str:
+        return self.resolve_public_file_reference(file_path, Path("data/jm"), "/files")
+
+    def resolve_public_file_reference(
+        self,
+        file_path: Path,
+        public_file_root: Path,
+        public_route: str,
+    ) -> str:
         public_base_url = os.getenv("MYQQBOT_PUBLIC_BASE_URL")
         if not public_base_url:
             return str(file_path.resolve())
 
-        public_file_root = Path("data/jm").resolve()
+        public_file_root = public_file_root.resolve()
         resolved_path = file_path.resolve()
         try:
             relative_path = resolved_path.relative_to(public_file_root)
@@ -193,4 +212,4 @@ class QQBot:
             relative_path = Path(file_path.name)
 
         encoded_path = "/".join(quote(part, safe="") for part in relative_path.parts)
-        return f"{public_base_url.rstrip('/')}/files/{encoded_path}"
+        return f"{public_base_url.rstrip('/')}/{public_route.strip('/')}/{encoded_path}"

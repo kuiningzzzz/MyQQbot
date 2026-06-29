@@ -17,6 +17,9 @@ src/
       feature.py
     jm/                 # /jm 功能及其内部实现
       feature.py
+    pixiv/              # /pixiv 队列和 Pixiv API 下载适配器
+      client.py
+      feature.py
     manager.py          # Feature 注册、开关、调度和应用层编排
 ```
 
@@ -29,6 +32,8 @@ src/
 - `data/features.json`：Feature 开关状态。
 - `data/help.json`：`/help` 返回的聊天记录文本。
 - `data/jm/tasks/`：JM 任务目录。每个任务都有独立的下载缓存和生成 PDF。
+- `data/pixiv/tasks/`：Pixiv 任务目录。每个任务都有独立的图片缓存。
+- `data/pixiv/config.json`：Pixiv refresh token 配置，由管理 WebUI 写入。
 
 Docker 部署时，`docker-compose.yml` 会把项目目录下的 `./data` 挂载到容器内的 `/app/data`。因此重建镜像或重启容器不会删除 feature 开关和已生成文件。
 
@@ -44,6 +49,7 @@ python -m src.main
 - QQ Bot WebSocket：`ws://127.0.0.1:8081/ws`
 - 管理 WebUI：`http://127.0.0.1:10010`
 - 生成文件静态访问：`http://127.0.0.1:8081/files/文件名`
+- Pixiv 图片静态访问：`http://127.0.0.1:8081/pixiv-files/文件名`
 
 Docker:
 
@@ -107,6 +113,34 @@ MYQQBOT_PUBLIC_BASE_URL=http://127.0.0.1:8081
 
 ```yaml
 - JM_CLEANUP_DELAY_SECONDS=300
+```
+
+### Pixiv 图片
+
+默认关闭，需要在管理 WebUI 里打开。打开后发送：
+
+```text
+/pixiv 12345678
+```
+
+机器人会下载该作品的原图，并以 QQ 合并转发/聊天记录发送。多图作品每个图片节点占一条聊天记录；超过 100 张时，会自动拆成每组最多 100 张的多组合并转发。
+
+查询队列：
+
+```text
+/pixiv status
+```
+
+Pixiv 队列同时只处理一个任务。队列忙时，新请求会收到“已添加至处理队列”的回复以及当前队列状态。
+
+公开作品会尝试直接获取。要稳定获取需要登录或 R18 的作品，请为具有相应浏览权限的 Pixiv 账号取得 refresh token，然后在管理 WebUI 的“Pixiv 图片”功能卡片中粘贴并保存。保存后立即生效，无需重启服务。
+
+获取 token 可参考 [PixivPy README 中推荐的 OAuth 工具](https://github.com/upbit/pixivpy#pixivpy3)。后端只向 WebUI 返回“已配置/未配置”状态，不会回传 token 原文。token 会以明文保存在被 Git 忽略的 `data/pixiv/config.json` 中，因此仍应限制 `data/` 目录和管理 WebUI 的访问权限。
+
+图片发送后默认延迟 300 秒清理任务目录，可通过以下变量调整：
+
+```yaml
+- PIXIV_CLEANUP_DELAY_SECONDS=300
 ```
 
 ## 文档

@@ -22,6 +22,8 @@ feature_manager = FeatureManager.default()
 bot = QQBot(feature_manager)
 jm_files_dir = Path("data/jm")
 jm_files_dir.mkdir(parents=True, exist_ok=True)
+pixiv_files_dir = Path("data/pixiv")
+pixiv_files_dir.mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager
@@ -34,6 +36,11 @@ async def lifespan(app: FastAPI):
 
 bot_app = FastAPI(lifespan=lifespan, title="MyQQbot Backend")
 bot_app.mount("/files", StaticFiles(directory=jm_files_dir), name="files")
+bot_app.mount(
+    "/pixiv-files",
+    StaticFiles(directory=pixiv_files_dir),
+    name="pixiv-files",
+)
 admin_app = create_admin_app(feature_manager)
 
 
