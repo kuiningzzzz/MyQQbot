@@ -22,7 +22,7 @@ class SummaryFeature(Feature):
     name = "summary"
     title = "AI 群聊总结"
     description = "使用 /short 10-200 总结当前群聊最近指定数量的消息。"
-    default_enabled = False
+    default_enabled = True
     command_pattern = re.compile(r"^/short\s+(\d+)\s*$")
 
     def __init__(
