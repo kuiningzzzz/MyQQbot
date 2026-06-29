@@ -39,18 +39,25 @@ class AiChatService:
         self.selections = selections
         self.client = client
         self._active_until: dict[str, float] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+        self._tasks: dict[str, asyncio.Task[None]] = {}
 
     async def handle(self, ctx: MessageContext) -> bool:
         key = conversation_key(ctx)
         if key is None:
             return False
+        if _is_self_message(ctx):
+            return False
         if ctx.msg == "/character":
+            self._cancel_generation(key)
+            self._active_until.pop(key, None)
             await self.send_character_list(ctx)
             return True
         if ctx.msg.startswith("/change-character"):
+            self._cancel_generation(key)
             await self.change_character(ctx, key)
             return True
+        if ctx.msg.startswith("/"):
+            return False
 
         forced = self._is_direct_trigger(ctx, key)
         now = time.monotonic()
@@ -58,31 +65,64 @@ class AiChatService:
         if not forced and not active:
             self._active_until.pop(key, None)
             return False
-        if active:
-            self._active_until[key] = now + self.active_seconds
-
-        lock = self._locks.setdefault(key, asyncio.Lock())
-        if lock.locked():
-            return True
-        async with lock:
-            decision = await self._decide(ctx, key, forced)
-            if not decision.reply:
-                self._active_until.pop(key, None)
-                return False
-            self._active_until[key] = time.monotonic() + self.active_seconds
-            character = self.selections.get(key, self.characters)
-            for message in decision.messages:
-                await ctx.bot.reply(ctx, message)
-                self.history.append_conversation(
-                    key,
-                    GroupMessage(
-                        timestamp=int(datetime.now().timestamp()),
-                        sender=character.name,
-                        user_id=_self_id(ctx),
-                        content=message,
-                    ),
-                )
+        self._active_until[key] = now + self.active_seconds
+        self._cancel_generation(key)
+        task = asyncio.create_task(self._generate_and_reply(ctx, key, forced))
+        self._tasks[key] = task
+        task.add_done_callback(lambda finished, conversation=key: self._task_done(conversation, finished))
         return True
+
+    async def _generate_and_reply(
+        self,
+        ctx: MessageContext,
+        key: str,
+        forced: bool,
+    ) -> None:
+        decision = await self._decide(ctx, key, forced)
+        if not self._is_current_task(key):
+            return
+        if not decision.reply:
+            self._active_until.pop(key, None)
+            return
+
+        self._active_until[key] = time.monotonic() + self.active_seconds
+        character = self.selections.get(key, self.characters)
+        for index, message in enumerate(decision.messages):
+            if not self._is_current_task(key):
+                return
+            await ctx.bot.reply(ctx, message)
+            self.history.append_conversation(
+                key,
+                GroupMessage(
+                    timestamp=int(datetime.now().timestamp()),
+                    sender=character.name,
+                    user_id=_self_id(ctx),
+                    content=message,
+                ),
+            )
+            if index < len(decision.messages) - 1:
+                await asyncio.sleep(1)
+
+    def _cancel_generation(self, key: str) -> None:
+        task = self._tasks.pop(key, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    def _is_current_task(self, key: str) -> bool:
+        return self._tasks.get(key) is asyncio.current_task()
+
+    def _task_done(self, key: str, task: asyncio.Task[None]) -> None:
+        if self._tasks.get(key) is task:
+            self._tasks.pop(key, None)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "会话 %s 的 AI 聊天后台任务异常",
+                key,
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
     async def send_character_list(self, ctx: MessageContext) -> None:
         messages = [
@@ -186,3 +226,10 @@ def _self_id(ctx: MessageContext) -> int | None:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _is_self_message(ctx: MessageContext) -> bool:
+    self_id = _self_id(ctx)
+    if self_id is None or ctx.user_id is None:
+        return False
+    return str(ctx.user_id) == str(self_id)

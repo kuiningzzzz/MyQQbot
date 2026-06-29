@@ -64,6 +64,21 @@ class SummaryFeature(Feature):
             return
         message = message_from_context(ctx)
         if message is not None:
+            self_id = ctx.event.get("self_id")
+            if (
+                self_id is not None
+                and ctx.user_id is not None
+                and str(self_id) == str(ctx.user_id)
+            ):
+                recent = self.history.load_conversation(key, 1)
+                if recent:
+                    previous = recent[-1]
+                    if (
+                        previous.user_id == message.user_id
+                        and previous.content == message.content
+                        and abs(previous.timestamp - message.timestamp) <= 10
+                    ):
+                        return
             if ctx.message_type == "group" and ctx.group_id is not None:
                 self.history.append(ctx.group_id, message)
             elif ctx.user_id is not None:
