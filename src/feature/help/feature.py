@@ -14,6 +14,8 @@ DEFAULT_HELP_MESSAGES = [
     "/pixiv 作品ID - 获取对应 Pixiv 图片或图片集",
     "/pixiv status - 查看 Pixiv 当前处理队列",
     "/short 10至200 - AI 总结当前群聊最近指定数量的消息（暂时不支持图片和语音等多模态信息的解析读取）",
+    "/character - 查看可用的 AI 聊天人设",
+    "/change-character 名字 - 切换当前会话的 AI 人设",
     "/hello - 回复 hello",
 ]
 

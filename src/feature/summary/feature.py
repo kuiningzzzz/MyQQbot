@@ -4,9 +4,15 @@ import re
 from pathlib import Path
 
 from src.feature.atom import Feature, MessageContext
+from src.feature.summary.character import CharacterSelectionStore, CharacterStore
+from src.feature.summary.chat import AiChatService
 from src.feature.summary.client import OpenAICompatibleClient, SummaryApiError
 from src.feature.summary.config import SummaryConfig
-from src.feature.summary.history import GroupHistoryStore, message_from_context
+from src.feature.summary.history import (
+    GroupHistoryStore,
+    conversation_key,
+    message_from_context,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +26,8 @@ SYSTEM_PROMPT = """你是群聊记录总结助手。你的职责是准确、客�
 
 class SummaryFeature(Feature):
     name = "summary"
-    title = "AI 群聊总结"
-    description = "使用 /short 10-200 总结当前群聊最近指定数量的消息。"
+    title = "AI 功能"
+    description = "共用模型配置的群聊总结与多角色 AI 聊天。"
     default_enabled = True
     command_pattern = re.compile(r"^/short\s+(\d+)\s*$")
 
@@ -30,24 +36,57 @@ class SummaryFeature(Feature):
         config: SummaryConfig | None = None,
         history: GroupHistoryStore | None = None,
         client: OpenAICompatibleClient | None = None,
+        characters: CharacterStore | None = None,
+        selections: CharacterSelectionStore | None = None,
     ):
         self.config = config or SummaryConfig(Path("data/summary/config.json"))
         self.history = history or GroupHistoryStore(Path("data/summary/history"))
         self.client = client or OpenAICompatibleClient()
+        self.characters = characters or CharacterStore(Path("data/summary/characters.json"))
+        self.characters.list()
+        self.selections = selections or CharacterSelectionStore(
+            Path("data/summary/selections.json")
+        )
+        self.chat = AiChatService(
+            self.config,
+            self.history,
+            self.characters,
+            self.selections,
+            self.client,
+        )
         self._group_locks: dict[int, asyncio.Lock] = {}
 
     async def observe(self, ctx: MessageContext) -> None:
-        if ctx.message_type != "group" or ctx.group_id is None:
+        key = conversation_key(ctx)
+        if key is None:
             return
-        if ctx.msg.startswith("/short"):
+        if ctx.msg.startswith(("/short", "/character", "/change-character")):
             return
         message = message_from_context(ctx)
         if message is not None:
-            self.history.append(ctx.group_id, message)
+            if ctx.message_type == "group" and ctx.group_id is not None:
+                self.history.append(ctx.group_id, message)
+            elif ctx.user_id is not None:
+                self.history.append_private(ctx.user_id, message)
 
     async def handle(self, ctx: MessageContext) -> bool:
-        if not ctx.msg.startswith("/short"):
+        settings = self.config.load()
+        if ctx.msg.startswith("/short"):
+            if not settings.summary_enabled:
+                await ctx.bot.reply(ctx, "AI 群聊总结当前已关闭。")
+                return True
+            return await self._handle_summary(ctx)
+        is_chat_command = ctx.msg == "/character" or ctx.msg.startswith(
+            "/change-character"
+        )
+        if not settings.chat_enabled:
+            if is_chat_command:
+                await ctx.bot.reply(ctx, "AI 聊天当前已关闭。")
+                return True
             return False
+        return await self.chat.handle(ctx)
+
+    async def _handle_summary(self, ctx: MessageContext) -> bool:
         if ctx.message_type != "group" or ctx.group_id is None:
             await ctx.bot.reply(ctx, "群聊总结只能在群聊中使用。")
             return True
@@ -83,10 +122,13 @@ class SummaryFeature(Feature):
         return True
 
     @property
-    def config_status(self) -> dict[str, str | bool]:
+    def config_status(self) -> dict[str, str | bool | int]:
         config = self.config.load()
         return {
             "api_url": config.api_url,
             "model": config.model,
             "api_key_configured": bool(config.api_key),
+            "summary_enabled": config.summary_enabled,
+            "chat_enabled": config.chat_enabled,
+            "chat_history_limit": config.chat_history_limit,
         }

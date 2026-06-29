@@ -127,9 +127,9 @@ HTML = """
     input:checked + .slider { background: #2563eb; }
     input:checked + .slider:before { transform: translateX(24px); }
     .feature-extra { padding-top: 16px; border-top: 1px solid #e5e7eb; }
-    textarea, input[type="password"], input[type="text"] { width: 100%; border: 1px solid #d0d5dd; border-radius: 8px; padding: 12px; color: #1f2937; font: 14px/1.5 ui-monospace, monospace; }
+    textarea, select, input[type="password"], input[type="text"] { width: 100%; border: 1px solid #d0d5dd; border-radius: 8px; padding: 12px; color: #1f2937; font: 14px/1.5 ui-monospace, monospace; }
     textarea { min-height: 180px; resize: vertical; }
-    input[type="password"], input[type="text"] { margin-top: 10px; }
+    select, input[type="password"], input[type="text"] { margin-top: 10px; }
     button { margin-top: 12px; border: 0; border-radius: 8px; background: #2563eb; color: white; padding: 10px 16px; cursor: pointer; font-weight: 600; }
     button:disabled { background: #98a2b3; cursor: not-allowed; }
     .status { margin-left: 12px; }

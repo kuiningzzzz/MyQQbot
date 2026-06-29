@@ -15,6 +15,23 @@ class OpenAICompatibleClient:
     timeout_seconds: int = 90
 
     def summarize(self, config: SummaryConfigData, system_prompt: str, history: str) -> str:
+        return self.complete(
+            config,
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"请总结以下群聊记录：\n\n{history}"},
+            ],
+            temperature=0.3,
+            max_tokens=500,
+        )
+
+    def complete(
+        self,
+        config: SummaryConfigData,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 800,
+    ) -> str:
         if not config.api_key:
             raise SummaryApiError("尚未配置模型 API Key")
         url = config.api_url.rstrip("/")
@@ -29,12 +46,9 @@ class OpenAICompatibleClient:
                 },
                 json={
                     "model": config.model,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": f"请总结以下群聊记录：\n\n{history}"},
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 500,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
                     "stream": False,
                 },
                 timeout=self.timeout_seconds,

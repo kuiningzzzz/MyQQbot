@@ -29,21 +29,44 @@ class GroupHistoryStore:
         self.limit = limit
 
     def append(self, group_id: int, message: GroupMessage) -> None:
-        messages = self.load(group_id, self.limit)
+        key = f"group-{int(group_id)}"
+        self._write_messages(key, [*self.load(group_id, self.limit), message])
+
+    def append_private(self, user_id: int, message: GroupMessage) -> None:
+        self.append_conversation(f"private-{int(user_id)}", message)
+
+    def append_conversation(self, key: str, message: GroupMessage) -> None:
+        messages = self.load_conversation(key, self.limit)
         messages.append(message)
+        self._write_messages(key, messages)
+
+    def _write_messages(self, key: str, messages: list[GroupMessage]) -> None:
         write_json(
-            self._path(group_id),
-            {"group_id": group_id, "messages": [asdict(item) for item in messages[-self.limit :]]},
+            self._path(key),
+            {"conversation": key, "messages": [asdict(item) for item in messages[-self.limit :]]},
         )
 
     def load(self, group_id: int, limit: int) -> list[GroupMessage]:
-        path = self._path(group_id)
+        key = f"group-{int(group_id)}"
+        path = self._path(key)
+        legacy_path = self.directory / f"{int(group_id)}.json"
+        if not path.exists() and legacy_path.exists():
+            path = legacy_path
+        return self._load_path(path, limit, str(group_id))
+
+    def load_private(self, user_id: int, limit: int) -> list[GroupMessage]:
+        return self.load_conversation(f"private-{int(user_id)}", limit)
+
+    def load_conversation(self, key: str, limit: int) -> list[GroupMessage]:
+        return self._load_path(self._path(key), limit, key)
+
+    def _load_path(self, path: Path, limit: int, label: str) -> list[GroupMessage]:
         if not path.exists():
             return []
         try:
             data = read_json(path)
         except (OSError, json.JSONDecodeError):
-            logger.exception("读取群 %s 的聊天历史失败", group_id)
+            logger.exception("读取会话 %s 的聊天历史失败", label)
             return []
         raw_messages = data.get("messages") if isinstance(data, dict) else None
         if not isinstance(raw_messages, list):
@@ -73,8 +96,19 @@ class GroupHistoryStore:
             )
         return messages
 
-    def _path(self, group_id: int) -> Path:
-        return self.directory / f"{int(group_id)}.json"
+    def _path(self, key: str) -> Path:
+        safe_key = "".join(char for char in key if char.isalnum() or char in "-_")
+        if not safe_key:
+            raise ValueError("invalid conversation key")
+        return self.directory / f"{safe_key}.json"
+
+
+def conversation_key(ctx: MessageContext) -> str | None:
+    if ctx.message_type == "group" and ctx.group_id is not None:
+        return f"group-{ctx.group_id}"
+    if ctx.message_type == "private" and ctx.user_id is not None:
+        return f"private-{ctx.user_id}"
+    return None
 
 
 def message_from_context(ctx: MessageContext) -> GroupMessage | None:

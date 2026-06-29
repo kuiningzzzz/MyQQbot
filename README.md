@@ -31,8 +31,10 @@ src/
       client.py
       feature.py
       plugin.py
-    summary/            # /short 群聊历史、模型调用和管理配置
+    summary/            # 共用模型配置的 AI 总结与 AI 聊天能力组
       admin.py
+      character.py
+      chat.py
       client.py
       config.py
       feature.py
@@ -60,8 +62,10 @@ src/
 - `data/jm/tasks/`：JM 任务目录。每个任务都有独立的下载缓存和生成 PDF。
 - `data/pixiv/tasks/`：Pixiv 任务目录。每个任务都有独立的图片缓存。
 - `data/pixiv/config.json`：Pixiv refresh token 配置，由管理 WebUI 写入。
-- `data/summary/config.json`：AI 总结服务 URL、模型名和 API Key。
-- `data/summary/history/群号.json`：每个群最近 200 条消息及发送者身份。
+- `data/summary/config.json`：AI 服务 URL、模型名、API Key 和两项功能设置。
+- `data/summary/characters.json`：AI 聊天人设。
+- `data/summary/selections.json`：各群聊或私聊当前选择的人设。
+- `data/summary/history/group-群号.json`、`private-用户号.json`：每个会话最近 200 条消息及发送者身份。
 
 Docker 部署时，`docker-compose.yml` 会把项目目录下的 `./data` 挂载到容器内的 `/app/data`。因此重建镜像或重启容器不会删除 feature 开关和已生成文件。
 
@@ -106,9 +110,15 @@ docker compose up --build
 
 机器人会用 QQ 合并转发/聊天记录的形式返回当前支持的指令合集。管理 WebUI 里可以修改 `/help` 返回的文本内容，每一行会作为聊天记录中的一条消息发送。
 
-### AI 群聊总结
+### AI 功能：群聊总结与聊天
 
-默认关闭。功能即使关闭也会保存各群最近 200 条消息，以便启用后立即具备上下文；仅处理群聊消息。启用后发送：
+“AI 功能”使用一张 WebUI 卡片和同一套 OpenAI-compatible API 配置，卡片内可以分别启用或关闭群聊总结与 AI 聊天。默认 URL 和模型分别为 `https://api.deepseek.com` 与 `deepseek-chat`；URL 可以填写服务根地址或完整的 `/chat/completions` 地址。
+
+功能会持续保存各群聊和私聊最近 200 条消息，以便启用后立即具备上下文。历史记录包含群昵称和用户 ID。图片当前保存为 `[图片]` 或 NapCat 提供的图片摘要，尚未执行实际 OCR；带完整节点的合并转发会展开为一条多行消息，只有转发 ID 时保存占位符。
+
+#### 群聊总结
+
+仅在群聊中使用：
 
 ```text
 /short 50
@@ -116,9 +126,25 @@ docker compose up --build
 
 数字必须是 10 至 200 的整数。机器人会将当前群最近指定数量的消息交给模型，并要求模型尽量在 150 个汉字内总结主要话题、结论、争议和待办事项。历史记录包含群昵称和用户 ID，以帮助模型区分参与者；触发总结的 `/short` 命令不会写入历史。
 
-管理 WebUI 的“AI 群聊总结”卡片可配置 OpenAI-compatible API URL、模型名和 API Key。默认 URL 和模型分别为 `https://api.deepseek.com` 与 `deepseek-chat`。URL 可以填写服务根地址或完整的 `/chat/completions` 地址，配置保存后立即生效。
+#### AI 聊天
 
-图片当前会保存为 `[图片]`，若 NapCat 提供图片摘要则一并保存，尚未执行实际 OCR。事件中带有完整节点的合并转发会展开为一条多行消息；若事件只包含转发 ID，则保存为聊天记录占位符。
+群聊中 `@` 机器人，或在群聊/私聊文本中提及当前人设配置的“姓名”，会触发一次必答并令当前会话进入 60 秒活跃期。活跃期内的新消息会重置计时，模型根据上下文决定是否继续接话；模型选择不回复或 60 秒内无人发言后，机器人重新休眠。
+
+每次调用默认读取最近 200 条消息，可在 WebUI 中改为 10 至 200。模型以结构化结果返回是否回复以及 1 至 4 条短消息，机器人会将它们分别发送。
+
+查看人设：
+
+```text
+/character
+```
+
+切换当前群聊或私聊的人设：
+
+```text
+/change-character 普通QQ群群友
+```
+
+WebUI 支持添加、修改、删除人设的名字、姓名、描述和正文提示词。“名字”用于管理和 `/change-character`，“姓名”用于对话中的角色身份与文本唤醒。首次运行会自动建立“普通QQ群群友”人设，其默认姓名为“奎大宁”；删除最后一个人设时也会恢复该默认人设。人设选择按群聊或私聊分别保存。
 
 API Key 会以明文保存在 Git 忽略的 `data/summary/config.json` 中，管理 API 不会将 Key 回传给浏览器。请限制管理 WebUI 和 `data/` 目录的访问权限。
 
