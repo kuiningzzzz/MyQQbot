@@ -61,11 +61,12 @@ class PixivOAuth:
                 code_verifier=code_verifier,
                 expires_at=monotonic() + self.lifetime_seconds,
             )
-        login_url = f"{LOGIN_URL}?{urlencode({
-            'code_challenge': code_challenge,
-            'code_challenge_method': 'S256',
-            'client': 'pixiv-android',
-        })}"
+        login_params = {
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "client": "pixiv-android",
+        }
+        login_url = f"{LOGIN_URL}?{urlencode(login_params)}"
         return PixivOAuthStart(
             flow_id=flow_id,
             login_url=login_url,
