@@ -20,9 +20,11 @@ services:
       - MYQQBOT_PUBLIC_BASE_URL=${MYQQBOT_PUBLIC_BASE_URL:-http://127.0.0.1:8081}
       - JM_CLEANUP_DELAY_SECONDS=${JM_CLEANUP_DELAY_SECONDS:-300}
       - PIXIV_CLEANUP_DELAY_SECONDS=${PIXIV_CLEANUP_DELAY_SECONDS:-300}
-      - HTTP_PROXY=${MYQQBOT_HTTP_PROXY-http://host.docker.internal:20171}
-      - HTTPS_PROXY=${MYQQBOT_HTTP_PROXY-http://host.docker.internal:20171}
-      - http_proxy=${MYQQBOT_HTTP_PROXY-http://host.docker.internal:20171}
-      - https_proxy=${MYQQBOT_HTTP_PROXY-http://host.docker.internal:20171}
+      - HTTP_PROXY=${MYQQBOT_PROXY-socks5h://host.docker.internal:20170}
+      - HTTPS_PROXY=${MYQQBOT_PROXY-socks5h://host.docker.internal:20170}
+      - ALL_PROXY=${MYQQBOT_PROXY-socks5h://host.docker.internal:20170}
+      - http_proxy=${MYQQBOT_PROXY-socks5h://host.docker.internal:20170}
+      - https_proxy=${MYQQBOT_PROXY-socks5h://host.docker.internal:20170}
+      - all_proxy=${MYQQBOT_PROXY-socks5h://host.docker.internal:20170}
       - NO_PROXY=${MYQQBOT_NO_PROXY-localhost,127.0.0.1}
       - no_proxy=${MYQQBOT_NO_PROXY-localhost,127.0.0.1}
