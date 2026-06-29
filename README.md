@@ -171,6 +171,21 @@ Pixiv 队列同时只处理一个任务。队列忙时，新请求会收到“�
 - PIXIV_CLEANUP_DELAY_SECONDS=300
 ```
 
+Pixiv API、OAuth 服务和图片 CDN 都必须能被 bot 容器访问。`docker-compose.yml` 默认将容器的 HTTP/HTTPS 流量指向宿主机 v2rayA 的 HTTP 代理端口 `20171`：
+
+```text
+http://host.docker.internal:20171
+```
+
+Linux Docker 通过 `host-gateway` 映射宿主机。请确认 v2rayA 已开启“允许来自局域网的连接/地址共享”，并监听 Docker 网桥能够访问的地址，而不只是宿主机的 `127.0.0.1`。代理地址可以通过宿主机环境变量覆盖；显式设置为空字符串可以关闭：
+
+```bash
+MYQQBOT_HTTP_PROXY=http://其他代理地址:端口 docker compose up -d
+MYQQBOT_HTTP_PROXY= docker compose up -d
+```
+
+本配置使用 HTTP CONNECT 代理，因此不需要为 SOCKS 额外安装 PySocks。它会作用于容器内所有遵循 `HTTP_PROXY`/`HTTPS_PROXY` 的 HTTP 客户端，而不只 Pixiv。
+
 ## 文档
 
 - [QQ Bot 基础开发指南](docs/QQBot基础开发指南.md)

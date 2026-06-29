@@ -12,9 +12,17 @@ services:
       - "10010:10010"
     volumes:
       - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
       - MYQQBOT_PUBLIC_BASE_URL=${MYQQBOT_PUBLIC_BASE_URL:-http://127.0.0.1:8081}
       - JM_CLEANUP_DELAY_SECONDS=${JM_CLEANUP_DELAY_SECONDS:-300}
       - PIXIV_CLEANUP_DELAY_SECONDS=${PIXIV_CLEANUP_DELAY_SECONDS:-300}
+      - HTTP_PROXY=${MYQQBOT_HTTP_PROXY-http://host.docker.internal:20171}
+      - HTTPS_PROXY=${MYQQBOT_HTTP_PROXY-http://host.docker.internal:20171}
+      - http_proxy=${MYQQBOT_HTTP_PROXY-http://host.docker.internal:20171}
+      - https_proxy=${MYQQBOT_HTTP_PROXY-http://host.docker.internal:20171}
+      - NO_PROXY=${MYQQBOT_NO_PROXY-localhost,127.0.0.1}
+      - no_proxy=${MYQQBOT_NO_PROXY-localhost,127.0.0.1}
