@@ -69,6 +69,12 @@ class FeatureManager:
 
     async def handle_event(self, ctx: MessageContext) -> bool:
         for name, feature in self.features.items():
+            try:
+                await feature.observe(ctx)
+            except Exception:
+                logger.exception("Feature %s 采集消息失败", name)
+
+        for name, feature in self.features.items():
             if not self.is_enabled(name):
                 continue
 

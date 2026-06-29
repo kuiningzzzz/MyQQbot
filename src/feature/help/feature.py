@@ -13,6 +13,7 @@ DEFAULT_HELP_MESSAGES = [
     "/jm status - 查看 JM 当前处理队列",
     "/pixiv 作品ID - 获取对应 Pixiv 图片或图片集",
     "/pixiv status - 查看 Pixiv 当前处理队列",
+    "/short 10至200 - AI 总结当前群聊最近指定数量的消息",
     "/hello - 回复 hello",
 ]
 

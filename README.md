@@ -31,6 +31,13 @@ src/
       client.py
       feature.py
       plugin.py
+    summary/            # /short 群聊历史、模型调用和管理配置
+      admin.py
+      client.py
+      config.py
+      feature.py
+      history.py
+      plugin.py
     catalog.py          # 唯一的功能组合入口
     manager.py          # 通用 Feature 注册、开关和消息调度
 ```
@@ -53,6 +60,8 @@ src/
 - `data/jm/tasks/`：JM 任务目录。每个任务都有独立的下载缓存和生成 PDF。
 - `data/pixiv/tasks/`：Pixiv 任务目录。每个任务都有独立的图片缓存。
 - `data/pixiv/config.json`：Pixiv refresh token 配置，由管理 WebUI 写入。
+- `data/summary/config.json`：AI 总结服务 URL、模型名和 API Key。
+- `data/summary/history/群号.json`：每个群最近 200 条消息及发送者身份。
 
 Docker 部署时，`docker-compose.yml` 会把项目目录下的 `./data` 挂载到容器内的 `/app/data`。因此重建镜像或重启容器不会删除 feature 开关和已生成文件。
 
@@ -96,6 +105,22 @@ docker compose up --build
 ```
 
 机器人会用 QQ 合并转发/聊天记录的形式返回当前支持的指令合集。管理 WebUI 里可以修改 `/help` 返回的文本内容，每一行会作为聊天记录中的一条消息发送。
+
+### AI 群聊总结
+
+默认关闭。功能即使关闭也会保存各群最近 200 条消息，以便启用后立即具备上下文；仅处理群聊消息。启用后发送：
+
+```text
+/short 50
+```
+
+数字必须是 10 至 200 的整数。机器人会将当前群最近指定数量的消息交给模型，并要求模型尽量在 150 个汉字内总结主要话题、结论、争议和待办事项。历史记录包含群昵称和用户 ID，以帮助模型区分参与者；触发总结的 `/short` 命令不会写入历史。
+
+管理 WebUI 的“AI 群聊总结”卡片可配置 OpenAI-compatible API URL、模型名和 API Key。默认 URL 和模型分别为 `https://api.deepseek.com` 与 `deepseek-chat`。URL 可以填写服务根地址或完整的 `/chat/completions` 地址，配置保存后立即生效。
+
+图片当前会保存为 `[图片]`，若 NapCat 提供图片摘要则一并保存，尚未执行实际 OCR。事件中带有完整节点的合并转发会展开为一条多行消息；若事件只包含转发 ID，则保存为聊天记录占位符。
+
+API Key 会以明文保存在 Git 忽略的 `data/summary/config.json` 中，管理 API 不会将 Key 回传给浏览器。请限制管理 WebUI 和 `data/` 目录的访问权限。
 
 ### JM 漫画 PDF
 

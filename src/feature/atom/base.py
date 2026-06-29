@@ -18,6 +18,9 @@ class Feature(ABC):
     description: str
     default_enabled = True
 
+    async def observe(self, ctx: MessageContext) -> None:
+        """Observe an event even while the feature is disabled."""
+
     @abstractmethod
     async def handle(self, ctx: MessageContext) -> bool:
         """Return True when this feature handled the message."""
