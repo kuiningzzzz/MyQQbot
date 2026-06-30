@@ -10,15 +10,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_HELP_MESSAGES = [
     "/help - 查看当前支持的指令",
     "/set-master 鉴别码 - 将当前 QQ 用户绑定为机器人主人",
-    "/jm 号码 - 下载对应 JM 漫画，导出 PDF 并发送到当前会话",
-    "/jm status - 查看 JM 当前处理队列",
-    "/pixiv 作品ID - 获取对应 Pixiv 图片或图片集",
-    "/pixiv status - 查看 Pixiv 当前处理队列",
+    "/jm 号码 - 下载对应 JM 漫画，导出 PDF 并发送到当前会话\n/jm status - 查看 JM 当前处理队列",
+    "/pixiv 作品ID - 获取对应 Pixiv 图片或图片集\n/pixiv status - 查看 Pixiv 当前处理队列",
     "/short 10至200 - AI 总结当前群聊最近指定数量的消息（暂时不支持图片和语音等多模态信息的解析读取）",
-    "/character - 查看可用的 AI 聊天人设",
-    "/change-character 名字 - 切换当前会话的 AI 人设",
-    "/add-character 名字 触发词 描述 系统提示词正文 - 主人添加 AI 人设",
-    "/del-character 名字 - 主人删除 AI 人设",
+    "/character - 查看可用的 AI 聊天人设\n/change-character 名字 - 切换当前会话的 AI 人设\n/add-character 名字 触发词 描述 系统提示词正文 - 主人添加 AI 人设\n/del-character 名字 - 主人删除 AI 人设",
     "/hello - 回复 hello",
 ]
 
