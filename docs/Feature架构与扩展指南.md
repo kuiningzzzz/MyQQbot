@@ -19,6 +19,7 @@ Feature 架构遵循以下原则：
 main.py
   ├── bot.py
   ├── admin.py
+  ├── MasterService（始终启用的主人认证）
   ├── FeatureManager
   └── catalog.py
         ├── help/plugin.py
@@ -78,7 +79,8 @@ src/feature/
 `main.py` 调用：
 
 ```python
-plugins = create_default_plugins()
+master_service = MasterService(Path("data/master.json"))
+plugins = create_default_plugins(master_service)
 ```
 
 `catalog.py` 创建所有 `FeaturePlugin`。每个插件至少携带一个 Feature，也可以声明管理端扩展和静态资源。
@@ -97,7 +99,8 @@ feature_manager.load_state()
 
 ### 3.2 消息分发
 
-NapCat 事件经过 `QQBot` 解析后形成 `MessageContext`，再调用：
+NapCat 事件经过 `QQBot` 解析后形成 `MessageContext`。始终启用的 `MasterService`
+会先处理主人认证指令，未处理的消息再交给 FeatureManager：
 
 ```python
 await feature_manager.handle_event(ctx)
@@ -224,7 +227,7 @@ __all__ = ["PingFeature"]
 from src.feature.ping.plugin import create_plugin as create_ping_plugin
 
 
-def create_default_plugins() -> list[FeaturePlugin]:
+def create_default_plugins(master_service: MasterService) -> list[FeaturePlugin]:
     return [
         # 其他插件……
         create_ping_plugin(),

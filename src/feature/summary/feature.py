@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 
 from src.feature.atom import Feature, MessageContext
-from src.feature.summary.character import CharacterSelectionStore, CharacterStore
+from src.feature.summary.character import Character, CharacterSelectionStore, CharacterStore
 from src.feature.summary.chat import AiChatService
 from src.feature.summary.client import OpenAICompatibleClient, SummaryApiError
 from src.feature.summary.config import SummaryConfig
@@ -14,6 +14,7 @@ from src.feature.summary.history import (
     format_prompt_history,
     message_from_context,
 )
+from src.master import MasterService
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,9 @@ SYSTEM_PROMPT = """你是群聊记录总结助手。你的职责是准确、客�
 3. 根据昵称和用户ID区分参与者，仅在有助于理解时指出人物观点或行动；
 4. 不虚构记录中没有的信息，不把图片占位描述成已识别的图片内容；
 5. 输出内容时应该输出为：群友们刚刚在聊：（总结的内容）。"""
+
+ADD_CHARACTER_PATTERN = re.compile(r"^/?add-character(?:\s|$)")
+DELETE_CHARACTER_PATTERN = re.compile(r"^/?del-character(?:\s|$)")
 
 
 class SummaryFeature(Feature):
@@ -34,12 +38,14 @@ class SummaryFeature(Feature):
 
     def __init__(
         self,
+        master_service: MasterService,
         config: SummaryConfig | None = None,
         history: GroupHistoryStore | None = None,
         client: OpenAICompatibleClient | None = None,
         characters: CharacterStore | None = None,
         selections: CharacterSelectionStore | None = None,
     ):
+        self.master_service = master_service
         self.config = config or SummaryConfig(Path("data/summary/config.json"))
         self.history = history or GroupHistoryStore(Path("data/summary/history"))
         self.client = client or OpenAICompatibleClient()
@@ -61,7 +67,11 @@ class SummaryFeature(Feature):
         key = conversation_key(ctx)
         if key is None:
             return
-        if ctx.msg.startswith(("/short", "/character", "/change-character")):
+        if (
+            ctx.msg.startswith(("/short", "/character", "/change-character"))
+            or ADD_CHARACTER_PATTERN.match(ctx.msg)
+            or DELETE_CHARACTER_PATTERN.match(ctx.msg)
+        ):
             return
         message = message_from_context(ctx)
         if message is not None:
@@ -86,6 +96,11 @@ class SummaryFeature(Feature):
                 self.history.append_private(ctx.user_id, message)
 
     async def handle(self, ctx: MessageContext) -> bool:
+        if ADD_CHARACTER_PATTERN.match(ctx.msg):
+            return await self._handle_add_character(ctx)
+        if DELETE_CHARACTER_PATTERN.match(ctx.msg):
+            return await self._handle_delete_character(ctx)
+
         settings = self.config.load()
         if ctx.msg.startswith("/short"):
             if not settings.summary_enabled:
@@ -101,6 +116,48 @@ class SummaryFeature(Feature):
                 return True
             return False
         return await self.chat.handle(ctx)
+
+    async def _handle_add_character(self, ctx: MessageContext) -> bool:
+        if not self.master_service.is_master(ctx.user_id):
+            await ctx.bot.reply(ctx, "只有机器人主人可以添加 AI 人设。")
+            return True
+        raw_command = ctx.raw_msg or ctx.msg
+        parts = raw_command.split(maxsplit=4)
+        if len(parts) != 5:
+            await ctx.bot.reply(
+                ctx,
+                "格式错误，请发送：/add-character 名字 触发词 描述 系统提示词正文",
+            )
+            return True
+        _, name, trigger_name, description, prompt = parts
+        try:
+            character = self.characters.save(
+                Character(name, trigger_name, description, prompt)
+            )
+        except ValueError as exc:
+            await ctx.bot.reply(ctx, str(exc))
+            return True
+        await ctx.bot.reply(ctx, f"AI 人设“{character.name}”已添加。")
+        return True
+
+    async def _handle_delete_character(self, ctx: MessageContext) -> bool:
+        if not self.master_service.is_master(ctx.user_id):
+            await ctx.bot.reply(ctx, "只有机器人主人可以删除 AI 人设。")
+            return True
+        raw_command = ctx.raw_msg or ctx.msg
+        parts = raw_command.split(maxsplit=1)
+        if len(parts) != 2 or not parts[1].strip():
+            await ctx.bot.reply(ctx, "格式错误，请发送：/del-character 名字")
+            return True
+        name = parts[1].strip()
+        character = self.characters.get(name)
+        if character is None:
+            await ctx.bot.reply(ctx, f"没有找到 AI 人设“{name}”。")
+            return True
+        self.characters.delete(character.name)
+        self.selections.remove(character.name)
+        await ctx.bot.reply(ctx, f"AI 人设“{character.name}”已删除。")
+        return True
 
     async def _handle_summary(self, ctx: MessageContext) -> bool:
         if ctx.message_type != "group" or ctx.group_id is None:

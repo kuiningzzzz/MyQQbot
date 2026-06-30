@@ -22,13 +22,13 @@ logging.basicConfig(
 install_application_log_handler()
 logger = logging.getLogger(__name__)
 
-plugins = create_default_plugins()
+master_service = MasterService(Path("data/master.json"))
+plugins = create_default_plugins(master_service)
 feature_manager = FeatureManager(
     state_path=Path("data/features.json"),
     features=(plugin.feature for plugin in plugins),
 )
 feature_manager.load_state()
-master_service = MasterService(Path("data/master.json"))
 bot = QQBot(feature_manager, master_service)
 
 

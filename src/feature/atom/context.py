@@ -44,3 +44,4 @@ class MessageContext:
     message_type: str | None
     user_id: int | None
     group_id: int | None
+    raw_msg: str = ""

@@ -17,6 +17,8 @@ DEFAULT_HELP_MESSAGES = [
     "/short 10至200 - AI 总结当前群聊最近指定数量的消息（暂时不支持图片和语音等多模态信息的解析读取）",
     "/character - 查看可用的 AI 聊天人设",
     "/change-character 名字 - 切换当前会话的 AI 人设",
+    "/add-character 名字 触发词 描述 系统提示词正文 - 主人添加 AI 人设",
+    "/del-character 名字 - 主人删除 AI 人设",
     "/hello - 回复 hello",
 ]
 

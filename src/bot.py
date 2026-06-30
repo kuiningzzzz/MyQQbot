@@ -26,7 +26,12 @@ class QQBot:
         self.feature_manager = feature_manager
         self.master_service = master_service
 
-    def extract_text_message(self, event: dict[str, Any]) -> str:
+    def extract_text_message(
+        self,
+        event: dict[str, Any],
+        *,
+        normalize: bool = True,
+    ) -> str:
         """Extract plain text from NapCat's message=array format."""
         message_segments = event.get("message", [])
         if not isinstance(message_segments, list):
@@ -41,7 +46,8 @@ class QQBot:
             data = seg.get("data") or {}
             text_parts.append(str(data.get("text", "")))
 
-        return "".join(text_parts).strip().lower()
+        message = "".join(text_parts).strip()
+        return message.casefold() if normalize else message
 
     async def handle_websocket(self, websocket: WebSocket):
         logger.info("收到来自 %s 的 WebSocket 连接请求", websocket.client.host)
@@ -66,14 +72,16 @@ class QQBot:
         if event.get("post_type") != "message":
             return
 
+        raw_msg = self.extract_text_message(event, normalize=False)
         ctx = MessageContext(
             bot=self,
             event=event,
             websocket=ws,
-            msg=self.extract_text_message(event),
+            msg=raw_msg.casefold(),
             user_id=event.get("user_id"),
             message_type=event.get("message_type"),
             group_id=event.get("group_id"),
+            raw_msg=raw_msg,
         )
 
         logger.info(
