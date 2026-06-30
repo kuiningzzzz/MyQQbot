@@ -12,6 +12,7 @@ from src.bot import QQBot
 from src.feature.catalog import create_default_plugins
 from src.feature.manager import FeatureManager
 from src.logging_service import install_application_log_handler
+from src.master import MasterService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,7 +28,8 @@ feature_manager = FeatureManager(
     features=(plugin.feature for plugin in plugins),
 )
 feature_manager.load_state()
-bot = QQBot(feature_manager)
+master_service = MasterService(Path("data/master.json"))
+bot = QQBot(feature_manager, master_service)
 
 
 @asynccontextmanager
@@ -47,7 +49,7 @@ for plugin in plugins:
             StaticFiles(directory=resource.directory),
             name=resource.name,
         )
-admin_app = create_admin_app(feature_manager, plugins)
+admin_app = create_admin_app(feature_manager, master_service, plugins)
 
 
 @bot_app.websocket("/ws")

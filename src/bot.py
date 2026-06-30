@@ -11,14 +11,20 @@ from src.feature.atom.context import MessageContext
 
 if TYPE_CHECKING:
     from src.feature.manager import FeatureManager
+    from src.master import MasterService
 
 logger = logging.getLogger(__name__)
 
 
 class QQBot:
-    def __init__(self, feature_manager: "FeatureManager"):
+    def __init__(
+        self,
+        feature_manager: "FeatureManager",
+        master_service: "MasterService",
+    ):
         self.connected_clients: set[WebSocket] = set()
         self.feature_manager = feature_manager
+        self.master_service = master_service
 
     def extract_text_message(self, event: dict[str, Any]) -> str:
         """Extract plain text from NapCat's message=array format."""
@@ -77,6 +83,8 @@ class QQBot:
             ctx.msg,
         )
 
+        if await self.master_service.handle(ctx):
+            return
         await self.feature_manager.handle_event(ctx)
 
     async def reply(self, ctx: MessageContext, message: str):

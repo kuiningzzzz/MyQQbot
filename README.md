@@ -42,6 +42,9 @@ src/
       plugin.py
     catalog.py          # 唯一的功能组合入口
     manager.py          # 通用 Feature 注册、开关和消息调度
+  master/               # 始终启用的主人认证基础设施（不属于 Feature）
+    admin.py
+    service.py
 ```
 
 `atom` 中的代码不依赖任何具体业务 Feature。新增功能时，应建立独立的功能目录，
@@ -59,6 +62,7 @@ src/
 
 - `data/features.json`：Feature 开关状态。
 - `data/help.json`：`/help` 返回的聊天记录文本。
+- `data/master.json`：当前绑定的机器人主人 QQ ID。
 - `data/jm/tasks/`：JM 任务目录。每个任务都有独立的下载缓存和生成 PDF。
 - `data/pixiv/tasks/`：Pixiv 任务目录。每个任务都有独立的图片缓存。
 - `data/pixiv/config.json`：Pixiv refresh token 配置，由管理 WebUI 写入。
@@ -83,10 +87,11 @@ python -m src.main
 - 生成文件静态访问：`http://127.0.0.1:8081/files/文件名`
 - Pixiv 图片静态访问：`http://127.0.0.1:8081/pixiv-files/文件名`
 
-管理 WebUI 包含两个页面：
+管理 WebUI 包含三个页面：
 
 - “功能管理”：Feature 卡片默认折叠，卡片头部可直接开关功能，展开后显示功能自己的配置和维护操作。
 - “实时日志”：进入页面时加载当前进程最近的历史日志，并通过 SSE 持续显示新日志。内存中最多保留 1000 条，刷新或重新进入日志页时默认显示最近 500 条。
+- “主人管理”：生成一次性鉴别码、查看当前主人 QQ ID，不受 Feature 开关影响。
 
 Help 的详细设置支持编辑、保存，以及一键恢复并保存代码中的默认帮助文本。
 
@@ -96,7 +101,21 @@ Docker:
 docker compose up --build
 ```
 
-## 当前 Feature
+## 核心能力与当前 Feature
+
+### 主人管理
+
+主人认证是始终启用的应用基础设施，不属于可开关的 Feature。在管理 WebUI 顶部进入
+“主人管理”页面，点击“生成鉴别码”，然后使用准备绑定的
+QQ 账号向机器人发送页面给出的完整指令：
+
+```text
+/set-master 鉴别码
+```
+
+鉴别码由 10 位小写字母和数字组成，10 分钟内有效，只能成功使用一次。每次重新生成都会
+立即废弃之前的鉴别码；绑定成功后，QQ 用户 ID 会保存到 `data/master.json`。需要更换主人时，
+直接在 WebUI 生成新鉴别码并使用新的 QQ 账号绑定即可。鉴别码只保存在进程内存中，服务重启后失效。
 
 ### 帮助菜单
 

@@ -9,6 +9,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HELP_MESSAGES = [
     "/help - 查看当前支持的指令",
+    "/set-master 鉴别码 - 将当前 QQ 用户绑定为机器人主人",
     "/jm 号码 - 下载对应 JM 漫画，导出 PDF 并发送到当前会话",
     "/jm status - 查看 JM 当前处理队列",
     "/pixiv 作品ID - 获取对应 Pixiv 图片或图片集",

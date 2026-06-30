@@ -8,6 +8,8 @@ from pydantic import BaseModel
 from src.feature.atom import FeaturePlugin
 from src.feature.manager import FeatureManager
 from src.logging_service import application_logs
+from src.master import MasterService
+from src.master.admin import MasterAdmin
 
 
 class ToggleRequest(BaseModel):
@@ -16,10 +18,13 @@ class ToggleRequest(BaseModel):
 
 def create_admin_app(
     feature_manager: FeatureManager,
+    master_service: MasterService,
     plugins: Iterable[FeaturePlugin] = (),
 ) -> FastAPI:
     plugins = list(plugins)
     app = FastAPI(title="MyQQbot Admin")
+    master_admin = MasterAdmin(master_service)
+    master_admin.register_routes(app)
 
     for plugin in plugins:
         if plugin.admin is not None:
@@ -37,9 +42,11 @@ def create_admin_app(
             for plugin in plugins
             if plugin.admin is not None
         )
-        return HTML.replace("<!-- FEATURE_PANELS -->", panels).replace(
-            "/* FEATURE_SCRIPTS */",
-            scripts,
+        return (
+            HTML.replace("<!-- MASTER_VIEW -->", master_admin.view_html)
+            .replace("<!-- FEATURE_PANELS -->", panels)
+            .replace("/* FEATURE_SCRIPTS */", scripts)
+            .replace("/* MASTER_SCRIPT */", master_admin.javascript)
         )
 
     @app.get("/api/features")
@@ -169,6 +176,7 @@ HTML = """
     <nav aria-label="管理页面导航">
       <a href="#features" data-view-link="features">功能管理</a>
       <a href="#logs" data-view-link="logs">实时日志</a>
+      <a href="#master" data-view-link="master">主人管理</a>
     </nav>
   </header>
   <main>
@@ -187,12 +195,14 @@ HTML = """
       </div>
       <div id="log-console" class="log-console" role="log" aria-live="polite"></div>
     </section>
+    <!-- MASTER_VIEW -->
     <div id="error" class="error"></div>
   </main>
   <!-- FEATURE_PANELS -->
   <script>
     const featureAdminControls = {};
     /* FEATURE_SCRIPTS */
+    /* MASTER_SCRIPT */
 
     const featuresEl = document.querySelector("#features");
     const errorEl = document.querySelector("#error");
@@ -332,11 +342,14 @@ HTML = """
     }
 
     function showView(name) {
-      const view = name === "logs" ? "logs" : "features";
+      const view = ["logs", "master"].includes(name) ? name : "features";
       document.querySelectorAll(".view").forEach(el => { el.hidden = el.id !== `view-${view}`; });
       document.querySelectorAll("[data-view-link]").forEach(link => link.classList.toggle("active", link.dataset.viewLink === view));
       if (view === "logs") startLogs().catch(error => { errorEl.textContent = error.message; });
-      else stopLogs();
+      else {
+        stopLogs();
+        if (view === "master") initMasterView().catch(error => { errorEl.textContent = error.message; });
+      }
     }
 
     document.querySelector("#clear-logs").addEventListener("click", () => logConsole.replaceChildren());
