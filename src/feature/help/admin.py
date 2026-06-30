@@ -5,7 +5,8 @@ from src.feature.help.feature import HelpFeature
 
 
 class HelpRequest(BaseModel):
-    messages: list[str]
+    public_messages: list[str]
+    master_messages: list[str]
 
 
 class HelpAdmin:
@@ -17,16 +18,23 @@ class HelpAdmin:
 
         @app.get("/api/help")
         async def get_config():
-            return {"messages": feature.messages.copy()}
+            return self._response()
 
         @app.post("/api/help")
         async def save_config(body: HelpRequest):
-            feature.save_messages(body.messages)
-            return {"messages": feature.messages.copy()}
+            feature.save_messages(body.public_messages, body.master_messages)
+            return self._response()
 
         @app.post("/api/help/reset")
         async def reset_config():
-            return {"messages": feature.reset_messages()}
+            feature.reset_messages()
+            return self._response()
+
+    def _response(self) -> dict[str, list[str]]:
+        return {
+            "public_messages": self.feature.public_messages.copy(),
+            "master_messages": self.feature.master_messages.copy(),
+        }
 
     @property
     def panel_html(self) -> str:
@@ -34,7 +42,12 @@ class HelpAdmin:
 <template data-feature-panel="help">
   <div class="feature-extra">
     <p>使用单独一行的 <code>---</code> 分隔聊天记录消息；普通换行会保留在同一条消息中。</p>
-    <textarea spellcheck="false"></textarea>
+    <h3>普通用户帮助文本</h3>
+    <p>非主人发送 <code>/help</code> 时使用。</p>
+    <textarea class="public-help" spellcheck="false"></textarea>
+    <h3>主人帮助文本</h3>
+    <p>当前主人发送 <code>/help</code> 时使用，可包含主人专属指令。</p>
+    <textarea class="master-help" spellcheck="false"></textarea>
     <div>
       <button class="save-help" type="button">保存 /help 文本</button>
       <button class="secondary reset-help" type="button">一键恢复默认文本</button>
@@ -54,25 +67,32 @@ featureAdminControls.help = async row => {
     .split(/^[ \t]*---[ \t]*$/m)
     .map(message => message.trim())
     .filter(Boolean);
-  const textarea = row.querySelector("textarea");
+  const publicTextarea = row.querySelector(".public-help");
+  const masterTextarea = row.querySelector(".master-help");
   const button = row.querySelector(".save-help");
   const resetButton = row.querySelector(".reset-help");
   const status = row.querySelector(".status");
   const response = await fetch("/api/help");
   if (!response.ok) throw new Error("加载 /help 文本失败");
-  textarea.value = formatMessages((await response.json()).messages);
+  const initial = await response.json();
+  publicTextarea.value = formatMessages(initial.public_messages);
+  masterTextarea.value = formatMessages(initial.master_messages);
   button.addEventListener("click", async () => {
     status.textContent = "保存中...";
     button.disabled = true;
-    const messages = parseMessages(textarea.value);
     const result = await fetch("/api/help", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({messages}),
+      body: JSON.stringify({
+        public_messages: parseMessages(publicTextarea.value),
+        master_messages: parseMessages(masterTextarea.value),
+      }),
     });
     button.disabled = false;
     if (!result.ok) { status.textContent = "保存失败"; return; }
-    textarea.value = formatMessages((await result.json()).messages);
+    const data = await result.json();
+    publicTextarea.value = formatMessages(data.public_messages);
+    masterTextarea.value = formatMessages(data.master_messages);
     status.textContent = "已保存";
   });
   resetButton.addEventListener("click", async () => {
@@ -82,7 +102,9 @@ featureAdminControls.help = async row => {
     const result = await fetch("/api/help/reset", {method: "POST"});
     resetButton.disabled = false;
     if (!result.ok) { status.textContent = "恢复失败"; return; }
-    textarea.value = formatMessages((await result.json()).messages);
+    const data = await result.json();
+    publicTextarea.value = formatMessages(data.public_messages);
+    masterTextarea.value = formatMessages(data.master_messages);
     status.textContent = "已恢复并保存默认文本";
   });
 };

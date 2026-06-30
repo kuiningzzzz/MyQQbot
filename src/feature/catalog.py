@@ -10,7 +10,7 @@ from src.master import MasterService
 def create_default_plugins(master_service: MasterService) -> list[FeaturePlugin]:
     """The single composition root where application features are selected."""
     return [
-        create_help_plugin(),
+        create_help_plugin(master_service),
         create_hello_plugin(),
         create_jm_plugin(),
         create_pixiv_plugin(),
