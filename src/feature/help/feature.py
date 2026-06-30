@@ -21,8 +21,8 @@ DEFAULT_PUBLIC_HELP_MESSAGES = [
 DEFAULT_MASTER_HELP_MESSAGES = [
     *DEFAULT_PUBLIC_HELP_MESSAGES[:-2],
     DEFAULT_PUBLIC_HELP_MESSAGES[-2]
-    + "\n/add-character 名字 触发词 描述 系统提示词正文 - 主人添加 AI 人设"
-    + "\n/del-character 名字 - 主人删除 AI 人设",
+    + "\n/add-character 名字 触发词 描述 系统提示词正文 - （主人权限）添加 AI 人设"
+    + "\n/del-character 名字 - （主人权限）删除 AI 人设",
     DEFAULT_PUBLIC_HELP_MESSAGES[-1],
 ]
 
