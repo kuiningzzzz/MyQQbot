@@ -9,6 +9,11 @@ class NewsConfigRequest(BaseModel):
     broadcast_hour: int
     news_count: int
     requirements: str
+    bilibili_count: int = 20
+    douyin_count: int = 20
+    weibo_count: int = 20
+    baidu_count: int = 15
+    steam_count: int = 5
 
 
 class NewsAdmin:
@@ -26,6 +31,11 @@ class NewsAdmin:
                 "broadcast_hour": value.broadcast_hour,
                 "news_count": value.news_count,
                 "requirements": value.requirements,
+                "bilibili_count": value.bilibili_count,
+                "douyin_count": value.douyin_count,
+                "weibo_count": value.weibo_count,
+                "baidu_count": value.baidu_count,
+                "steam_count": value.steam_count,
                 "subscription_count": len(feature.store.targets()),
                 "recent_count": len(feature.store.recent_news(5)),
                 "last_attempt_date": feature.store.last_attempt_date(),
@@ -39,6 +49,11 @@ class NewsAdmin:
                     body.broadcast_hour,
                     body.news_count,
                     body.requirements,
+                    body.bilibili_count,
+                    body.douyin_count,
+                    body.weibo_count,
+                    body.baidu_count,
+                    body.steam_count,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc

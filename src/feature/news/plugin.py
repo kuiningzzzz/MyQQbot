@@ -5,6 +5,7 @@ from src.feature.news.admin import NewsAdmin
 from src.feature.news.config import NewsConfig
 from src.feature.news.feature import NewsFeature
 from src.feature.news.store import NewsStore
+from src.feature.news.sources import DirectNewsService
 from src.feature.summary.client import OpenAICompatibleClient
 from src.feature.summary.config import SummaryConfig
 from src.feature.web_search import WebSearchService
@@ -24,5 +25,6 @@ def create_plugin(
         client,
         web_search,
         master_service,
+        DirectNewsService(Path("data/news/source_cache.json")),
     )
     return FeaturePlugin(feature=feature, admin=NewsAdmin(feature))

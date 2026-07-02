@@ -313,9 +313,18 @@ class SummaryAdmin:
       <label><input class="news-enabled" type="checkbox"> 启用 AI 每日新闻调度</label>
       <label>每天北京时间几点整播报（0-23）<input class="news-hour" type="text" inputmode="numeric" placeholder="8"></label>
       <label>每次播报新闻条数（5-50）<input class="news-count" type="text" inputmode="numeric" placeholder="10"></label>
+      <div class="settings-subsection">
+      <h3>平台候选数量（每项0-30）</h3>
+      <label>Bilibili 热门视频<input class="news-source-bilibili" type="text" inputmode="numeric" placeholder="20"></label>
+      <label>抖音热点<input class="news-source-douyin" type="text" inputmode="numeric" placeholder="20"></label>
+      <label>微博热搜<input class="news-source-weibo" type="text" inputmode="numeric" placeholder="20"></label>
+      <label>百度热榜<input class="news-source-baidu" type="text" inputmode="numeric" placeholder="15"></label>
+      <label>Steam 当前玩家榜<input class="news-source-steam" type="text" inputmode="numeric" placeholder="5"></label>
+      <p>设为0会完全跳过该平台。默认共采集80条候选，再由模型按内容需求筛选。</p>
+      </div>
       <label>希望获取的新闻内容需求<textarea class="news-requirements" spellcheck="false"></textarea></label>
       <p class="news-summary">正在读取新闻播报设置...</p>
-      <p>各群聊或私聊使用 <code>/open-news</code> 订阅、<code>/close-news</code> 退订；机器人主人可发送 <code>/news</code> 随时强制生成一次用于测试。没有订阅时，定时任务不会搜索或调用模型。</p>
+      <p>各群聊或私聊使用 <code>/open-news</code> 订阅、<code>/close-news</code> 退订；机器人主人可发送 <code>/news</code> 随时强制生成一次用于测试。没有订阅时，定时任务不会采集平台或调用模型。</p>
       </div>
     </details>
 
@@ -394,6 +403,7 @@ featureAdminControls.summary = async row => {
   const searchEnabled = q(".web-search-enabled"), searchProvider = q(".web-search-provider"), searchUrl = q(".web-search-url"), searchKey = q(".web-search-key");
   const searchMaxResults = q(".web-search-max-results"), searchTimeout = q(".web-search-timeout"), searchStatus = q(".web-search-status"), clearSearchKey = q(".web-search-clear-key");
   const newsEnabled = q(".news-enabled"), newsHour = q(".news-hour"), newsCount = q(".news-count"), newsRequirements = q(".news-requirements"), newsSummary = q(".news-summary");
+  const newsSources = {bilibili:q(".news-source-bilibili"), douyin:q(".news-source-douyin"), weibo:q(".news-source-weibo"), baidu:q(".news-source-baidu"), steam:q(".news-source-steam")};
   const save = q(".ai-save"), clearKey = q(".ai-clear-key"), saveStatus = q(".ai-save-status");
   const characterSelect = q(".ai-character-select"), characterName = q(".ai-character-name");
   const characterTriggerName = q(".ai-character-trigger-name");
@@ -433,6 +443,7 @@ featureAdminControls.summary = async row => {
     const data = await response.json();
     newsEnabled.checked = data.enabled; newsHour.value = data.broadcast_hour;
     newsCount.value = data.news_count; newsRequirements.value = data.requirements;
+    for (const [name, field] of Object.entries(newsSources)) field.value = data[`${name}_count`];
     newsSummary.textContent = `已订阅会话：${data.subscription_count}；已保存最近播报：${data.recent_count}；最近调度日期：${data.last_attempt_date || "暂无"}`;
   };
   const showCharacter = character => {
@@ -480,6 +491,7 @@ featureAdminControls.summary = async row => {
     const batchSize = Number(memoryBatch.value), retrievalLimit = Number(memoryRetrieval.value), confidenceLimit = Number(memoryConfidence.value);
     const searchResultLimit = Number(searchMaxResults.value), searchTimeoutSeconds = Number(searchTimeout.value);
     const broadcastHour = Number(newsHour.value), configuredNewsCount = Number(newsCount.value);
+    const configuredSourceCounts = Object.fromEntries(Object.entries(newsSources).map(([name, field]) => [name, Number(field.value)]));
     if (!Number.isInteger(minimum) || !Number.isInteger(maximum) || minimum < 10 || maximum > 200 || minimum > maximum) { saveStatus.textContent = "动态窗口需满足 10 ≤ 起始数 ≤ 最大数 ≤ 200"; return; }
     if (!Number.isInteger(contextLimit) || contextLimit < 1024 || contextLimit > 128000) { saveStatus.textContent = "上下文 Token 预算必须是1024至128000的整数"; return; }
     if (!Number.isInteger(outputLimit) || outputLimit < 256 || outputLimit > 65536) { saveStatus.textContent = "最大生成 Token 必须是256至65536的整数"; return; }
@@ -490,12 +502,14 @@ featureAdminControls.summary = async row => {
     if (!Number.isInteger(searchTimeoutSeconds) || searchTimeoutSeconds < 5 || searchTimeoutSeconds > 60) { saveStatus.textContent = "搜索超时必须是5至60秒的整数"; return; }
     if (!Number.isInteger(broadcastHour) || broadcastHour < 0 || broadcastHour > 23) { saveStatus.textContent = "新闻播报小时必须是0至23的整数"; return; }
     if (!Number.isInteger(configuredNewsCount) || configuredNewsCount < 5 || configuredNewsCount > 50) { saveStatus.textContent = "新闻条数必须是5至50的整数"; return; }
+    if (Object.values(configuredSourceCounts).some(value => !Number.isInteger(value) || value < 0 || value > 30)) { saveStatus.textContent = "各平台候选数量必须是0至30的整数"; return; }
+    if (Object.values(configuredSourceCounts).reduce((sum, value) => sum + value, 0) < configuredNewsCount) { saveStatus.textContent = "平台候选总数不能少于最终播报条数"; return; }
     if (!newsRequirements.value.trim()) { saveStatus.textContent = "新闻内容需求不能为空"; return; }
     save.disabled = true; saveStatus.textContent = "保存中...";
     const body = {api_url: apiUrl.value.trim(), model: model.value.trim(), summary_enabled: summaryEnabled.checked, chat_enabled: chatEnabled.checked, chat_window_min: minimum, chat_window_max: maximum, thinking_mode: thinkingMode.value, reasoning_effort: reasoningEffort.value, context_token_limit: contextLimit, max_tokens: outputLimit, memory_enabled: memoryEnabled.checked, memory_auto_learn: memoryAutoLearn.checked, memory_batch_size: batchSize, memory_retrieval_limit: retrievalLimit, memory_min_confidence: confidenceLimit};
     if (apiKey.value.trim()) body.api_key = apiKey.value.trim();
     const searchBody = {enabled:searchEnabled.checked, provider:searchProvider.value, api_url:searchUrl.value.trim(), max_results:searchResultLimit, timeout_seconds:searchTimeoutSeconds};
-    const newsBody = {enabled:newsEnabled.checked, broadcast_hour:broadcastHour, news_count:configuredNewsCount, requirements:newsRequirements.value.trim()};
+    const newsBody = {enabled:newsEnabled.checked, broadcast_hour:broadcastHour, news_count:configuredNewsCount, requirements:newsRequirements.value.trim(), ...Object.fromEntries(Object.entries(configuredSourceCounts).map(([name, value]) => [`${name}_count`, value]))};
     if (searchKey.value.trim()) searchBody.api_key = searchKey.value.trim();
     const [response, searchResponse, newsResponse] = await Promise.all([
       fetch("/api/summary/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}),
