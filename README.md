@@ -272,7 +272,7 @@ Pixiv 队列同时只处理一个任务。队列忙时，新请求会收到“�
 - PIXIV_CLEANUP_DELAY_SECONDS=300
 ```
 
-Pixiv API、OAuth 服务和图片 CDN 都必须能被 bot 容器访问。`docker-compose.yml` 默认将容器流量指向宿主机 v2rayA 的 SOCKS5 代理端口 `20170`：
+Pixiv API、OAuth 服务和图片 CDN 都必须能被 bot 容器访问。`docker-compose.yml` 通过功能专属的 `PIXIV_PROXY`，仅将 Pixiv 请求指向宿主机 v2rayA 的 SOCKS5 代理端口 `20170`：
 
 ```text
 socks5h://host.docker.internal:20170
@@ -283,11 +283,11 @@ socks5h://host.docker.internal:20170
 Linux Docker 通过 `host-gateway` 映射宿主机。请确认 v2rayA 已开启“允许来自局域网的连接/地址共享”，并监听 Docker 网桥能够访问的地址，而不只是宿主机的 `127.0.0.1`。代理地址可以通过宿主机环境变量覆盖；显式设置为空字符串可以关闭：
 
 ```bash
-MYQQBOT_PROXY=socks5h://其他代理地址:端口 docker compose up -d
-MYQQBOT_PROXY= docker compose up -d
+PIXIV_PROXY=socks5h://其他代理地址:端口 docker compose up -d
+PIXIV_PROXY= docker compose up -d
 ```
 
-该代理配置会作用于容器内所有遵循标准代理环境变量的 HTTP 客户端，而不只 Pixiv。
+该代理只注入 PixivPy。AI 客户端明确禁用环境代理继承，因此 DeepSeek 和其他 OpenAI-compatible API 默认使用直连，不再经过 Pixiv 的 SOCKS 链路。
 
 ## 文档
 

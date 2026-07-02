@@ -49,15 +49,17 @@ class OpenAICompatibleClient:
                 payload["reasoning_effort"] = config.reasoning_effort
             else:
                 payload["temperature"] = temperature
-            response = requests.post(
-                url,
-                headers={
-                    "Authorization": f"Bearer {config.api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-                timeout=self.timeout_seconds,
-            )
+            with requests.Session() as session:
+                session.trust_env = False
+                response = session.post(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {config.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=self.timeout_seconds,
+                )
             response.raise_for_status()
             data: Any = response.json()
             choice = data["choices"][0]

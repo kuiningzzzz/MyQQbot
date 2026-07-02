@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import os
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -23,8 +24,17 @@ class PixivWork:
 class PixivClient:
     """Small adapter around PixivPy so the feature queue stays API-agnostic."""
 
-    def __init__(self, refresh_token: str | None = None):
+    def __init__(
+        self,
+        refresh_token: str | None = None,
+        proxy_url: str | None = None,
+    ):
         self.refresh_token = refresh_token
+        self.proxy_url = (
+            proxy_url.strip()
+            if proxy_url is not None
+            else os.getenv("PIXIV_PROXY", "").strip()
+        )
         self._api: Any = None
 
     def set_refresh_token(self, refresh_token: str | None) -> None:
@@ -83,7 +93,14 @@ class PixivClient:
                 "Pixiv 功能依赖 pixivpy3，请先安装 requirements.txt 里的依赖"
             ) from exc
 
-        api = AppPixivAPI()
+        request_options = {}
+        if self.proxy_url:
+            request_options["proxies"] = {
+                "http": self.proxy_url,
+                "https": self.proxy_url,
+            }
+        api = AppPixivAPI(**request_options)
+        api.requests.trust_env = False
         if self.refresh_token:
             api.auth(refresh_token=self.refresh_token)
         self._api = api
