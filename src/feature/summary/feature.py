@@ -115,8 +115,8 @@ class SummaryFeature(Feature):
                 and ctx.user_id is not None
                 and str(self_id) == str(ctx.user_id)
             )
-            if not is_self and not ctx.msg.startswith("/"):
-                self.memory.observe(ctx, message)
+            if not ctx.msg.startswith("/"):
+                self.memory.observe(ctx, message, is_self=is_self)
 
     async def handle(self, ctx: MessageContext) -> bool:
         if self.memory.is_command(ctx):

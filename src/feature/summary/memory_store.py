@@ -368,6 +368,7 @@ class MemoryStore:
         sender: str,
         user_id: int | None,
         content: str,
+        is_self: bool = False,
     ) -> int:
         scope_type, scope_id = self._normalize_scope(scope_type, scope_id)
         with self._lock, closing(self._connect()) as connection:
@@ -375,8 +376,8 @@ class MemoryStore:
                 """
                 INSERT INTO memory_learning_queue (
                     conversation, scope_type, scope_id, timestamp,
-                    sender, user_id, content, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    sender, user_id, content, is_self, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     conversation,
@@ -386,28 +387,46 @@ class MemoryStore:
                     sender,
                     user_id,
                     content,
+                    int(is_self),
                     _utc_now(),
                 ),
             )
             connection.commit()
             return int(cursor.lastrowid)
 
-    def learning_queue_size(self, conversation: str) -> int:
+    def learning_queue_size(
+        self, conversation: str, *, human_only: bool = False
+    ) -> int:
+        condition = " AND is_self = 0" if human_only else ""
         with self._lock, closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT COUNT(*) count FROM memory_learning_queue WHERE conversation = ?",
+                "SELECT COUNT(*) count FROM memory_learning_queue "
+                f"WHERE conversation = ?{condition}",
                 (conversation,),
             ).fetchone()
             return int(row["count"])
 
-    def learning_batch(self, conversation: str, limit: int) -> list[dict[str, Any]]:
+    def learning_batch(
+        self, conversation: str, human_limit: int
+    ) -> list[dict[str, Any]]:
+        """Return complete dialogue through the Nth queued human message."""
         with self._lock, closing(self._connect()) as connection:
+            cutoff = connection.execute(
+                """
+                SELECT id FROM memory_learning_queue
+                WHERE conversation = ? AND is_self = 0
+                ORDER BY id LIMIT 1 OFFSET ?
+                """,
+                (conversation, max(0, human_limit - 1)),
+            ).fetchone()
+            if cutoff is None:
+                return []
             rows = connection.execute(
                 """
                 SELECT * FROM memory_learning_queue
-                WHERE conversation = ? ORDER BY id LIMIT ?
+                WHERE conversation = ? AND id <= ? ORDER BY id
                 """,
-                (conversation, limit),
+                (conversation, int(cutoff["id"])),
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -471,12 +490,31 @@ class MemoryStore:
                     sender TEXT NOT NULL,
                     user_id INTEGER,
                     content TEXT NOT NULL,
+                    is_self INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_memory_learning_conversation
                     ON memory_learning_queue(conversation, id);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in connection.execute(
+                    "PRAGMA table_info(memory_learning_queue)"
+                ).fetchall()
+            }
+            if "is_self" not in columns:
+                connection.execute(
+                    "ALTER TABLE memory_learning_queue "
+                    "ADD COLUMN is_self INTEGER NOT NULL DEFAULT 0"
+                )
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_memory_learning_human
+                ON memory_learning_queue(conversation, is_self, id)
+                """
+            )
+            connection.commit()
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=10)

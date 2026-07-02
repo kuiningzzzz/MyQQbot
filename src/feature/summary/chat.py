@@ -118,15 +118,14 @@ class AiChatService:
                 if revision != self._revisions.get(key):
                     break
                 await ctx.bot.reply(ctx, message)
-                self.history.append_conversation(
-                    key,
-                    GroupMessage(
-                        timestamp=int(datetime.now().timestamp()),
-                        sender=character.name,
-                        user_id=_self_id(ctx),
-                        content=message,
-                    ),
+                sent_message = GroupMessage(
+                    timestamp=int(datetime.now().timestamp()),
+                    sender=character.name,
+                    user_id=_self_id(ctx),
+                    content=message,
                 )
+                self.history.append_conversation(key, sent_message)
+                self.memory.observe(ctx, sent_message, is_self=True)
                 if index < len(decision.messages) - 1:
                     try:
                         await asyncio.wait_for(update.wait(), timeout=1)
