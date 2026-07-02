@@ -6,13 +6,14 @@ import json
 import logging
 import re
 from dataclasses import replace
-from typing import Any
+from typing import Any, Callable
 
 from src.feature.atom import MessageContext
 from src.feature.summary.client import OpenAICompatibleClient, SummaryApiError
 from src.feature.summary.config import SummaryConfig
 from src.feature.summary.history import GroupMessage, conversation_key, estimate_tokens
 from src.feature.summary.memory_store import (
+    LEGACY_CHARACTER_NAME,
     MEMORY_KINDS,
     MemoryCandidate,
     MemoryRecord,
@@ -51,16 +52,41 @@ class MemoryService:
         config: SummaryConfig,
         client: OpenAICompatibleClient,
         master_service: MasterService,
+        character_resolver: Callable[[MessageContext], str] | None = None,
     ):
         self.store = store
         self.config = config
         self.client = client
         self.master_service = master_service
-        self._tasks: dict[str, asyncio.Task[None]] = {}
-        self._retry_blocked: set[str] = set()
+        self.character_resolver = character_resolver or (
+            lambda _ctx: LEGACY_CHARACTER_NAME
+        )
+        self._tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+        self._retry_blocked: set[tuple[str, str]] = set()
 
     def is_command(self, ctx: MessageContext) -> bool:
         return bool(MEMORY_COMMAND_PATTERN.match(ctx.msg))
+
+    def clear_all(self) -> int:
+        for task in self._tasks.values():
+            if not task.done():
+                task.cancel()
+        self._tasks.clear()
+        self._retry_blocked.clear()
+        return self.store.clear_all()
+
+    def rename_character(self, old_name: str, new_name: str) -> None:
+        for identity, task in list(self._tasks.items()):
+            if identity[1].casefold() == old_name.casefold():
+                if not task.done():
+                    task.cancel()
+                self._tasks.pop(identity, None)
+        self._retry_blocked = {
+            identity
+            for identity in self._retry_blocked
+            if identity[1].casefold() != old_name.casefold()
+        }
+        self.store.rename_character(old_name, new_name)
 
     async def handle_command(self, ctx: MessageContext) -> bool:
         if not self.is_command(ctx):
@@ -85,6 +111,7 @@ class MemoryService:
         message: GroupMessage,
         *,
         is_self: bool = False,
+        character_name: str | None = None,
     ) -> None:
         settings = self.config.load()
         if not settings.memory_auto_learn:
@@ -95,6 +122,8 @@ class MemoryService:
         scope = _scope_for_context(ctx)
         if scope is None:
             return
+        character_name = character_name or self.character_resolver(ctx)
+        task_key = (key, character_name)
         self.store.enqueue_learning_message(
             key,
             scope[0],
@@ -104,26 +133,31 @@ class MemoryService:
             message.user_id,
             message.content,
             is_self,
+            character_name,
         )
         if is_self:
             return
-        self._retry_blocked.discard(key)
+        self._retry_blocked.discard(task_key)
         if (
-            self.store.learning_queue_size(key, human_only=True)
+            self.store.learning_queue_size(
+                key, character_name, human_only=True
+            )
             < settings.memory_batch_size
         ):
             return
-        task = self._tasks.get(key)
+        task = self._tasks.get(task_key)
         if task is None or task.done():
-            task = asyncio.create_task(self._extract_loop(key))
-            self._tasks[key] = task
+            task = asyncio.create_task(self._extract_loop(key, character_name))
+            self._tasks[task_key] = task
             task.add_done_callback(
-                lambda finished, conversation=key: self._task_done(
-                    conversation, finished
+                lambda finished, identity=task_key: self._task_done(
+                    identity, finished
                 )
             )
 
-    def recall(self, ctx: MessageContext, query: str) -> str:
+    def recall(
+        self, ctx: MessageContext, query: str, character_name: str | None = None
+    ) -> str:
         settings = self.config.load()
         if not settings.memory_enabled:
             return ""
@@ -131,6 +165,7 @@ class MemoryService:
         if scope is None:
             return ""
         records = self.store.retrieve(
+            character_name or self.character_resolver(ctx),
             scope[0],
             scope[1],
             query,
@@ -157,24 +192,29 @@ class MemoryService:
             used += cost
         return "\n".join(lines)
 
-    async def _extract_loop(self, key: str) -> None:
+    async def _extract_loop(self, key: str, character_name: str) -> None:
         while True:
             settings = self.config.load()
             if (
                 not settings.memory_auto_learn
-                or self.store.learning_queue_size(key, human_only=True)
+                or self.store.learning_queue_size(
+                    key, character_name, human_only=True
+                )
                 < settings.memory_batch_size
             ):
                 return
-            rows = self.store.learning_batch(key, settings.memory_batch_size)
-            if not await self._extract_batch(key, rows):
-                self._retry_blocked.add(key)
+            rows = self.store.learning_batch(
+                key, settings.memory_batch_size, character_name
+            )
+            if not await self._extract_batch(key, character_name, rows):
+                self._retry_blocked.add((key, character_name))
                 return
             self.store.complete_learning_batch([int(row["id"]) for row in rows])
 
     async def _extract_batch(
         self,
         key: str,
+        character_name: str,
         rows: list[dict[str, Any]],
     ) -> bool:
         if not rows:
@@ -199,6 +239,7 @@ class MemoryService:
             if not bool(row.get("is_self")) and message.user_id is not None
         }
         existing = self.store.retrieve(
+            character_name,
             scope[0],
             scope[1],
             transcript,
@@ -258,6 +299,7 @@ class MemoryService:
                     scope[1],
                     key,
                     excerpt,
+                    character_name=character_name,
                 )
                 accepted += 1
             except (ValueError, OSError):
@@ -270,14 +312,17 @@ class MemoryService:
         )
         return True
 
-    def _task_done(self, key: str, task: asyncio.Task[None]) -> None:
-        if self._tasks.get(key) is task:
-            self._tasks.pop(key, None)
+    def _task_done(
+        self, identity: tuple[str, str], task: asyncio.Task[None]
+    ) -> None:
+        key, character_name = identity
+        if self._tasks.get(identity) is task:
+            self._tasks.pop(identity, None)
         if task.cancelled():
             return
         error = task.exception()
         if error is not None:
-            self._retry_blocked.add(key)
+            self._retry_blocked.add(identity)
             logger.error(
                 "会话 %s 的长期记忆后台任务异常",
                 key,
@@ -286,16 +331,18 @@ class MemoryService:
         settings = self.config.load()
         if (
             settings.memory_auto_learn
-            and self.store.learning_queue_size(key, human_only=True)
+            and self.store.learning_queue_size(
+                key, character_name, human_only=True
+            )
             >= settings.memory_batch_size
-            and key not in self._tasks
-            and key not in self._retry_blocked
+            and identity not in self._tasks
+            and identity not in self._retry_blocked
         ):
-            next_task = asyncio.create_task(self._extract_loop(key))
-            self._tasks[key] = next_task
+            next_task = asyncio.create_task(self._extract_loop(key, character_name))
+            self._tasks[identity] = next_task
             next_task.add_done_callback(
-                lambda finished, conversation=key: self._task_done(
-                    conversation, finished
+                lambda finished, task_identity=identity: self._task_done(
+                    task_identity, finished
                 )
             )
 
@@ -324,6 +371,7 @@ class MemoryService:
             conversation_key(ctx) or "manual",
             content,
             explicit=True,
+            character_name=self.character_resolver(ctx),
         )
         await ctx.bot.reply(ctx, f"已记住，记忆 ID：{record.id}")
 
@@ -333,7 +381,11 @@ class MemoryService:
             return
         if argument.isdigit():
             try:
-                record = self.store.forget(int(argument))
+                memory_id = int(argument)
+                visible = {record.id for record in self._visible_records(ctx, "")}
+                if memory_id not in visible:
+                    raise KeyError(memory_id)
+                record = self.store.forget(memory_id)
             except KeyError:
                 await ctx.bot.reply(ctx, "没有找到这个记忆 ID。")
                 return
@@ -359,7 +411,7 @@ class MemoryService:
             return
         await ctx.bot.send_forward_msg(
             ctx,
-            ["当前范围的长期记忆"]
+            [f"当前人设“{self.character_resolver(ctx)}”在当前范围的长期记忆"]
             + [_format_record(record) for record in records[:30]],
         )
 
@@ -370,8 +422,11 @@ class MemoryService:
         return [
             record
             for record in self.store.list(query=query, status="active", limit=100)
-            if record.scope_type == "global"
-            or (record.scope_type == scope[0] and record.scope_id == scope[1])
+            if record.character_name == self.character_resolver(ctx)
+            and (
+                record.scope_type == "global"
+                or (record.scope_type == scope[0] and record.scope_id == scope[1])
+            )
         ]
 
 
@@ -432,6 +487,7 @@ def _format_record(record: MemoryRecord) -> str:
     return "\n".join(
         [
             f"ID：{record.id}",
+            f"人设：{record.character_name}",
             f"类型：{record.kind}",
             f"主体：{subject}",
             f"范围：{record.scope_type}:{record.scope_id or '*'}",

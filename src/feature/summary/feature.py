@@ -68,6 +68,7 @@ class SummaryFeature(Feature):
             self.config,
             self.client,
             self.master_service,
+            self._character_for_context,
         )
         self.web_search = web_search or WebSearchService(
             WebSearchConfig(Path("data/web_search/config.json"))
@@ -122,7 +123,12 @@ class SummaryFeature(Feature):
                 and str(self_id) == str(ctx.user_id)
             )
             if not ctx.msg.startswith("/"):
-                self.memory.observe(ctx, message, is_self=is_self)
+                self.memory.observe(
+                    ctx,
+                    message,
+                    is_self=is_self,
+                    character_name=self._character_for_context(ctx),
+                )
 
     async def handle(self, ctx: MessageContext) -> bool:
         if self.memory.is_command(ctx):
@@ -147,6 +153,12 @@ class SummaryFeature(Feature):
                 return True
             return False
         return await self.chat.handle(ctx)
+
+    def _character_for_context(self, ctx: MessageContext) -> str:
+        key = conversation_key(ctx)
+        if key is None:
+            return self.characters.list()[0].name
+        return self.selections.get(key, self.characters).name
 
     async def _handle_add_character(self, ctx: MessageContext) -> bool:
         if not self.master_service.is_master(ctx.user_id):

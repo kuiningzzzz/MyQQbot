@@ -36,6 +36,7 @@ class CharacterRequest(BaseModel):
 
 
 class MemoryRequest(BaseModel):
+    character_name: str
     kind: str
     content: str
     normalized_key: str
@@ -158,6 +159,9 @@ class SummaryAdmin:
                 )
                 if body.original_name and body.original_name.casefold() != character.name.casefold():
                     feature.selections.rename(body.original_name, character.name)
+                    feature.memory.rename_character(
+                        body.original_name, character.name
+                    )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
             return asdict(character)
@@ -180,6 +184,10 @@ class SummaryAdmin:
         async def memory_sources(memory_id: int):
             return {"sources": feature.memory_store.sources(memory_id)}
 
+        @app.delete("/api/summary/memories")
+        async def clear_memories():
+            return {"deleted": feature.memory.clear_all()}
+
         @app.post("/api/summary/memories")
         async def create_memory(body: MemoryRequest):
             try:
@@ -197,6 +205,7 @@ class SummaryAdmin:
                     "webui",
                     body.content,
                     explicit=True,
+                    character_name=body.character_name,
                 )
                 if body.status != "active" or body.expires_at:
                     record = feature.memory_store.update(
@@ -324,8 +333,10 @@ class SummaryAdmin:
     <div class="settings-subsection ai-memory-editor">
       <h3>记忆管理</h3>
       <p class="ai-memory-stats">正在读取记忆统计...</p>
+      <button class="danger ai-memory-clear-all" type="button">一键清空全部记忆</button>
       <input class="ai-memory-search" type="text" placeholder="搜索内容、语义键或来源">
       <select class="ai-memory-list" size="8"></select>
+      <label>所属人设<input class="ai-memory-character" type="text" placeholder="普通QQ群群友"></label>
       <label>类型<select class="ai-memory-kind"><option value="user_fact">用户信息</option><option value="topic">历史话题</option><option value="instruction">命令要求</option><option value="reminder">待办记忆</option><option value="group_fact">群体事实</option><option value="explicit">显式记忆</option></select></label>
       <label>语义键<input class="ai-memory-key" type="text" placeholder="例如 favorite_food"></label>
       <label>主体 QQ ID（可空）<input class="ai-memory-subject" type="text" inputmode="numeric"></label>
@@ -443,11 +454,11 @@ featureAdminControls.summary = async row => {
     showCharacter(characters.find(item => item.name === selectedName) || characters[0] || null);
   };
   const memoryList = q(".ai-memory-list"), memorySearch = q(".ai-memory-search");
-  const memoryFields = {kind:q(".ai-memory-kind"), normalized_key:q(".ai-memory-key"), subject_user_id:q(".ai-memory-subject"), scope_type:q(".ai-memory-scope"), scope_id:q(".ai-memory-scope-id"), status:q(".ai-memory-status"), confidence:q(".ai-memory-record-confidence"), importance:q(".ai-memory-importance"), expires_at:q(".ai-memory-expires"), content:q(".ai-memory-content")};
+  const memoryFields = {character_name:q(".ai-memory-character"), kind:q(".ai-memory-kind"), normalized_key:q(".ai-memory-key"), subject_user_id:q(".ai-memory-subject"), scope_type:q(".ai-memory-scope"), scope_id:q(".ai-memory-scope-id"), status:q(".ai-memory-status"), confidence:q(".ai-memory-record-confidence"), importance:q(".ai-memory-importance"), expires_at:q(".ai-memory-expires"), content:q(".ai-memory-content")};
   const showMemory = memory => {
     selectedMemoryId = memory?.id || null;
     for (const [key, field] of Object.entries(memoryFields)) field.value = memory?.[key] ?? "";
-    if (!memory) { memoryFields.kind.value="explicit"; memoryFields.scope_type.value="global"; memoryFields.status.value="active"; memoryFields.confidence.value="1"; memoryFields.importance.value="1"; }
+    if (!memory) { memoryFields.character_name.value=characters[0]?.name||"普通QQ群群友"; memoryFields.kind.value="explicit"; memoryFields.scope_type.value="global"; memoryFields.status.value="active"; memoryFields.confidence.value="1"; memoryFields.importance.value="1"; }
     q(".ai-memory-delete").disabled = !memory;
     q(".ai-memory-sources").disabled = !memory;
   };
@@ -456,7 +467,7 @@ featureAdminControls.summary = async row => {
     if (!response.ok) throw new Error("加载长期记忆失败");
     const data = await response.json(); memories = data.memories;
     q(".ai-memory-stats").textContent = `总计 ${data.stats.total}；有效 ${data.stats.active}；冲突 ${data.stats.conflicted}；遗忘 ${data.stats.forgotten}；过期 ${data.stats.expired}`;
-    memoryList.replaceChildren(...memories.map(memory => { const option=document.createElement("option"); option.value=memory.id; option.textContent=`#${memory.id} [${memory.status}/${memory.kind}] ${memory.content}`; return option; }));
+    memoryList.replaceChildren(...memories.map(memory => { const option=document.createElement("option"); option.value=memory.id; option.textContent=`#${memory.id} [${memory.character_name}/${memory.status}/${memory.kind}] ${memory.content}`; return option; }));
     const selected = memories.find(item => item.id === selectedId) || null; showMemory(selected); if (selected) memoryList.value=String(selected.id);
   };
   await Promise.all([loadConfig(), loadSearchConfig(), loadNewsConfig(), loadCharacters(), loadMemories()]);
@@ -521,10 +532,16 @@ featureAdminControls.summary = async row => {
   memoryList.addEventListener("change", () => showMemory(memories.find(item => item.id === Number(memoryList.value))));
   memorySearch.addEventListener("change", () => loadMemories().catch(error => { q(".ai-memory-record-status").textContent=error.message; }));
   q(".ai-memory-new").addEventListener("click", () => showMemory(null));
+  q(".ai-memory-clear-all").addEventListener("click", async () => {
+    if (!confirm("确定要永久清空全部人设的长期记忆和待学习队列吗？此操作不可撤销。")) return;
+    const button=q(".ai-memory-clear-all"); button.disabled=true;
+    const response=await fetch("/api/summary/memories",{method:"DELETE"}); const data=await response.json().catch(()=>({}));
+    q(".ai-memory-record-status").textContent=response.ok?`已清空 ${data.deleted||0} 条记忆`:(data.detail||"清空失败"); button.disabled=false; if(response.ok)await loadMemories();
+  });
   q(".ai-memory-save").addEventListener("click", async () => {
     const body = Object.fromEntries(Object.entries(memoryFields).map(([key,field]) => [key,field.value.trim()]));
     body.subject_user_id = body.subject_user_id ? Number(body.subject_user_id) : null; body.scope_id = body.scope_id || null; body.expires_at = body.expires_at || null; body.confidence=Number(body.confidence); body.importance=Number(body.importance);
-    if (!body.content || !body.normalized_key || !Number.isFinite(body.confidence) || !Number.isFinite(body.importance)) { q(".ai-memory-record-status").textContent="请填写内容、语义键、置信度和重要度"; return; }
+    if (!body.character_name || !body.content || !body.normalized_key || !Number.isFinite(body.confidence) || !Number.isFinite(body.importance)) { q(".ai-memory-record-status").textContent="请填写所属人设、内容、语义键、置信度和重要度"; return; }
     const url = selectedMemoryId ? `/api/summary/memories/${selectedMemoryId}` : "/api/summary/memories";
     const response = await fetch(url,{method:selectedMemoryId?"PUT":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); const data=await response.json().catch(()=>({}));
     q(".ai-memory-record-status").textContent=response.ok?"记忆已保存":(data.detail||"保存失败"); if(response.ok) await loadMemories(data.id);

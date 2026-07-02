@@ -128,7 +128,12 @@ class AiChatService:
                     content=message,
                 )
                 self.history.append_conversation(key, sent_message)
-                self.memory.observe(ctx, sent_message, is_self=True)
+                self.memory.observe(
+                    ctx,
+                    sent_message,
+                    is_self=True,
+                    character_name=character.name,
+                )
                 if index < len(decision.messages) - 1:
                     try:
                         await asyncio.wait_for(update.wait(), timeout=1)
@@ -235,6 +240,7 @@ class AiChatService:
         memory_context = self.memory.recall(
             ctx,
             ctx.raw_msg or ctx.msg,
+            character.name,
         )
         turn_mode = (
             "本轮是直接呼叫：reply 必须为 true。"

@@ -23,6 +23,7 @@ MEMORY_KINDS = {
 }
 MEMORY_STATUSES = {"active", "conflicted", "forgotten", "expired"}
 SCOPE_TYPES = {"global", "group", "private"}
+LEGACY_CHARACTER_NAME = "普通QQ群群友"
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,7 @@ class MemoryCandidate:
 @dataclass(frozen=True)
 class MemoryRecord:
     id: int
+    character_name: str
     kind: str
     content: str
     normalized_key: str
@@ -77,9 +79,11 @@ class MemoryStore:
         source_excerpt: str,
         *,
         explicit: bool = False,
+        character_name: str = LEGACY_CHARACTER_NAME,
     ) -> MemoryRecord:
         value = self._normalize_candidate(candidate)
         scope_type, scope_id = self._normalize_scope(scope_type, scope_id)
+        character_name = self._normalize_character_name(character_name)
         now = _utc_now()
         expires_at = (
             (datetime.now(UTC) + timedelta(days=value.expires_days)).isoformat()
@@ -90,12 +94,13 @@ class MemoryStore:
             existing = connection.execute(
                 """
                 SELECT * FROM memories
-                WHERE normalized_key = ? AND kind = ?
+                WHERE character_name = ? AND normalized_key = ? AND kind = ?
                   AND subject_user_id IS ? AND scope_type = ? AND scope_id IS ?
                   AND status IN ('active', 'conflicted')
                 ORDER BY id DESC LIMIT 1
                 """,
                 (
+                    character_name,
                     value.normalized_key,
                     value.kind,
                     value.subject_user_id,
@@ -139,13 +144,14 @@ class MemoryStore:
                 cursor = connection.execute(
                     """
                     INSERT INTO memories (
-                        kind, content, normalized_key, subject_user_id,
+                        character_name, kind, content, normalized_key, subject_user_id,
                         scope_type, scope_id, source_conversation, source_excerpt,
                         confidence, importance, status, explicit,
                         created_at, updated_at, expires_at, supersedes_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
                     """,
                     (
+                        character_name,
                         value.kind,
                         value.content,
                         value.normalized_key,
@@ -176,6 +182,7 @@ class MemoryStore:
 
     def retrieve(
         self,
+        character_name: str,
         scope_type: str,
         scope_id: str | None,
         query: str,
@@ -183,18 +190,19 @@ class MemoryStore:
         limit: int,
         min_confidence: float,
     ) -> list[MemoryRecord]:
+        character_name = self._normalize_character_name(character_name)
         scope_type, scope_id = self._normalize_scope(scope_type, scope_id)
         self.expire_due()
         with self._lock, closing(self._connect()) as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM memories
-                WHERE status = 'active' AND confidence >= ?
+                WHERE character_name = ? AND status = 'active' AND confidence >= ?
                   AND (scope_type = 'global' OR (scope_type = ? AND scope_id IS ?))
                 ORDER BY importance DESC, updated_at DESC
                 LIMIT 5000
                 """,
-                (min_confidence, scope_type, scope_id),
+                (character_name, min_confidence, scope_type, scope_id),
             ).fetchall()
             query_terms = _terms(query)
             now = datetime.now(UTC)
@@ -247,9 +255,12 @@ class MemoryStore:
             clauses.append("status = ?")
             params.append(status)
         if query.strip():
-            clauses.append("(content LIKE ? OR normalized_key LIKE ? OR source_excerpt LIKE ?)")
+            clauses.append(
+                "(character_name LIKE ? OR content LIKE ? OR normalized_key LIKE ? "
+                "OR source_excerpt LIKE ?)"
+            )
             pattern = f"%{query.strip()}%"
-            params.extend([pattern, pattern, pattern])
+            params.extend([pattern, pattern, pattern, pattern])
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(max(1, min(500, limit)))
         with self._lock, closing(self._connect()) as connection:
@@ -282,6 +293,7 @@ class MemoryStore:
 
     def update(self, memory_id: int, **changes: Any) -> MemoryRecord:
         allowed = {
+            "character_name",
             "kind",
             "content",
             "normalized_key",
@@ -300,6 +312,10 @@ class MemoryStore:
             raise ValueError("invalid memory kind")
         if "status" in values and values["status"] not in MEMORY_STATUSES:
             raise ValueError("invalid memory status")
+        if "character_name" in values:
+            values["character_name"] = self._normalize_character_name(
+                str(values["character_name"])
+            )
         if "scope_type" in values:
             scope_type, scope_id = self._normalize_scope(
                 str(values["scope_type"]), values.get("scope_id")
@@ -359,6 +375,32 @@ class MemoryStore:
             result["total"] = sum(result.values())
             return result
 
+    def clear_all(self) -> int:
+        with self._lock, closing(self._connect()) as connection:
+            row = connection.execute("SELECT COUNT(*) count FROM memories").fetchone()
+            count = int(row["count"])
+            connection.execute("DELETE FROM memory_sources")
+            connection.execute("DELETE FROM memories")
+            connection.execute("DELETE FROM memory_learning_queue")
+            connection.commit()
+            return count
+
+    def rename_character(self, old_name: str, new_name: str) -> None:
+        old_name = self._normalize_character_name(old_name)
+        new_name = self._normalize_character_name(new_name)
+        with self._lock, closing(self._connect()) as connection:
+            connection.execute(
+                "UPDATE memories SET character_name = ?, updated_at = ? "
+                "WHERE character_name = ?",
+                (new_name, _utc_now(), old_name),
+            )
+            connection.execute(
+                "UPDATE memory_learning_queue SET character_name = ? "
+                "WHERE character_name = ?",
+                (new_name, old_name),
+            )
+            connection.commit()
+
     def enqueue_learning_message(
         self,
         conversation: str,
@@ -369,18 +411,21 @@ class MemoryStore:
         user_id: int | None,
         content: str,
         is_self: bool = False,
+        character_name: str = LEGACY_CHARACTER_NAME,
     ) -> int:
         scope_type, scope_id = self._normalize_scope(scope_type, scope_id)
+        character_name = self._normalize_character_name(character_name)
         with self._lock, closing(self._connect()) as connection:
             cursor = connection.execute(
                 """
                 INSERT INTO memory_learning_queue (
-                    conversation, scope_type, scope_id, timestamp,
+                    conversation, character_name, scope_type, scope_id, timestamp,
                     sender, user_id, content, is_self, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     conversation,
+                    character_name,
                     scope_type,
                     scope_id,
                     timestamp,
@@ -395,38 +440,47 @@ class MemoryStore:
             return int(cursor.lastrowid)
 
     def learning_queue_size(
-        self, conversation: str, *, human_only: bool = False
+        self,
+        conversation: str,
+        character_name: str = LEGACY_CHARACTER_NAME,
+        *,
+        human_only: bool = False,
     ) -> int:
+        character_name = self._normalize_character_name(character_name)
         condition = " AND is_self = 0" if human_only else ""
         with self._lock, closing(self._connect()) as connection:
             row = connection.execute(
                 "SELECT COUNT(*) count FROM memory_learning_queue "
-                f"WHERE conversation = ?{condition}",
-                (conversation,),
+                f"WHERE conversation = ? AND character_name = ?{condition}",
+                (conversation, character_name),
             ).fetchone()
             return int(row["count"])
 
     def learning_batch(
-        self, conversation: str, human_limit: int
+        self,
+        conversation: str,
+        human_limit: int,
+        character_name: str = LEGACY_CHARACTER_NAME,
     ) -> list[dict[str, Any]]:
         """Return complete dialogue through the Nth queued human message."""
+        character_name = self._normalize_character_name(character_name)
         with self._lock, closing(self._connect()) as connection:
             cutoff = connection.execute(
                 """
                 SELECT id FROM memory_learning_queue
-                WHERE conversation = ? AND is_self = 0
+                WHERE conversation = ? AND character_name = ? AND is_self = 0
                 ORDER BY id LIMIT 1 OFFSET ?
                 """,
-                (conversation, max(0, human_limit - 1)),
+                (conversation, character_name, max(0, human_limit - 1)),
             ).fetchone()
             if cutoff is None:
                 return []
             rows = connection.execute(
                 """
                 SELECT * FROM memory_learning_queue
-                WHERE conversation = ? AND id <= ? ORDER BY id
+                WHERE conversation = ? AND character_name = ? AND id <= ? ORDER BY id
                 """,
-                (conversation, int(cutoff["id"])),
+                (conversation, character_name, int(cutoff["id"])),
             ).fetchall()
             return [dict(row) for row in rows]
 
@@ -449,6 +503,7 @@ class MemoryStore:
                 PRAGMA journal_mode = WAL;
                 CREATE TABLE IF NOT EXISTS memories (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    character_name TEXT NOT NULL DEFAULT '普通QQ群群友',
                     kind TEXT NOT NULL,
                     content TEXT NOT NULL,
                     normalized_key TEXT NOT NULL,
@@ -484,6 +539,7 @@ class MemoryStore:
                 CREATE TABLE IF NOT EXISTS memory_learning_queue (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     conversation TEXT NOT NULL,
+                    character_name TEXT NOT NULL DEFAULT '普通QQ群群友',
                     scope_type TEXT NOT NULL,
                     scope_id TEXT,
                     timestamp INTEGER NOT NULL,
@@ -497,6 +553,15 @@ class MemoryStore:
                     ON memory_learning_queue(conversation, id);
                 """
             )
+            memory_columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(memories)").fetchall()
+            }
+            if "character_name" not in memory_columns:
+                connection.execute(
+                    "ALTER TABLE memories ADD COLUMN character_name TEXT NOT NULL "
+                    "DEFAULT '普通QQ群群友'"
+                )
             columns = {
                 str(row["name"])
                 for row in connection.execute(
@@ -508,10 +573,19 @@ class MemoryStore:
                     "ALTER TABLE memory_learning_queue "
                     "ADD COLUMN is_self INTEGER NOT NULL DEFAULT 0"
                 )
+            if "character_name" not in columns:
+                connection.execute(
+                    "ALTER TABLE memory_learning_queue ADD COLUMN character_name TEXT "
+                    "NOT NULL DEFAULT '普通QQ群群友'"
+                )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_character_scope "
+                "ON memories(character_name, scope_type, scope_id, status)"
+            )
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_memory_learning_human
-                ON memory_learning_queue(conversation, is_self, id)
+                ON memory_learning_queue(conversation, character_name, is_self, id)
                 """
             )
             connection.commit()
@@ -532,6 +606,13 @@ class MemoryStore:
         if not normalized_id:
             raise ValueError("non-global memory requires scope_id")
         return scope_type, normalized_id
+
+    @staticmethod
+    def _normalize_character_name(value: str) -> str:
+        normalized = " ".join(value.split()).strip()
+        if not normalized:
+            raise ValueError("memory character name cannot be empty")
+        return normalized[:100]
 
     @staticmethod
     def _normalize_candidate(candidate: MemoryCandidate) -> MemoryCandidate:
@@ -559,6 +640,7 @@ class MemoryStore:
     def _row_to_record(row: sqlite3.Row) -> MemoryRecord:
         return MemoryRecord(
             id=int(row["id"]),
+            character_name=str(row["character_name"]),
             kind=str(row["kind"]),
             content=str(row["content"]),
             normalized_key=str(row["normalized_key"]),
