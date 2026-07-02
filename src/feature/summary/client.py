@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import json
 from typing import Any
 
 import requests
@@ -41,7 +42,7 @@ class OpenAICompatibleClient:
                 "model": config.model,
                 "messages": messages,
                 "max_tokens": max_tokens or config.max_tokens,
-                "stream": False,
+                "stream": True,
             }
             if config.thinking_mode != "inherit":
                 payload["thinking"] = {"type": config.thinking_mode}
@@ -58,13 +59,14 @@ class OpenAICompatibleClient:
                         "Content-Type": "application/json",
                     },
                     json=payload,
-                    timeout=self.timeout_seconds,
+                    timeout=(10, self.timeout_seconds),
+                    stream=True,
                 )
-            response.raise_for_status()
-            data: Any = response.json()
-            choice = data["choices"][0]
-            message = choice["message"]
-            content = message.get("content")
+                with response:
+                    response.raise_for_status()
+                    content, reasoning_present, finish_reason = (
+                        self._read_response(response)
+                    )
         except (
             requests.RequestException,
             ValueError,
@@ -74,10 +76,8 @@ class OpenAICompatibleClient:
             AttributeError,
         ) as exc:
             raise SummaryApiError("模型 API 请求失败，请检查配置和后端日志") from exc
-        result = content.strip() if isinstance(content, str) else ""
+        result = content.strip()
         if not result:
-            finish_reason = str(choice.get("finish_reason") or "unknown")
-            reasoning_present = bool(str(message.get("reasoning_content") or "").strip())
             if finish_reason == "length":
                 raise SummaryApiError(
                     "模型在生成最终回答前已耗尽最大生成 Token，请提高 max_tokens 或降低思考强度"
@@ -87,3 +87,43 @@ class OpenAICompatibleClient:
                 f"（finish_reason={finish_reason}，思维链={'有' if reasoning_present else '无'}）"
             )
         return result
+
+    @staticmethod
+    def _read_response(response: Any) -> tuple[str, bool, str]:
+        content_type = str(response.headers.get("content-type") or "").lower()
+        if "text/event-stream" not in content_type:
+            data: Any = response.json()
+            choice = data["choices"][0]
+            message = choice["message"]
+            content = message.get("content")
+            reasoning = message.get("reasoning_content")
+            return (
+                content if isinstance(content, str) else "",
+                bool(str(reasoning or "").strip()),
+                str(choice.get("finish_reason") or "unknown"),
+            )
+
+        response.encoding = "utf-8"
+        content_parts: list[str] = []
+        reasoning_present = False
+        finish_reason = "unknown"
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data:"):
+                continue
+            event_data = line[5:].strip()
+            if event_data == "[DONE]":
+                break
+            event: Any = json.loads(event_data)
+            choices = event.get("choices")
+            if not isinstance(choices, list) or not choices:
+                continue
+            choice = choices[0]
+            delta = choice.get("delta") or {}
+            part = delta.get("content")
+            if isinstance(part, str):
+                content_parts.append(part)
+            if str(delta.get("reasoning_content") or "").strip():
+                reasoning_present = True
+            if choice.get("finish_reason"):
+                finish_reason = str(choice["finish_reason"])
+        return "".join(content_parts), reasoning_present, finish_reason
