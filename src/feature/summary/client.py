@@ -88,6 +88,105 @@ class OpenAICompatibleClient:
             )
         return result
 
+    def complete_with_tools(
+        self,
+        config: SummaryConfigData,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        temperature: float = 0.7,
+    ) -> dict[str, Any]:
+        """Return one assistant turn, including any requested function calls."""
+        if not config.api_key:
+            raise SummaryApiError("尚未配置模型 API Key")
+        url = config.api_url.rstrip("/")
+        if not url.endswith("/chat/completions"):
+            url += "/chat/completions"
+        payload: dict[str, Any] = {
+            "model": config.model,
+            "messages": messages,
+            "tools": tools,
+            "tool_choice": "auto",
+            "max_tokens": config.max_tokens,
+            "stream": True,
+        }
+        if config.thinking_mode != "inherit":
+            payload["thinking"] = {"type": config.thinking_mode}
+        if config.thinking_mode == "enabled":
+            payload["reasoning_effort"] = config.reasoning_effort
+        else:
+            payload["temperature"] = temperature
+        try:
+            with requests.Session() as session:
+                session.trust_env = False
+                response = session.post(
+                    url,
+                    headers={
+                        "Authorization": f"Bearer {config.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=(10, self.timeout_seconds),
+                    stream=True,
+                )
+                with response:
+                    response.raise_for_status()
+                    return self._read_tool_response(response)
+        except (
+            requests.RequestException,
+            ValueError,
+            KeyError,
+            IndexError,
+            TypeError,
+            AttributeError,
+        ) as exc:
+            raise SummaryApiError("模型工具调用请求失败，请检查配置和后端日志") from exc
+
+    @staticmethod
+    def _read_tool_response(response: Any) -> dict[str, Any]:
+        content_type = str(response.headers.get("content-type") or "").lower()
+        if "text/event-stream" not in content_type:
+            data: Any = response.json()
+            message = dict(data["choices"][0]["message"])
+            message.setdefault("role", "assistant")
+            return message
+
+        response.encoding = "utf-8"
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        calls: dict[int, dict[str, Any]] = {}
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data:"):
+                continue
+            raw = line[5:].strip()
+            if raw == "[DONE]":
+                break
+            event: Any = json.loads(raw)
+            choices = event.get("choices")
+            if not isinstance(choices, list) or not choices:
+                continue
+            delta = choices[0].get("delta") or {}
+            if isinstance(delta.get("content"), str):
+                content_parts.append(delta["content"])
+            if isinstance(delta.get("reasoning_content"), str):
+                reasoning_parts.append(delta["reasoning_content"])
+            for part in delta.get("tool_calls") or []:
+                index = int(part.get("index", 0))
+                call = calls.setdefault(
+                    index,
+                    {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                )
+                if part.get("id"):
+                    call["id"] += str(part["id"])
+                function = part.get("function") or {}
+                call["function"]["name"] += str(function.get("name") or "")
+                call["function"]["arguments"] += str(function.get("arguments") or "")
+        message: dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
+        if reasoning_parts:
+            message["reasoning_content"] = "".join(reasoning_parts)
+        if calls:
+            message["tool_calls"] = [calls[index] for index in sorted(calls)]
+        return message
+
     @staticmethod
     def _read_response(response: Any) -> tuple[str, bool, str]:
         content_type = str(response.headers.get("content-type") or "").lower()

@@ -48,6 +48,15 @@ class MemoryRequest(BaseModel):
     expires_at: str | None = None
 
 
+class WebSearchConfigRequest(BaseModel):
+    enabled: bool
+    provider: str
+    api_url: str
+    api_key: str | None = None
+    max_results: int
+    timeout_seconds: int
+
+
 class SummaryAdmin:
     def __init__(self, feature: SummaryFeature):
         self.feature = feature
@@ -107,6 +116,34 @@ class SummaryAdmin:
         async def clear_key():
             feature.config.clear_api_key()
             return feature.config_status
+
+        @app.get("/api/web-search/config")
+        async def get_web_search_config():
+            return feature.web_search.config.status
+
+        @app.post("/api/web-search/config")
+        async def save_web_search_config(body: WebSearchConfigRequest):
+            if not 1 <= body.max_results <= 10:
+                raise HTTPException(status_code=400, detail="搜索结果数必须在1至10之间")
+            if not 5 <= body.timeout_seconds <= 60:
+                raise HTTPException(status_code=400, detail="搜索超时必须在5至60秒之间")
+            try:
+                feature.web_search.config.save(
+                    body.enabled,
+                    body.provider,
+                    body.api_url,
+                    body.api_key,
+                    body.max_results,
+                    body.timeout_seconds,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return feature.web_search.config.status
+
+        @app.delete("/api/web-search/key")
+        async def clear_web_search_key():
+            feature.web_search.config.clear_api_key()
+            return feature.web_search.config.status
 
         @app.get("/api/summary/characters")
         async def list_characters():
@@ -245,6 +282,23 @@ class SummaryAdmin:
     </details>
 
     <details class="settings-section">
+      <summary><span>联网搜索</span><small>供聊天及未来功能复用的实时搜索工具</small></summary>
+      <div class="settings-section-body">
+      <label><input class="web-search-enabled" type="checkbox"> 启用联网搜索工具</label>
+      <label>搜索服务
+        <select class="web-search-provider"><option value="tavily">Tavily</option><option value="searxng">SearXNG</option></select>
+      </label>
+      <label>搜索 API URL<input class="web-search-url" type="text" placeholder="https://api.tavily.com/search"></label>
+      <label>搜索 API Key（SearXNG 通常留空）<input class="web-search-key" type="password" autocomplete="new-password" placeholder="tvly-..."></label>
+      <label>每次返回结果数（1-10）<input class="web-search-max-results" type="text" inputmode="numeric" placeholder="5"></label>
+      <label>搜索超时秒数（5-60）<input class="web-search-timeout" type="text" inputmode="numeric" placeholder="20"></label>
+      <button class="secondary web-search-clear-key" type="button">清除搜索 API Key</button>
+      <p class="web-search-status">正在读取联网搜索配置...</p>
+      <p>模型只在需要实时或外部资料时自主调用。Tavily 使用托管 API；SearXNG 可填写自建实例地址，并需在实例中启用 JSON 输出。</p>
+      </div>
+    </details>
+
+    <details class="settings-section">
       <summary><span>记忆设置</span><small>长期记忆与记忆管理</small></summary>
       <div class="settings-section-body">
       <h3>长期记忆</h3>
@@ -314,6 +368,8 @@ featureAdminControls.summary = async row => {
   const memoryEnabled = q(".ai-memory-enabled"), memoryBatch = q(".ai-memory-batch");
   const memoryAutoLearn = q(".ai-memory-auto-learn");
   const memoryRetrieval = q(".ai-memory-retrieval"), memoryConfidence = q(".ai-memory-confidence");
+  const searchEnabled = q(".web-search-enabled"), searchProvider = q(".web-search-provider"), searchUrl = q(".web-search-url"), searchKey = q(".web-search-key");
+  const searchMaxResults = q(".web-search-max-results"), searchTimeout = q(".web-search-timeout"), searchStatus = q(".web-search-status"), clearSearchKey = q(".web-search-clear-key");
   const save = q(".ai-save"), clearKey = q(".ai-clear-key"), saveStatus = q(".ai-save-status");
   const characterSelect = q(".ai-character-select"), characterName = q(".ai-character-name");
   const characterTriggerName = q(".ai-character-trigger-name");
@@ -337,6 +393,15 @@ featureAdminControls.summary = async row => {
     reasoningEffort.disabled = thinkingMode.value !== "enabled";
     configStatus.textContent = `API Key：${data.api_key_configured ? "已配置" : "未配置"}`;
     clearKey.disabled = !data.api_key_configured;
+  };
+  const loadSearchConfig = async () => {
+    const response = await fetch("/api/web-search/config");
+    if (!response.ok) throw new Error("加载联网搜索配置失败");
+    const data = await response.json();
+    searchEnabled.checked = data.enabled; searchProvider.value = data.provider;
+    searchUrl.value = data.api_url; searchMaxResults.value = data.max_results; searchTimeout.value = data.timeout_seconds;
+    clearSearchKey.disabled = !data.has_api_key;
+    searchStatus.textContent = `搜索 API Key：${data.has_api_key ? "已配置" : "未配置"}`;
   };
   const showCharacter = character => {
     originalName = character ? character.name : null;
@@ -373,7 +438,7 @@ featureAdminControls.summary = async row => {
     memoryList.replaceChildren(...memories.map(memory => { const option=document.createElement("option"); option.value=memory.id; option.textContent=`#${memory.id} [${memory.status}/${memory.kind}] ${memory.content}`; return option; }));
     const selected = memories.find(item => item.id === selectedId) || null; showMemory(selected); if (selected) memoryList.value=String(selected.id);
   };
-  await Promise.all([loadConfig(), loadCharacters(), loadMemories()]);
+  await Promise.all([loadConfig(), loadSearchConfig(), loadCharacters(), loadMemories()]);
   characterSelect.addEventListener("change", () => showCharacter(characters.find(item => item.name === characterSelect.value)));
   q(".ai-character-new").addEventListener("click", () => showCharacter(null));
   thinkingMode.addEventListener("change", () => { reasoningEffort.disabled = thinkingMode.value !== "enabled"; });
@@ -381,23 +446,38 @@ featureAdminControls.summary = async row => {
     const minimum = Number(windowMin.value), maximum = Number(windowMax.value);
     const contextLimit = Number(contextTokenLimit.value), outputLimit = Number(maxTokens.value);
     const batchSize = Number(memoryBatch.value), retrievalLimit = Number(memoryRetrieval.value), confidenceLimit = Number(memoryConfidence.value);
+    const searchResultLimit = Number(searchMaxResults.value), searchTimeoutSeconds = Number(searchTimeout.value);
     if (!Number.isInteger(minimum) || !Number.isInteger(maximum) || minimum < 10 || maximum > 200 || minimum > maximum) { saveStatus.textContent = "动态窗口需满足 10 ≤ 起始数 ≤ 最大数 ≤ 200"; return; }
     if (!Number.isInteger(contextLimit) || contextLimit < 1024 || contextLimit > 128000) { saveStatus.textContent = "上下文 Token 预算必须是1024至128000的整数"; return; }
     if (!Number.isInteger(outputLimit) || outputLimit < 256 || outputLimit > 65536) { saveStatus.textContent = "最大生成 Token 必须是256至65536的整数"; return; }
     if (!Number.isInteger(batchSize) || batchSize < 5 || batchSize > 100) { saveStatus.textContent = "记忆批次必须是5至100的整数"; return; }
     if (!Number.isInteger(retrievalLimit) || retrievalLimit < 1 || retrievalLimit > 20) { saveStatus.textContent = "记忆检索数必须是1至20的整数"; return; }
     if (!Number.isFinite(confidenceLimit) || confidenceLimit < 0 || confidenceLimit > 1) { saveStatus.textContent = "记忆置信度必须在0至1之间"; return; }
+    if (!Number.isInteger(searchResultLimit) || searchResultLimit < 1 || searchResultLimit > 10) { saveStatus.textContent = "搜索结果数必须是1至10的整数"; return; }
+    if (!Number.isInteger(searchTimeoutSeconds) || searchTimeoutSeconds < 5 || searchTimeoutSeconds > 60) { saveStatus.textContent = "搜索超时必须是5至60秒的整数"; return; }
     save.disabled = true; saveStatus.textContent = "保存中...";
     const body = {api_url: apiUrl.value.trim(), model: model.value.trim(), summary_enabled: summaryEnabled.checked, chat_enabled: chatEnabled.checked, chat_window_min: minimum, chat_window_max: maximum, thinking_mode: thinkingMode.value, reasoning_effort: reasoningEffort.value, context_token_limit: contextLimit, max_tokens: outputLimit, memory_enabled: memoryEnabled.checked, memory_auto_learn: memoryAutoLearn.checked, memory_batch_size: batchSize, memory_retrieval_limit: retrievalLimit, memory_min_confidence: confidenceLimit};
     if (apiKey.value.trim()) body.api_key = apiKey.value.trim();
-    const response = await fetch("/api/summary/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-    save.disabled = false; const data = await response.json().catch(() => ({}));
-    saveStatus.textContent = response.ok ? "已保存并立即生效" : (data.detail || "保存失败");
-    if (response.ok) { apiKey.value = ""; await loadConfig(); }
+    const searchBody = {enabled:searchEnabled.checked, provider:searchProvider.value, api_url:searchUrl.value.trim(), max_results:searchResultLimit, timeout_seconds:searchTimeoutSeconds};
+    if (searchKey.value.trim()) searchBody.api_key = searchKey.value.trim();
+    const [response, searchResponse] = await Promise.all([
+      fetch("/api/summary/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}),
+      fetch("/api/web-search/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(searchBody)})
+    ]);
+    save.disabled = false; const data = await response.json().catch(() => ({})); const searchData = await searchResponse.json().catch(() => ({}));
+    saveStatus.textContent = response.ok && searchResponse.ok ? "已保存并立即生效" : (data.detail || searchData.detail || "保存失败");
+    if (response.ok && searchResponse.ok) { apiKey.value = ""; searchKey.value = ""; await Promise.all([loadConfig(), loadSearchConfig()]); }
   });
   clearKey.addEventListener("click", async () => {
     clearKey.disabled = true; const response = await fetch("/api/summary/key", {method: "DELETE"});
     saveStatus.textContent = response.ok ? "API Key 已清除" : "清除失败"; await loadConfig();
+  });
+  clearSearchKey.addEventListener("click", async () => {
+    clearSearchKey.disabled = true; const response = await fetch("/api/web-search/key", {method: "DELETE"});
+    searchStatus.textContent = response.ok ? "搜索 API Key 已清除" : "清除失败"; await loadSearchConfig();
+  });
+  searchProvider.addEventListener("change", () => {
+    searchUrl.value = searchProvider.value === "tavily" ? "https://api.tavily.com/search" : "http://127.0.0.1:8080";
   });
   q(".ai-character-save").addEventListener("click", async () => {
     const response = await fetch("/api/summary/characters", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({original_name: originalName, name: characterName.value.trim(), trigger_name: characterTriggerName.value.trim(), description: characterDescription.value.trim(), prompt: characterPrompt.value.trim()})});

@@ -17,6 +17,7 @@ from src.feature.summary.history import (
 from src.feature.summary.memory_service import MemoryService
 from src.feature.summary.memory_store import MemoryStore
 from src.master import MasterService
+from src.feature.web_search import WebSearchConfig, WebSearchService
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ class SummaryFeature(Feature):
         selections: CharacterSelectionStore | None = None,
         memory_store: MemoryStore | None = None,
         memory_service: MemoryService | None = None,
+        web_search: WebSearchService | None = None,
     ):
         self.master_service = master_service
         self.config = config or SummaryConfig(Path("data/summary/config.json"))
@@ -67,6 +69,9 @@ class SummaryFeature(Feature):
             self.client,
             self.master_service,
         )
+        self.web_search = web_search or WebSearchService(
+            WebSearchConfig(Path("data/web_search/config.json"))
+        )
         self.chat = AiChatService(
             self.config,
             self.history,
@@ -74,6 +79,7 @@ class SummaryFeature(Feature):
             self.selections,
             self.client,
             self.memory,
+            self.web_search,
         )
         self._group_locks: dict[int, asyncio.Lock] = {}
 
