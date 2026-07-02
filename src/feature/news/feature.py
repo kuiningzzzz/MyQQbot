@@ -185,8 +185,7 @@ class NewsFeature(Feature):
             "科学 教育 就业 青年 重要新闻",
         ]
         queries = [
-            f"{stem} 仅限北京时间 {time_text} 发生或发布的新闻，"
-            f"必须是{now.year}年，排除往年同月同日旧闻"
+            f"{stem} {now.year}年 最新 新闻"
             for stem in query_stems[:query_count]
         ]
         batches = await asyncio.gather(
@@ -202,19 +201,41 @@ class NewsFeature(Feature):
         )
         unique: dict[str, SearchResult] = {}
         rejected_old = 0
+        raw_result_count = 0
         for batch in batches:
             if isinstance(batch, Exception):
                 logger.warning("每日新闻的一个搜索请求失败：%s", batch)
                 continue
             for result in batch:
+                raw_result_count += 1
                 if _source_is_in_current_window(result, cutoff, now):
                     unique.setdefault(result.url, result)
                 else:
                     rejected_old += 1
+        logger.info(
+            "每日新闻搜索结果：原始 %s 条，年份/日期过滤 %s 条，可用 %s 条",
+            raw_result_count,
+            rejected_old,
+            len(unique),
+        )
         if rejected_old:
             logger.info("每日新闻已过滤 %s 条年份或日期不符的旧结果", rejected_old)
         if not unique:
-            raise WebSearchError("所有新闻搜索均未返回结果")
+            fallback_query = (
+                f"中国 最新新闻 {now:%Y年%m月%d日} "
+                "大学生 二次元 游戏 娱乐 时事"
+            )
+            logger.warning("常规新闻检索没有可用结果，执行一次兜底检索：%s", fallback_query)
+            fallback = await asyncio.to_thread(
+                self.web_search.search,
+                fallback_query,
+            )
+            for result in fallback:
+                if _source_is_in_current_window(result, cutoff, now):
+                    unique.setdefault(result.url, result)
+            logger.info("每日新闻兜底检索后可用结果 %s 条", len(unique))
+        if not unique:
+            raise WebSearchError("未找到符合当前年份和时间范围的新闻结果")
         sources = []
         for index, result in enumerate(unique.values(), 1):
             date = (
@@ -311,14 +332,20 @@ def _source_is_in_current_window(
     published = _parse_published_date(result.published_date)
     if published is not None:
         return cutoff.date() <= published.date() <= now.date()
-    years = {
+    explicit_date_years = {
         int(value)
         for value in re.findall(
             r"(?<!\d)(20\d{2})(?!\d)",
-            f"{result.published_date or ''} {result.title} {result.content}",
+            result.published_date or "",
         )
     }
-    return not years or now.year in years
+    if explicit_date_years and now.year not in explicit_date_years:
+        return False
+    title_years = {
+        int(value)
+        for value in re.findall(r"(?<!\d)(20\d{2})(?!\d)", result.title)
+    }
+    return not title_years or now.year in title_years
 
 
 def _parse_published_date(value: str | None) -> datetime | None:
