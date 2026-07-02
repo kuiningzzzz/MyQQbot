@@ -14,6 +14,8 @@ from src.feature.summary.history import (
     format_prompt_history,
     message_from_context,
 )
+from src.feature.summary.memory_service import MemoryService
+from src.feature.summary.memory_store import MemoryStore
 from src.master import MasterService
 
 logger = logging.getLogger(__name__)
@@ -44,6 +46,8 @@ class SummaryFeature(Feature):
         client: OpenAICompatibleClient | None = None,
         characters: CharacterStore | None = None,
         selections: CharacterSelectionStore | None = None,
+        memory_store: MemoryStore | None = None,
+        memory_service: MemoryService | None = None,
     ):
         self.master_service = master_service
         self.config = config or SummaryConfig(Path("data/summary/config.json"))
@@ -54,12 +58,22 @@ class SummaryFeature(Feature):
         self.selections = selections or CharacterSelectionStore(
             Path("data/summary/selections.json")
         )
+        self.memory_store = memory_store or MemoryStore(
+            Path("data/summary/memory.db")
+        )
+        self.memory = memory_service or MemoryService(
+            self.memory_store,
+            self.config,
+            self.client,
+            self.master_service,
+        )
         self.chat = AiChatService(
             self.config,
             self.history,
             self.characters,
             self.selections,
             self.client,
+            self.memory,
         )
         self._group_locks: dict[int, asyncio.Lock] = {}
 
@@ -71,6 +85,7 @@ class SummaryFeature(Feature):
             ctx.msg.startswith(("/short", "/character", "/change-character"))
             or ADD_CHARACTER_PATTERN.match(ctx.msg)
             or DELETE_CHARACTER_PATTERN.match(ctx.msg)
+            or self.memory.is_command(ctx)
         ):
             return
         message = message_from_context(ctx)
@@ -94,8 +109,18 @@ class SummaryFeature(Feature):
                 self.history.append(ctx.group_id, message)
             elif ctx.user_id is not None:
                 self.history.append_private(ctx.user_id, message)
+            self_id = ctx.event.get("self_id")
+            is_self = (
+                self_id is not None
+                and ctx.user_id is not None
+                and str(self_id) == str(ctx.user_id)
+            )
+            if not is_self and not ctx.msg.startswith("/"):
+                self.memory.observe(ctx, message)
 
     async def handle(self, ctx: MessageContext) -> bool:
+        if self.memory.is_command(ctx):
+            return await self.memory.handle_command(ctx)
         if ADD_CHARACTER_PATTERN.match(ctx.msg):
             return await self._handle_add_character(ctx)
         if DELETE_CHARACTER_PATTERN.match(ctx.msg):
@@ -213,4 +238,9 @@ class SummaryFeature(Feature):
             "reasoning_effort": config.reasoning_effort,
             "context_token_limit": config.context_token_limit,
             "max_tokens": config.max_tokens,
+            "memory_enabled": config.memory_enabled,
+            "memory_auto_learn": config.memory_auto_learn,
+            "memory_batch_size": config.memory_batch_size,
+            "memory_retrieval_limit": config.memory_retrieval_limit,
+            "memory_min_confidence": config.memory_min_confidence,
         }

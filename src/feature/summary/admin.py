@@ -5,6 +5,7 @@ from pydantic import BaseModel
 
 from src.feature.summary.character import Character
 from src.feature.summary.feature import SummaryFeature
+from src.feature.summary.memory_store import MemoryCandidate
 
 
 class AiConfigRequest(BaseModel):
@@ -19,6 +20,11 @@ class AiConfigRequest(BaseModel):
     reasoning_effort: str
     context_token_limit: int
     max_tokens: int
+    memory_enabled: bool
+    memory_auto_learn: bool
+    memory_batch_size: int
+    memory_retrieval_limit: int
+    memory_min_confidence: float
 
 
 class CharacterRequest(BaseModel):
@@ -27,6 +33,19 @@ class CharacterRequest(BaseModel):
     trigger_name: str
     description: str
     prompt: str
+
+
+class MemoryRequest(BaseModel):
+    kind: str
+    content: str
+    normalized_key: str
+    subject_user_id: int | None = None
+    scope_type: str
+    scope_id: str | None = None
+    confidence: float
+    importance: float
+    status: str = "active"
+    expires_at: str | None = None
 
 
 class SummaryAdmin:
@@ -55,6 +74,12 @@ class SummaryAdmin:
                 raise HTTPException(status_code=400, detail="上下文 Token 预算必须在1024至128000之间")
             if not 256 <= body.max_tokens <= 65536:
                 raise HTTPException(status_code=400, detail="最大生成 Token 必须在256至65536之间")
+            if not 5 <= body.memory_batch_size <= 100:
+                raise HTTPException(status_code=400, detail="记忆提取批次必须在5至100之间")
+            if not 1 <= body.memory_retrieval_limit <= 20:
+                raise HTTPException(status_code=400, detail="记忆检索数量必须在1至20之间")
+            if not 0 <= body.memory_min_confidence <= 1:
+                raise HTTPException(status_code=400, detail="最低置信度必须在0至1之间")
             try:
                 feature.config.save(
                     body.api_url,
@@ -68,6 +93,11 @@ class SummaryAdmin:
                     body.reasoning_effort,
                     body.context_token_limit,
                     body.max_tokens,
+                    body.memory_enabled,
+                    body.memory_auto_learn,
+                    body.memory_batch_size,
+                    body.memory_retrieval_limit,
+                    body.memory_min_confidence,
                 )
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -100,6 +130,66 @@ class SummaryAdmin:
             characters = feature.characters.delete(name)
             feature.selections.remove(name)
             return [asdict(item) for item in characters]
+
+        @app.get("/api/summary/memories")
+        async def list_memories(query: str = "", status: str = "", limit: int = 100):
+            records = feature.memory_store.list(query, status or None, limit)
+            return {
+                "memories": [record.as_dict() for record in records],
+                "stats": feature.memory_store.stats(),
+            }
+
+        @app.get("/api/summary/memories/{memory_id}/sources")
+        async def memory_sources(memory_id: int):
+            return {"sources": feature.memory_store.sources(memory_id)}
+
+        @app.post("/api/summary/memories")
+        async def create_memory(body: MemoryRequest):
+            try:
+                record = feature.memory_store.upsert_candidate(
+                    MemoryCandidate(
+                        kind=body.kind,
+                        content=body.content,
+                        normalized_key=body.normalized_key,
+                        subject_user_id=body.subject_user_id,
+                        confidence=body.confidence,
+                        importance=body.importance,
+                    ),
+                    body.scope_type,
+                    body.scope_id,
+                    "webui",
+                    body.content,
+                    explicit=True,
+                )
+                if body.status != "active" or body.expires_at:
+                    record = feature.memory_store.update(
+                        record.id,
+                        status=body.status,
+                        expires_at=body.expires_at,
+                    )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return record.as_dict()
+
+        @app.put("/api/summary/memories/{memory_id}")
+        async def update_memory(memory_id: int, body: MemoryRequest):
+            try:
+                record = feature.memory_store.update(
+                    memory_id,
+                    **body.dict(),
+                )
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="memory not found") from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            return record.as_dict()
+
+        @app.delete("/api/summary/memories/{memory_id}")
+        async def forget_memory(memory_id: int):
+            try:
+                return feature.memory_store.forget(memory_id).as_dict()
+            except KeyError as exc:
+                raise HTTPException(status_code=404, detail="memory not found") from exc
 
     @property
     def panel_html(self) -> str:
@@ -154,6 +244,34 @@ class SummaryAdmin:
       <p>窗口从起始数量开始，只在尾部追加新消息；超过最大数量时重置为最新的起始数量，以提高前缀缓存命中率。</p>
     </div>
 
+    <div class="token-guide">
+      <h3>长期记忆</h3>
+      <label><input class="ai-memory-enabled" type="checkbox"> 启用聊天时长期记忆检索</label>
+      <label><input class="ai-memory-auto-learn" type="checkbox"> 启用后台自动学习</label>
+      <label>每累计多少条消息后台提取一次（5-100）<input class="ai-memory-batch" type="text" inputmode="numeric" placeholder="20"></label>
+      <label>每次最多检索记忆数（1-20）<input class="ai-memory-retrieval" type="text" inputmode="numeric" placeholder="8"></label>
+      <label>自动记忆最低置信度（0-1）<input class="ai-memory-confidence" type="text" inputmode="decimal" placeholder="0.72"></label>
+      <p>自动提取在后台运行。私聊记忆只用于对应私聊，群记忆只用于对应群；显式标记为全局的记忆才会跨会话。</p>
+    </div>
+
+    <div class="token-guide ai-memory-editor">
+      <h3>记忆管理</h3>
+      <p class="ai-memory-stats">正在读取记忆统计...</p>
+      <input class="ai-memory-search" type="text" placeholder="搜索内容、语义键或来源">
+      <select class="ai-memory-list" size="8"></select>
+      <label>类型<select class="ai-memory-kind"><option value="user_fact">用户信息</option><option value="topic">历史话题</option><option value="instruction">命令要求</option><option value="reminder">待办记忆</option><option value="group_fact">群体事实</option><option value="explicit">显式记忆</option></select></label>
+      <label>语义键<input class="ai-memory-key" type="text" placeholder="例如 favorite_food"></label>
+      <label>主体 QQ ID（可空）<input class="ai-memory-subject" type="text" inputmode="numeric"></label>
+      <label>范围<select class="ai-memory-scope"><option value="group">群聊</option><option value="private">私聊</option><option value="global">全局</option></select></label>
+      <label>范围 ID（群号或 QQ 号；全局可空）<input class="ai-memory-scope-id" type="text"></label>
+      <label>状态<select class="ai-memory-status"><option value="active">有效</option><option value="conflicted">冲突旧版本</option><option value="forgotten">已遗忘</option><option value="expired">已过期</option></select></label>
+      <label>置信度（0-1）<input class="ai-memory-record-confidence" type="text" inputmode="decimal"></label>
+      <label>重要度（0-1）<input class="ai-memory-importance" type="text" inputmode="decimal"></label>
+      <label>有效期 ISO 时间（可空）<input class="ai-memory-expires" type="text" placeholder="2027-01-01T00:00:00+00:00"></label>
+      <label>内容<textarea class="ai-memory-content" spellcheck="false"></textarea></label>
+      <div><button class="secondary ai-memory-new" type="button">新建</button><button class="ai-memory-save" type="button">保存</button><button class="danger ai-memory-delete" type="button">标记遗忘</button><button class="secondary ai-memory-sources" type="button">查看来源</button><span class="ai-memory-record-status status"></span></div>
+    </div>
+
     <div class="token-guide ai-character-editor">
       <h3>聊天人设</h3>
       <label>选择已有的人设<select class="ai-character-select"></select></label>
@@ -182,12 +300,16 @@ featureAdminControls.summary = async row => {
   const windowMin = q(".ai-window-min"), windowMax = q(".ai-window-max"), configStatus = q(".ai-config-status");
   const thinkingMode = q(".ai-thinking-mode"), reasoningEffort = q(".ai-reasoning-effort");
   const contextTokenLimit = q(".ai-context-token-limit"), maxTokens = q(".ai-max-tokens");
+  const memoryEnabled = q(".ai-memory-enabled"), memoryBatch = q(".ai-memory-batch");
+  const memoryAutoLearn = q(".ai-memory-auto-learn");
+  const memoryRetrieval = q(".ai-memory-retrieval"), memoryConfidence = q(".ai-memory-confidence");
   const save = q(".ai-save"), clearKey = q(".ai-clear-key"), saveStatus = q(".ai-save-status");
   const characterSelect = q(".ai-character-select"), characterName = q(".ai-character-name");
   const characterTriggerName = q(".ai-character-trigger-name");
   const characterDescription = q(".ai-character-description"), characterPrompt = q(".ai-character-prompt");
   const characterStatus = q(".ai-character-status"), deleteCharacter = q(".ai-character-delete");
   let characters = [], originalName = null;
+  let memories = [], selectedMemoryId = null;
 
   const loadConfig = async () => {
     const response = await fetch("/api/summary/config");
@@ -198,6 +320,9 @@ featureAdminControls.summary = async row => {
     summaryEnabled.checked = data.summary_enabled; chatEnabled.checked = data.chat_enabled;
     thinkingMode.value = data.thinking_mode; reasoningEffort.value = data.reasoning_effort;
     contextTokenLimit.value = data.context_token_limit; maxTokens.value = data.max_tokens;
+    memoryEnabled.checked = data.memory_enabled; memoryBatch.value = data.memory_batch_size;
+    memoryAutoLearn.checked = data.memory_auto_learn;
+    memoryRetrieval.value = data.memory_retrieval_limit; memoryConfidence.value = data.memory_min_confidence;
     reasoningEffort.disabled = thinkingMode.value !== "enabled";
     configStatus.textContent = `API Key：${data.api_key_configured ? "已配置" : "未配置"}`;
     clearKey.disabled = !data.api_key_configured;
@@ -220,18 +345,39 @@ featureAdminControls.summary = async row => {
     }));
     showCharacter(characters.find(item => item.name === selectedName) || characters[0] || null);
   };
-  await Promise.all([loadConfig(), loadCharacters()]);
+  const memoryList = q(".ai-memory-list"), memorySearch = q(".ai-memory-search");
+  const memoryFields = {kind:q(".ai-memory-kind"), normalized_key:q(".ai-memory-key"), subject_user_id:q(".ai-memory-subject"), scope_type:q(".ai-memory-scope"), scope_id:q(".ai-memory-scope-id"), status:q(".ai-memory-status"), confidence:q(".ai-memory-record-confidence"), importance:q(".ai-memory-importance"), expires_at:q(".ai-memory-expires"), content:q(".ai-memory-content")};
+  const showMemory = memory => {
+    selectedMemoryId = memory?.id || null;
+    for (const [key, field] of Object.entries(memoryFields)) field.value = memory?.[key] ?? "";
+    if (!memory) { memoryFields.kind.value="explicit"; memoryFields.scope_type.value="global"; memoryFields.status.value="active"; memoryFields.confidence.value="1"; memoryFields.importance.value="1"; }
+    q(".ai-memory-delete").disabled = !memory;
+    q(".ai-memory-sources").disabled = !memory;
+  };
+  const loadMemories = async selectedId => {
+    const response = await fetch(`/api/summary/memories?query=${encodeURIComponent(memorySearch.value.trim())}&limit=200`);
+    if (!response.ok) throw new Error("加载长期记忆失败");
+    const data = await response.json(); memories = data.memories;
+    q(".ai-memory-stats").textContent = `总计 ${data.stats.total}；有效 ${data.stats.active}；冲突 ${data.stats.conflicted}；遗忘 ${data.stats.forgotten}；过期 ${data.stats.expired}`;
+    memoryList.replaceChildren(...memories.map(memory => { const option=document.createElement("option"); option.value=memory.id; option.textContent=`#${memory.id} [${memory.status}/${memory.kind}] ${memory.content}`; return option; }));
+    const selected = memories.find(item => item.id === selectedId) || null; showMemory(selected); if (selected) memoryList.value=String(selected.id);
+  };
+  await Promise.all([loadConfig(), loadCharacters(), loadMemories()]);
   characterSelect.addEventListener("change", () => showCharacter(characters.find(item => item.name === characterSelect.value)));
   q(".ai-character-new").addEventListener("click", () => showCharacter(null));
   thinkingMode.addEventListener("change", () => { reasoningEffort.disabled = thinkingMode.value !== "enabled"; });
   save.addEventListener("click", async () => {
     const minimum = Number(windowMin.value), maximum = Number(windowMax.value);
     const contextLimit = Number(contextTokenLimit.value), outputLimit = Number(maxTokens.value);
+    const batchSize = Number(memoryBatch.value), retrievalLimit = Number(memoryRetrieval.value), confidenceLimit = Number(memoryConfidence.value);
     if (!Number.isInteger(minimum) || !Number.isInteger(maximum) || minimum < 10 || maximum > 200 || minimum > maximum) { saveStatus.textContent = "动态窗口需满足 10 ≤ 起始数 ≤ 最大数 ≤ 200"; return; }
     if (!Number.isInteger(contextLimit) || contextLimit < 1024 || contextLimit > 128000) { saveStatus.textContent = "上下文 Token 预算必须是1024至128000的整数"; return; }
     if (!Number.isInteger(outputLimit) || outputLimit < 256 || outputLimit > 65536) { saveStatus.textContent = "最大生成 Token 必须是256至65536的整数"; return; }
+    if (!Number.isInteger(batchSize) || batchSize < 5 || batchSize > 100) { saveStatus.textContent = "记忆批次必须是5至100的整数"; return; }
+    if (!Number.isInteger(retrievalLimit) || retrievalLimit < 1 || retrievalLimit > 20) { saveStatus.textContent = "记忆检索数必须是1至20的整数"; return; }
+    if (!Number.isFinite(confidenceLimit) || confidenceLimit < 0 || confidenceLimit > 1) { saveStatus.textContent = "记忆置信度必须在0至1之间"; return; }
     save.disabled = true; saveStatus.textContent = "保存中...";
-    const body = {api_url: apiUrl.value.trim(), model: model.value.trim(), summary_enabled: summaryEnabled.checked, chat_enabled: chatEnabled.checked, chat_window_min: minimum, chat_window_max: maximum, thinking_mode: thinkingMode.value, reasoning_effort: reasoningEffort.value, context_token_limit: contextLimit, max_tokens: outputLimit};
+    const body = {api_url: apiUrl.value.trim(), model: model.value.trim(), summary_enabled: summaryEnabled.checked, chat_enabled: chatEnabled.checked, chat_window_min: minimum, chat_window_max: maximum, thinking_mode: thinkingMode.value, reasoning_effort: reasoningEffort.value, context_token_limit: contextLimit, max_tokens: outputLimit, memory_enabled: memoryEnabled.checked, memory_auto_learn: memoryAutoLearn.checked, memory_batch_size: batchSize, memory_retrieval_limit: retrievalLimit, memory_min_confidence: confidenceLimit};
     if (apiKey.value.trim()) body.api_key = apiKey.value.trim();
     const response = await fetch("/api/summary/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
     save.disabled = false; const data = await response.json().catch(() => ({}));
@@ -254,5 +400,18 @@ featureAdminControls.summary = async row => {
     characterStatus.textContent = response.ok ? "人设已删除" : "删除失败";
     if (response.ok) await loadCharacters();
   });
+  memoryList.addEventListener("change", () => showMemory(memories.find(item => item.id === Number(memoryList.value))));
+  memorySearch.addEventListener("change", () => loadMemories().catch(error => { q(".ai-memory-record-status").textContent=error.message; }));
+  q(".ai-memory-new").addEventListener("click", () => showMemory(null));
+  q(".ai-memory-save").addEventListener("click", async () => {
+    const body = Object.fromEntries(Object.entries(memoryFields).map(([key,field]) => [key,field.value.trim()]));
+    body.subject_user_id = body.subject_user_id ? Number(body.subject_user_id) : null; body.scope_id = body.scope_id || null; body.expires_at = body.expires_at || null; body.confidence=Number(body.confidence); body.importance=Number(body.importance);
+    if (!body.content || !body.normalized_key || !Number.isFinite(body.confidence) || !Number.isFinite(body.importance)) { q(".ai-memory-record-status").textContent="请填写内容、语义键、置信度和重要度"; return; }
+    const url = selectedMemoryId ? `/api/summary/memories/${selectedMemoryId}` : "/api/summary/memories";
+    const response = await fetch(url,{method:selectedMemoryId?"PUT":"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)}); const data=await response.json().catch(()=>({}));
+    q(".ai-memory-record-status").textContent=response.ok?"记忆已保存":(data.detail||"保存失败"); if(response.ok) await loadMemories(data.id);
+  });
+  q(".ai-memory-delete").addEventListener("click", async () => { if(!selectedMemoryId)return; const response=await fetch(`/api/summary/memories/${selectedMemoryId}`,{method:"DELETE"}); q(".ai-memory-record-status").textContent=response.ok?"已标记遗忘":"删除失败"; if(response.ok)await loadMemories(); });
+  q(".ai-memory-sources").addEventListener("click", async () => { if(!selectedMemoryId)return; const response=await fetch(`/api/summary/memories/${selectedMemoryId}/sources`); const data=await response.json(); alert(data.sources.map(source=>`${source.created_at} ${source.conversation}\n${source.excerpt}`).join("\n\n")||"没有来源记录"); });
 };
 """

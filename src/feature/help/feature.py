@@ -22,7 +22,10 @@ DEFAULT_MASTER_HELP_MESSAGES = [
     *DEFAULT_PUBLIC_HELP_MESSAGES[:-2],
     DEFAULT_PUBLIC_HELP_MESSAGES[-2]
     + "\n/add-character 名字 触发词 描述 系统提示词正文 - （主人权限）添加 AI 人设"
-    + "\n/del-character 名字 - （主人权限）删除 AI 人设",
+    + "\n/del-character 名字 - （主人权限）删除 AI 人设"
+    + "\n/remember [--global] 内容 - （主人权限）显式添加长期记忆"
+    + "\n/memory [关键词] - （主人权限）查看当前范围的长期记忆"
+    + "\n/forget 记忆ID或关键词 - （主人权限）遗忘长期记忆",
     DEFAULT_PUBLIC_HELP_MESSAGES[-1],
 ]
 
@@ -107,7 +110,13 @@ class HelpFeature(Feature):
                 line
                 for line in message.splitlines()
                 if not line.strip().casefold().startswith(
-                    ("/add-character ", "/del-character ")
+                    (
+                        "/add-character ",
+                        "/del-character ",
+                        "/remember ",
+                        "/memory",
+                        "/forget ",
+                    )
                 )
             ]
             normalized = "\n".join(lines).strip()

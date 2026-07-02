@@ -21,6 +21,11 @@ class SummaryConfigData:
     reasoning_effort: str = "high"
     context_token_limit: int = 16000
     max_tokens: int = 8192
+    memory_enabled: bool = True
+    memory_auto_learn: bool = True
+    memory_batch_size: int = 20
+    memory_retrieval_limit: int = 8
+    memory_min_confidence: float = 0.72
 
 
 class SummaryConfig:
@@ -68,6 +73,26 @@ class SummaryConfig:
                 65536,
                 defaults.max_tokens,
             ),
+            memory_enabled=bool(data.get("memory_enabled", defaults.memory_enabled)),
+            memory_auto_learn=bool(
+                data.get("memory_auto_learn", defaults.memory_auto_learn)
+            ),
+            memory_batch_size=_normalize_int(
+                data.get("memory_batch_size", defaults.memory_batch_size),
+                5,
+                100,
+                defaults.memory_batch_size,
+            ),
+            memory_retrieval_limit=_normalize_int(
+                data.get("memory_retrieval_limit", defaults.memory_retrieval_limit),
+                1,
+                20,
+                defaults.memory_retrieval_limit,
+            ),
+            memory_min_confidence=_normalize_float(
+                data.get("memory_min_confidence", defaults.memory_min_confidence),
+                defaults.memory_min_confidence,
+            ),
         )
 
     def save(
@@ -83,6 +108,11 @@ class SummaryConfig:
         reasoning_effort: str | None = None,
         context_token_limit: int | None = None,
         max_tokens: int | None = None,
+        memory_enabled: bool | None = None,
+        memory_auto_learn: bool | None = None,
+        memory_batch_size: int | None = None,
+        memory_retrieval_limit: int | None = None,
+        memory_min_confidence: float | None = None,
     ) -> SummaryConfigData:
         current = self.load()
         value = SummaryConfigData(
@@ -121,6 +151,29 @@ class SummaryConfig:
                 if max_tokens is None
                 else _normalize_int(max_tokens, 256, 65536, 8192)
             ),
+            memory_enabled=(
+                current.memory_enabled if memory_enabled is None else memory_enabled
+            ),
+            memory_auto_learn=(
+                current.memory_auto_learn
+                if memory_auto_learn is None
+                else memory_auto_learn
+            ),
+            memory_batch_size=(
+                current.memory_batch_size
+                if memory_batch_size is None
+                else _normalize_int(memory_batch_size, 5, 100, 20)
+            ),
+            memory_retrieval_limit=(
+                current.memory_retrieval_limit
+                if memory_retrieval_limit is None
+                else _normalize_int(memory_retrieval_limit, 1, 20, 8)
+            ),
+            memory_min_confidence=(
+                current.memory_min_confidence
+                if memory_min_confidence is None
+                else _normalize_float(memory_min_confidence, 0.72)
+            ),
         )
         if not value.api_url or not value.model:
             raise ValueError("API URL 和模型名不能为空")
@@ -145,6 +198,11 @@ class SummaryConfig:
                     reasoning_effort=current.reasoning_effort,
                     context_token_limit=current.context_token_limit,
                     max_tokens=current.max_tokens,
+                    memory_enabled=current.memory_enabled,
+                    memory_auto_learn=current.memory_auto_learn,
+                    memory_batch_size=current.memory_batch_size,
+                    memory_retrieval_limit=current.memory_retrieval_limit,
+                    memory_min_confidence=current.memory_min_confidence,
                 )
             ),
         )
@@ -174,3 +232,11 @@ def _normalize_int(value: object, minimum: int, maximum: int, default: int) -> i
     except (TypeError, ValueError):
         number = default
     return min(maximum, max(minimum, number))
+
+
+def _normalize_float(value: object, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    return min(1.0, max(0.0, number))
