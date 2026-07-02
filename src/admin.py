@@ -146,6 +146,21 @@ HTML = """
     .token-guide h3 { margin: 0 0 8px; font-size: 16px; }
     .token-guide ol { margin: 8px 0; padding-left: 22px; line-height: 1.7; }
     .token-guide code { padding: 2px 5px; border-radius: 4px; background: #dbeafe; }
+    .settings-section { margin: 12px 0; border: 1px solid #dbe3ef; border-radius: 9px; background: #f8fafc; overflow: hidden; }
+    .settings-section[open] { background: white; border-color: #bfdbfe; }
+    .settings-section > summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 15px 16px; cursor: pointer; list-style: none; user-select: none; }
+    .settings-section > summary::-webkit-details-marker { display: none; }
+    .settings-section > summary span { font-size: 16px; font-weight: 700; }
+    .settings-section > summary small { margin-left: auto; color: #667085; }
+    .settings-section > summary:after { content: "展开"; min-width: 32px; color: #2563eb; font-size: 13px; font-weight: 600; }
+    .settings-section[open] > summary { border-bottom: 1px solid #dbeafe; background: #eff6ff; }
+    .settings-section[open] > summary:after { content: "收起"; }
+    .settings-section-body { padding: 15px 16px 17px; }
+    .settings-section-body > h3 { margin: 14px 0 8px; font-size: 16px; }
+    .settings-section-body > h3:first-child { margin-top: 0; }
+    .settings-subsection { margin-top: 18px; padding-top: 16px; border-top: 1px solid #e5e7eb; }
+    .settings-subsection h3 { margin: 0 0 8px; font-size: 16px; }
+    .settings-save-bar { display: flex; align-items: center; flex-wrap: wrap; padding-top: 4px; }
     .error { color: #b42318; margin-top: 16px; }
     .log-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; }
     .log-toolbar button { margin: 0; }

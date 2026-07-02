@@ -196,43 +196,42 @@ class SummaryAdmin:
         return """
 <template data-feature-panel="summary">
   <div class="feature-extra">
-    <h3>共用模型配置</h3>
     <p class="ai-config-status">正在读取模型配置...</p>
-    <label>API URL<input class="ai-api-url" type="text" placeholder="https://api.deepseek.com"></label>
-    <label>模型名<input class="ai-model" type="text" placeholder="deepseek-chat"></label>
-    <label>API Key（留空保留现有 Key）<input class="ai-api-key" type="password" autocomplete="new-password" placeholder="sk-..."></label>
-    <label>思考模式
-      <select class="ai-thinking-mode">
-        <option value="inherit">跟随模型或服务默认</option>
-        <option value="enabled">启用</option>
-        <option value="disabled">禁用</option>
-      </select>
-    </label>
-    <label>思考强度
-      <select class="ai-reasoning-effort">
-        <option value="high">high</option>
-        <option value="max">max</option>
-      </select>
-    </label>
-    <label>输入上下文 Token 预算（1024-128000）
-      <input class="ai-context-token-limit" type="text" inputmode="numeric" placeholder="16000">
-    </label>
-    <label>最大生成 Token（思维链与最终回答合计，256-65536）
-      <input class="ai-max-tokens" type="text" inputmode="numeric" placeholder="8192">
-    </label>
-    <div>
-      <button class="ai-save" type="button">保存 AI 设置</button>
+    <details class="settings-section" open>
+      <summary><span>API 基础设置</span><small>模型、密钥与 Token 参数</small></summary>
+      <div class="settings-section-body">
+      <label>API URL<input class="ai-api-url" type="text" placeholder="https://api.deepseek.com"></label>
+      <label>模型名<input class="ai-model" type="text" placeholder="deepseek-chat"></label>
+      <label>API Key（留空保留现有 Key）<input class="ai-api-key" type="password" autocomplete="new-password" placeholder="sk-..."></label>
+      <label>思考模式
+        <select class="ai-thinking-mode">
+          <option value="inherit">跟随模型或服务默认</option>
+          <option value="enabled">启用</option>
+          <option value="disabled">禁用</option>
+        </select>
+      </label>
+      <label>思考强度
+        <select class="ai-reasoning-effort">
+          <option value="high">high</option>
+          <option value="max">max</option>
+        </select>
+      </label>
+      <label>输入上下文 Token 预算（1024-128000）
+        <input class="ai-context-token-limit" type="text" inputmode="numeric" placeholder="16000">
+      </label>
+      <label>最大生成 Token（思维链与最终回答合计，256-65536）
+        <input class="ai-max-tokens" type="text" inputmode="numeric" placeholder="8192">
+      </label>
       <button class="secondary ai-clear-key" type="button">清除 API Key</button>
-      <span class="ai-save-status status"></span>
-    </div>
-    <p>URL 可填写 OpenAI-compatible 服务根地址，或完整的 <code>/chat/completions</code> 地址。思考模式下 temperature 不会发送；输入 Token 预算使用保守估算裁剪最旧消息。API Key 不会回传到浏览器。</p>
+      <p>URL 可填写 OpenAI-compatible 服务根地址，或完整的 <code>/chat/completions</code> 地址。思考模式下 temperature 不会发送；输入 Token 预算使用保守估算裁剪最旧消息。API Key 不会回传到浏览器。</p>
+      </div>
+    </details>
 
-    <div class="token-guide">
+    <details class="settings-section">
+      <summary><span>功能设置</span><small>群聊总结与 AI 聊天</small></summary>
+      <div class="settings-section-body">
       <h3>群聊总结</h3>
       <label><input class="ai-summary-enabled" type="checkbox"> 启用 <code>/short 10-200</code></label>
-    </div>
-
-    <div class="token-guide">
       <h3>AI 聊天</h3>
       <label><input class="ai-chat-enabled" type="checkbox"> 启用 AI 聊天、人设指令和自动回复</label>
       <label>动态窗口起始消息数（10-200）
@@ -242,9 +241,12 @@ class SummaryAdmin:
         <input class="ai-window-max" type="text" inputmode="numeric" placeholder="200">
       </label>
       <p>窗口从起始数量开始，只在尾部追加新消息；超过最大数量时重置为最新的起始数量，以提高前缀缓存命中率。</p>
-    </div>
+      </div>
+    </details>
 
-    <div class="token-guide">
+    <details class="settings-section">
+      <summary><span>记忆设置</span><small>长期记忆与记忆管理</small></summary>
+      <div class="settings-section-body">
       <h3>长期记忆</h3>
       <label><input class="ai-memory-enabled" type="checkbox"> 启用聊天时长期记忆检索</label>
       <label><input class="ai-memory-auto-learn" type="checkbox"> 启用后台自动学习</label>
@@ -252,9 +254,8 @@ class SummaryAdmin:
       <label>每次最多检索记忆数（1-20）<input class="ai-memory-retrieval" type="text" inputmode="numeric" placeholder="8"></label>
       <label>自动记忆最低置信度（0-1）<input class="ai-memory-confidence" type="text" inputmode="decimal" placeholder="0.72"></label>
       <p>自动提取在后台运行。私聊记忆只用于对应私聊，群记忆只用于对应群；显式标记为全局的记忆才会跨会话。</p>
-    </div>
 
-    <div class="token-guide ai-memory-editor">
+    <div class="settings-subsection ai-memory-editor">
       <h3>记忆管理</h3>
       <p class="ai-memory-stats">正在读取记忆统计...</p>
       <input class="ai-memory-search" type="text" placeholder="搜索内容、语义键或来源">
@@ -271,8 +272,12 @@ class SummaryAdmin:
       <label>内容<textarea class="ai-memory-content" spellcheck="false"></textarea></label>
       <div><button class="secondary ai-memory-new" type="button">新建</button><button class="ai-memory-save" type="button">保存</button><button class="danger ai-memory-delete" type="button">标记遗忘</button><button class="secondary ai-memory-sources" type="button">查看来源</button><span class="ai-memory-record-status status"></span></div>
     </div>
+      </div>
+    </details>
 
-    <div class="token-guide ai-character-editor">
+    <details class="settings-section">
+      <summary><span>人设设置</span><small>管理聊天人格与触发姓名</small></summary>
+      <div class="settings-section-body ai-character-editor">
       <h3>聊天人设</h3>
       <label>选择已有的人设<select class="ai-character-select"></select></label>
       <label>名字<input class="ai-character-name" type="text"></label>
@@ -285,6 +290,12 @@ class SummaryAdmin:
         <button class="ai-character-delete danger" type="button">删除人设</button>
         <span class="ai-character-status status"></span>
       </div>
+      </div>
+    </details>
+
+    <div class="settings-save-bar">
+      <button class="ai-save" type="button">保存 AI 设置</button>
+      <span class="ai-save-status status"></span>
     </div>
   </div>
 </template>
