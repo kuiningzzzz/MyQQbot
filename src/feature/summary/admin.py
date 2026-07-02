@@ -315,7 +315,7 @@ class SummaryAdmin:
       <label>每次播报新闻条数（5-50）<input class="news-count" type="text" inputmode="numeric" placeholder="10"></label>
       <label>希望获取的新闻内容需求<textarea class="news-requirements" spellcheck="false"></textarea></label>
       <p class="news-summary">正在读取新闻播报设置...</p>
-      <p>各群聊或私聊使用 <code>/open-news</code> 订阅、<code>/close-news</code> 退订。没有订阅时不会搜索或调用模型。</p>
+      <p>各群聊或私聊使用 <code>/open-news</code> 订阅、<code>/close-news</code> 退订；机器人主人可发送 <code>/news</code> 随时强制生成一次用于测试。没有订阅时，定时任务不会搜索或调用模型。</p>
       </div>
     </details>
 

@@ -26,5 +26,5 @@ def create_default_plugins(master_service: MasterService) -> list[FeaturePlugin]
         create_jm_plugin(),
         create_pixiv_plugin(),
         create_summary_plugin(master_service, ai_config, ai_client, web_search),
-        create_news_plugin(ai_config, ai_client, web_search),
+        create_news_plugin(ai_config, ai_client, web_search, master_service),
     ]

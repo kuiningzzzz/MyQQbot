@@ -14,6 +14,7 @@ from src.feature.news.store import NewsStore, NewsTarget
 from src.feature.summary.client import OpenAICompatibleClient, SummaryApiError
 from src.feature.summary.config import SummaryConfig
 from src.feature.web_search import WebSearchError, WebSearchService
+from src.master import MasterService
 
 if TYPE_CHECKING:
     from src.feature.atom.context import BotActions
@@ -36,14 +37,17 @@ class NewsFeature(Feature):
         ai_config: SummaryConfig,
         client: OpenAICompatibleClient,
         web_search: WebSearchService,
+        master_service: MasterService | None = None,
     ):
         self.config = config
         self.store = store
         self.ai_config = ai_config
         self.client = client
         self.web_search = web_search
+        self.master_service = master_service
         self._bot: BotActions | None = None
         self._scheduler: asyncio.Task[None] | None = None
+        self._generation_lock = asyncio.Lock()
 
     def on_enabled_changed(self, enabled: bool) -> None:
         pass
@@ -63,6 +67,8 @@ class NewsFeature(Feature):
                 pass
 
     async def handle(self, ctx: MessageContext) -> bool:
+        if ctx.msg == "/news":
+            return await self._handle_manual_news(ctx)
         if ctx.msg not in {"/open-news", "/close-news"}:
             return False
         target = _target_from_context(ctx)
@@ -81,6 +87,24 @@ class NewsFeature(Feature):
                 ctx,
                 "已关闭当前会话的每日新闻播报。" if removed else "当前会话尚未开启每日新闻播报。",
             )
+        return True
+
+    async def _handle_manual_news(self, ctx: MessageContext) -> bool:
+        if self.master_service is None or not self.master_service.is_master(ctx.user_id):
+            await ctx.bot.reply(ctx, "只有机器人主人可以手动生成新闻播报。")
+            return True
+        await ctx.bot.reply(ctx, "正在联网搜索并生成一次新闻播报，请稍候...")
+        now = datetime.now(BEIJING)
+        try:
+            async with self._generation_lock:
+                content = await self._generate(now)
+                self.store.add_news(now.isoformat(), content)
+        except (WebSearchError, SummaryApiError, ValueError) as exc:
+            logger.exception("手动生成 AI 新闻失败")
+            await ctx.bot.reply(ctx, f"新闻播报生成失败：{exc}")
+            return True
+        await ctx.bot.reply(ctx, content)
+        logger.info("主人在当前会话手动生成了一次 AI 新闻播报")
         return True
 
     async def _scheduler_loop(self) -> None:
@@ -116,11 +140,12 @@ class NewsFeature(Feature):
         self.store.mark_attempt(today)
         logger.info("开始生成 AI 每日新闻，订阅会话 %s 个", len(targets))
         try:
-            content = await self._generate(now)
+            async with self._generation_lock:
+                content = await self._generate(now)
+                self.store.add_news(now.isoformat(), content)
         except (WebSearchError, SummaryApiError, ValueError):
             logger.exception("AI 每日新闻生成失败")
             return
-        self.store.add_news(now.isoformat(), content)
         success = 0
         for target in targets:
             try:

@@ -27,6 +27,7 @@ DEFAULT_MASTER_HELP_MESSAGES = [
     + "\n/remember [--global] 内容 - （主人权限）显式添加长期记忆"
     + "\n/memory [关键词] - （主人权限）查看当前范围的长期记忆"
     + "\n/forget 记忆ID或关键词 - （主人权限）遗忘长期记忆",
+    "/news - （主人权限）立即联网生成一次新闻播报",
     *DEFAULT_PUBLIC_HELP_MESSAGES[-2:],
 ]
 
