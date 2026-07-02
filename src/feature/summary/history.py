@@ -16,11 +16,18 @@ class GroupMessage:
     sender: str
     user_id: int | None
     content: str
+    is_self: bool = False
+    character_name: str | None = None
 
     def as_prompt_line(self) -> str:
         time_text = datetime.fromtimestamp(self.timestamp).strftime("%m-%d %H:%M")
         identity = f"{self.sender}({self.user_id})" if self.user_id else self.sender
-        return f"[{time_text}] {identity}: {self.content}"
+        role = (
+            f"机器人自己/人设:{self.character_name or self.sender}"
+            if self.is_self
+            else "人类用户"
+        )
+        return f"[{time_text}][{role}] {identity}: {self.content}"
 
 
 class GroupHistoryStore:
@@ -92,6 +99,12 @@ class GroupHistoryStore:
                     sender=str(raw.get("sender") or user_id or "未知成员"),
                     user_id=user_id,
                     content=content,
+                    is_self=bool(raw.get("is_self", False)),
+                    character_name=(
+                        str(raw.get("character_name")).strip()
+                        if raw.get("character_name")
+                        else None
+                    ),
                 )
             )
         return messages

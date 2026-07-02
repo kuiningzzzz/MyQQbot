@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import re
+from dataclasses import replace
 from pathlib import Path
 
 from src.feature.atom import Feature, MessageContext
@@ -98,10 +99,13 @@ class SummaryFeature(Feature):
         message = message_from_context(ctx)
         if message is not None:
             self_id = ctx.event.get("self_id")
-            if (
+            is_self = (
                 self_id is not None
                 and ctx.user_id is not None
                 and str(self_id) == str(ctx.user_id)
+            )
+            if (
+                is_self
             ):
                 recent = self.history.load_conversation(key, 1)
                 if recent:
@@ -112,22 +116,22 @@ class SummaryFeature(Feature):
                         and abs(previous.timestamp - message.timestamp) <= 10
                     ):
                         return
+            character_name = self._character_for_context(ctx)
+            message = replace(
+                message,
+                is_self=is_self,
+                character_name=character_name if is_self else None,
+            )
             if ctx.message_type == "group" and ctx.group_id is not None:
                 self.history.append(ctx.group_id, message)
             elif ctx.user_id is not None:
                 self.history.append_private(ctx.user_id, message)
-            self_id = ctx.event.get("self_id")
-            is_self = (
-                self_id is not None
-                and ctx.user_id is not None
-                and str(self_id) == str(ctx.user_id)
-            )
             if not ctx.msg.startswith("/"):
                 self.memory.observe(
                     ctx,
                     message,
                     is_self=is_self,
-                    character_name=self._character_for_context(ctx),
+                    character_name=character_name,
                 )
 
     async def handle(self, ctx: MessageContext) -> bool:
