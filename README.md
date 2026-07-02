@@ -45,6 +45,12 @@ src/
     web_search/         # 可供聊天、新闻等功能复用的联网搜索服务
       config.py
       service.py
+    news/               # AI 每日新闻调度、订阅、生成和播报
+      admin.py
+      config.py
+      feature.py
+      store.py
+      plugin.py
     catalog.py          # 唯一的功能组合入口
     manager.py          # 通用 Feature 注册、开关和消息调度
   master/               # 始终启用的主人认证基础设施（不属于 Feature）
@@ -77,6 +83,9 @@ src/
 - `data/summary/history/group-群号.json`、`private-用户号.json`：每个会话最近 200 条消息及发送者身份。
 - `data/summary/memory.db`：SQLite 长期记忆、冲突版本和来源记录。
 - `data/web_search/config.json`：联网搜索服务、URL、API Key 和结果限制。
+- `data/news/config.json`：每日新闻的北京时间、条数和内容需求。
+- `data/news/subscriptions.json`：已开启新闻播报的群聊和私聊。
+- `data/news/history.json`：最近5次新闻内容和最近调度日期。
 
 Docker 部署时，`docker-compose.yml` 会把项目目录下的 `./data` 挂载到容器内的 `/app/data`。因此重建镜像或重启容器不会删除 feature 开关和已生成文件。
 
@@ -184,6 +193,21 @@ AI 聊天默认用最近 150 条消息建立稳定前缀，随后只在尾部追
 联网搜索是独立于聊天实现的可复用服务，当前接入 AI 聊天，后续新闻播报等功能可以直接复用。启用后，模型只在需要实时、近期或外部核实信息时自主调用 `web_search`，搜索结果再作为工具消息交给模型；普通聊天不会固定执行搜索。一次回复最多进行三轮工具调用，每轮最多三个查询。
 
 WebUI 支持 Tavily 和 SearXNG。Tavily 默认地址为 `https://api.tavily.com/search`，需要 API Key；SearXNG 可填写自建实例地址，通常不需要 Key，但实例必须启用 JSON 搜索结果。搜索请求与 AI 请求一样不继承系统代理。网页标题、摘要和 URL 会被明确标记为不可信外部资料，不能作为系统指令执行。
+
+### AI 每日新闻播报
+
+该 Feature 默认关闭。WebUI 的总开关控制调度器是否执行，并可设置每天北京时间0至23点的整点播报、5至50条新闻以及内容偏好；默认8点、10条，内容偏好面向中国大学生并侧重 Bilibili、抖音、二次元、游戏和重要时事。
+
+每个群聊或私聊默认不订阅。在对应会话中发送：
+
+```text
+/open-news
+/close-news
+```
+
+同一天只联网搜索和生成一次，所有订阅会话收到完全相同的内容。若调度时没有任何订阅，会直接记录本日已检查并跳过搜索与模型生成，因此不会消耗 Tavily 额度；当天整点之后才开启的会话从次日开始接收。
+
+搜索重点覆盖播报前48小时。搜索次数根据新闻条数和搜索服务单次结果数动态确定，最多10次。模型会同时读取最近5次已生成的完整播报用于事件去重；生成条数不正确时会使用同一批资料要求模型重写一次，不会再次消耗搜索额度。输出固定以“今日新闻播报：”开始、按数字编号，并以“今日新闻播报完毕~”结束。
 
 #### 长期记忆
 

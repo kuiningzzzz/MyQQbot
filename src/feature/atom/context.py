@@ -27,6 +27,12 @@ class BotActions(Protocol):
         public_route: str | None = None,
     ) -> None: ...
 
+    async def send_conversation(
+        self, conversation_type: str, conversation_id: int, message: str
+    ) -> None: ...
+
+    def can_send_conversation(self) -> bool: ...
+
     def resolve_public_file_reference(
         self,
         file_path: Path,

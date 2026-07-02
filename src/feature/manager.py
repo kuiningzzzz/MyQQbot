@@ -21,6 +21,7 @@ class FeatureManager:
             raise ValueError(f"duplicate feature name: {feature.name}")
         self.features[feature.name] = feature
         self.enabled.setdefault(feature.name, feature.default_enabled)
+        feature.on_enabled_changed(self.enabled[feature.name])
 
     def load_state(self):
         if not self.state_path.exists():
@@ -40,6 +41,7 @@ class FeatureManager:
         for name, value in data.items():
             if name in self.features:
                 self.enabled[name] = bool(value)
+                self.features[name].on_enabled_changed(self.enabled[name])
 
     def save_state(self):
         write_json(self.state_path, self.enabled)
@@ -49,6 +51,7 @@ class FeatureManager:
             raise KeyError(name)
 
         self.enabled[name] = enabled
+        self.features[name].on_enabled_changed(enabled)
         self.save_state()
         return self.info(name)
 
@@ -89,3 +92,17 @@ class FeatureManager:
                 return True
 
         return False
+
+    async def start(self, bot) -> None:
+        for name, feature in self.features.items():
+            try:
+                await feature.start(bot)
+            except Exception:
+                logger.exception("Feature %s 启动后台任务失败", name)
+
+    async def stop(self) -> None:
+        for name, feature in reversed(list(self.features.items())):
+            try:
+                await feature.stop()
+            except Exception:
+                logger.exception("Feature %s 停止后台任务失败", name)

@@ -29,7 +29,13 @@ class WebSearchService:
     def enabled(self) -> bool:
         return self.config.load().enabled
 
-    def search(self, query: str) -> list[SearchResult]:
+    def search(
+        self,
+        query: str,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ) -> list[SearchResult]:
         settings = self.config.load()
         query = query.strip()[:500]
         if not settings.enabled:
@@ -42,16 +48,21 @@ class WebSearchService:
                 if settings.provider == "tavily":
                     if not settings.api_key:
                         raise WebSearchError("Tavily API Key 尚未配置")
+                    payload: dict[str, Any] = {
+                        "query": query,
+                        "search_depth": "basic",
+                        "max_results": settings.max_results,
+                        "include_answer": False,
+                        "include_raw_content": False,
+                    }
+                    if start_date:
+                        payload["start_date"] = start_date
+                    if end_date:
+                        payload["end_date"] = end_date
                     response = session.post(
                         settings.api_url,
                         headers={"Authorization": f"Bearer {settings.api_key}"},
-                        json={
-                            "query": query,
-                            "search_depth": "basic",
-                            "max_results": settings.max_results,
-                            "include_answer": False,
-                            "include_raw_content": False,
-                        },
+                        json=payload,
                         timeout=(5, settings.timeout_seconds),
                     )
                 else:

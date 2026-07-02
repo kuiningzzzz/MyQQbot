@@ -36,8 +36,12 @@ bot = QQBot(feature_manager, master_service)
 async def lifespan(app: FastAPI):
     logger.info("QQ Bot 启动成功，监听端口 8081")
     logger.info("WebSocket 端点: ws://0.0.0.0:8081/ws 或 ws://0.0.0.0:8081/ws/")
-    yield
-    logger.info("QQ Bot 正在关闭...")
+    await feature_manager.start(bot)
+    try:
+        yield
+    finally:
+        logger.info("QQ Bot 正在关闭...")
+        await feature_manager.stop()
 
 
 bot_app = FastAPI(lifespan=lifespan, title="MyQQbot Backend")

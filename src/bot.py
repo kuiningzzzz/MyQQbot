@@ -123,6 +123,22 @@ class QQBot:
         logger.info("发送群聊消息到群 %s: %s", group_id, message)
         await ws.send_text(json.dumps(payload, ensure_ascii=False))
 
+    async def send_conversation(
+        self, conversation_type: str, conversation_id: int, message: str
+    ):
+        if not self.connected_clients:
+            raise RuntimeError("当前没有可用的 NapCat WebSocket 连接")
+        websocket = next(iter(self.connected_clients))
+        if conversation_type == "group":
+            await self.send_group_msg(conversation_id, message, websocket)
+        elif conversation_type == "private":
+            await self.send_private_msg(conversation_id, message, websocket)
+        else:
+            raise ValueError("conversation_type must be group or private")
+
+    def can_send_conversation(self) -> bool:
+        return bool(self.connected_clients)
+
     async def send_forward_msg(
         self,
         ctx: MessageContext,

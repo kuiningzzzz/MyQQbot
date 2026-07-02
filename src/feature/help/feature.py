@@ -15,18 +15,19 @@ DEFAULT_PUBLIC_HELP_MESSAGES = [
     "/pixiv 作品ID - 获取对应 Pixiv 图片或图片集\n/pixiv status - 查看 Pixiv 当前处理队列",
     "/short 10至200 - AI 总结当前群聊最近指定数量的消息（暂时不支持图片和语音等多模态信息的解析读取）",
     "/character - 查看可用的 AI 聊天人设\n/change-character 名字 - 切换当前会话的 AI 人设",
+    "/open-news - 为当前群聊或私聊开启每日新闻播报\n/close-news - 关闭当前会话的每日新闻播报",
     "/hello - 回复 hello",
 ]
 
 DEFAULT_MASTER_HELP_MESSAGES = [
-    *DEFAULT_PUBLIC_HELP_MESSAGES[:-2],
-    DEFAULT_PUBLIC_HELP_MESSAGES[-2]
+    *DEFAULT_PUBLIC_HELP_MESSAGES[:-3],
+    DEFAULT_PUBLIC_HELP_MESSAGES[-3]
     + "\n/add-character 名字 触发词 描述 系统提示词正文 - （主人权限）添加 AI 人设"
     + "\n/del-character 名字 - （主人权限）删除 AI 人设"
     + "\n/remember [--global] 内容 - （主人权限）显式添加长期记忆"
     + "\n/memory [关键词] - （主人权限）查看当前范围的长期记忆"
     + "\n/forget 记忆ID或关键词 - （主人权限）遗忘长期记忆",
-    DEFAULT_PUBLIC_HELP_MESSAGES[-1],
+    *DEFAULT_PUBLIC_HELP_MESSAGES[-2:],
 ]
 
 
