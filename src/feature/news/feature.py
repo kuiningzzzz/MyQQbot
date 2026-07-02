@@ -26,7 +26,8 @@ class NewsFeature(Feature):
     name = "news"
     title = "AI 每日新闻播报"
     description = "联网获取近48小时新闻，每天统一生成一次并发送给已订阅会话。"
-    default_enabled = False
+    default_enabled = True
+    show_in_admin = False
 
     def __init__(
         self,
@@ -41,12 +42,11 @@ class NewsFeature(Feature):
         self.ai_config = ai_config
         self.client = client
         self.web_search = web_search
-        self._enabled = False
         self._bot: BotActions | None = None
         self._scheduler: asyncio.Task[None] | None = None
 
     def on_enabled_changed(self, enabled: bool) -> None:
-        self._enabled = enabled
+        pass
 
     async def start(self, bot: BotActions) -> None:
         self._bot = bot
@@ -94,10 +94,10 @@ class NewsFeature(Feature):
             await asyncio.sleep(15)
 
     async def _run_if_due(self, now: datetime | None = None) -> None:
-        if not self._enabled:
-            return
         now = now or datetime.now(BEIJING)
         settings = self.config.load()
+        if not settings.enabled:
+            return
         today = now.date().isoformat()
         if (
             now.hour != settings.broadcast_hour

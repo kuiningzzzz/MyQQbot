@@ -21,6 +21,7 @@ class Feature(ABC):
     title: str
     description: str
     default_enabled = True
+    show_in_admin = True
 
     async def observe(self, ctx: MessageContext) -> None:
         """Observe an event even while the feature is disabled."""

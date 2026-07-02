@@ -299,6 +299,18 @@ class SummaryAdmin:
     </details>
 
     <details class="settings-section">
+      <summary><span>每日新闻播报</span><small>订阅、整点播报与内容偏好</small></summary>
+      <div class="settings-section-body">
+      <label><input class="news-enabled" type="checkbox"> 启用 AI 每日新闻调度</label>
+      <label>每天北京时间几点整播报（0-23）<input class="news-hour" type="text" inputmode="numeric" placeholder="8"></label>
+      <label>每次播报新闻条数（5-50）<input class="news-count" type="text" inputmode="numeric" placeholder="10"></label>
+      <label>希望获取的新闻内容需求<textarea class="news-requirements" spellcheck="false"></textarea></label>
+      <p class="news-summary">正在读取新闻播报设置...</p>
+      <p>各群聊或私聊使用 <code>/open-news</code> 订阅、<code>/close-news</code> 退订。没有订阅时不会搜索或调用模型。</p>
+      </div>
+    </details>
+
+    <details class="settings-section">
       <summary><span>记忆设置</span><small>长期记忆与记忆管理</small></summary>
       <div class="settings-section-body">
       <h3>长期记忆</h3>
@@ -370,6 +382,7 @@ featureAdminControls.summary = async row => {
   const memoryRetrieval = q(".ai-memory-retrieval"), memoryConfidence = q(".ai-memory-confidence");
   const searchEnabled = q(".web-search-enabled"), searchProvider = q(".web-search-provider"), searchUrl = q(".web-search-url"), searchKey = q(".web-search-key");
   const searchMaxResults = q(".web-search-max-results"), searchTimeout = q(".web-search-timeout"), searchStatus = q(".web-search-status"), clearSearchKey = q(".web-search-clear-key");
+  const newsEnabled = q(".news-enabled"), newsHour = q(".news-hour"), newsCount = q(".news-count"), newsRequirements = q(".news-requirements"), newsSummary = q(".news-summary");
   const save = q(".ai-save"), clearKey = q(".ai-clear-key"), saveStatus = q(".ai-save-status");
   const characterSelect = q(".ai-character-select"), characterName = q(".ai-character-name");
   const characterTriggerName = q(".ai-character-trigger-name");
@@ -402,6 +415,14 @@ featureAdminControls.summary = async row => {
     searchUrl.value = data.api_url; searchMaxResults.value = data.max_results; searchTimeout.value = data.timeout_seconds;
     clearSearchKey.disabled = !data.has_api_key;
     searchStatus.textContent = `搜索 API Key：${data.has_api_key ? "已配置" : "未配置"}`;
+  };
+  const loadNewsConfig = async () => {
+    const response = await fetch("/api/news/config");
+    if (!response.ok) throw new Error("加载新闻播报设置失败");
+    const data = await response.json();
+    newsEnabled.checked = data.enabled; newsHour.value = data.broadcast_hour;
+    newsCount.value = data.news_count; newsRequirements.value = data.requirements;
+    newsSummary.textContent = `已订阅会话：${data.subscription_count}；已保存最近播报：${data.recent_count}；最近调度日期：${data.last_attempt_date || "暂无"}`;
   };
   const showCharacter = character => {
     originalName = character ? character.name : null;
@@ -438,7 +459,7 @@ featureAdminControls.summary = async row => {
     memoryList.replaceChildren(...memories.map(memory => { const option=document.createElement("option"); option.value=memory.id; option.textContent=`#${memory.id} [${memory.status}/${memory.kind}] ${memory.content}`; return option; }));
     const selected = memories.find(item => item.id === selectedId) || null; showMemory(selected); if (selected) memoryList.value=String(selected.id);
   };
-  await Promise.all([loadConfig(), loadSearchConfig(), loadCharacters(), loadMemories()]);
+  await Promise.all([loadConfig(), loadSearchConfig(), loadNewsConfig(), loadCharacters(), loadMemories()]);
   characterSelect.addEventListener("change", () => showCharacter(characters.find(item => item.name === characterSelect.value)));
   q(".ai-character-new").addEventListener("click", () => showCharacter(null));
   thinkingMode.addEventListener("change", () => { reasoningEffort.disabled = thinkingMode.value !== "enabled"; });
@@ -447,6 +468,7 @@ featureAdminControls.summary = async row => {
     const contextLimit = Number(contextTokenLimit.value), outputLimit = Number(maxTokens.value);
     const batchSize = Number(memoryBatch.value), retrievalLimit = Number(memoryRetrieval.value), confidenceLimit = Number(memoryConfidence.value);
     const searchResultLimit = Number(searchMaxResults.value), searchTimeoutSeconds = Number(searchTimeout.value);
+    const broadcastHour = Number(newsHour.value), configuredNewsCount = Number(newsCount.value);
     if (!Number.isInteger(minimum) || !Number.isInteger(maximum) || minimum < 10 || maximum > 200 || minimum > maximum) { saveStatus.textContent = "动态窗口需满足 10 ≤ 起始数 ≤ 最大数 ≤ 200"; return; }
     if (!Number.isInteger(contextLimit) || contextLimit < 1024 || contextLimit > 128000) { saveStatus.textContent = "上下文 Token 预算必须是1024至128000的整数"; return; }
     if (!Number.isInteger(outputLimit) || outputLimit < 256 || outputLimit > 65536) { saveStatus.textContent = "最大生成 Token 必须是256至65536的整数"; return; }
@@ -455,18 +477,23 @@ featureAdminControls.summary = async row => {
     if (!Number.isFinite(confidenceLimit) || confidenceLimit < 0 || confidenceLimit > 1) { saveStatus.textContent = "记忆置信度必须在0至1之间"; return; }
     if (!Number.isInteger(searchResultLimit) || searchResultLimit < 1 || searchResultLimit > 10) { saveStatus.textContent = "搜索结果数必须是1至10的整数"; return; }
     if (!Number.isInteger(searchTimeoutSeconds) || searchTimeoutSeconds < 5 || searchTimeoutSeconds > 60) { saveStatus.textContent = "搜索超时必须是5至60秒的整数"; return; }
+    if (!Number.isInteger(broadcastHour) || broadcastHour < 0 || broadcastHour > 23) { saveStatus.textContent = "新闻播报小时必须是0至23的整数"; return; }
+    if (!Number.isInteger(configuredNewsCount) || configuredNewsCount < 5 || configuredNewsCount > 50) { saveStatus.textContent = "新闻条数必须是5至50的整数"; return; }
+    if (!newsRequirements.value.trim()) { saveStatus.textContent = "新闻内容需求不能为空"; return; }
     save.disabled = true; saveStatus.textContent = "保存中...";
     const body = {api_url: apiUrl.value.trim(), model: model.value.trim(), summary_enabled: summaryEnabled.checked, chat_enabled: chatEnabled.checked, chat_window_min: minimum, chat_window_max: maximum, thinking_mode: thinkingMode.value, reasoning_effort: reasoningEffort.value, context_token_limit: contextLimit, max_tokens: outputLimit, memory_enabled: memoryEnabled.checked, memory_auto_learn: memoryAutoLearn.checked, memory_batch_size: batchSize, memory_retrieval_limit: retrievalLimit, memory_min_confidence: confidenceLimit};
     if (apiKey.value.trim()) body.api_key = apiKey.value.trim();
     const searchBody = {enabled:searchEnabled.checked, provider:searchProvider.value, api_url:searchUrl.value.trim(), max_results:searchResultLimit, timeout_seconds:searchTimeoutSeconds};
+    const newsBody = {enabled:newsEnabled.checked, broadcast_hour:broadcastHour, news_count:configuredNewsCount, requirements:newsRequirements.value.trim()};
     if (searchKey.value.trim()) searchBody.api_key = searchKey.value.trim();
-    const [response, searchResponse] = await Promise.all([
+    const [response, searchResponse, newsResponse] = await Promise.all([
       fetch("/api/summary/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}),
-      fetch("/api/web-search/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(searchBody)})
+      fetch("/api/web-search/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(searchBody)}),
+      fetch("/api/news/config", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(newsBody)})
     ]);
-    save.disabled = false; const data = await response.json().catch(() => ({})); const searchData = await searchResponse.json().catch(() => ({}));
-    saveStatus.textContent = response.ok && searchResponse.ok ? "已保存并立即生效" : (data.detail || searchData.detail || "保存失败");
-    if (response.ok && searchResponse.ok) { apiKey.value = ""; searchKey.value = ""; await Promise.all([loadConfig(), loadSearchConfig()]); }
+    save.disabled = false; const data = await response.json().catch(() => ({})); const searchData = await searchResponse.json().catch(() => ({})); const newsData = await newsResponse.json().catch(() => ({}));
+    saveStatus.textContent = response.ok && searchResponse.ok && newsResponse.ok ? "已保存并立即生效" : (data.detail || searchData.detail || newsData.detail || "保存失败");
+    if (response.ok && searchResponse.ok && newsResponse.ok) { apiKey.value = ""; searchKey.value = ""; await Promise.all([loadConfig(), loadSearchConfig(), loadNewsConfig()]); }
   });
   clearKey.addEventListener("click", async () => {
     clearKey.disabled = true; const response = await fetch("/api/summary/key", {method: "DELETE"});

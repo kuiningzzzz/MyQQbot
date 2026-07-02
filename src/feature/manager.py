@@ -20,7 +20,10 @@ class FeatureManager:
         if feature.name in self.features:
             raise ValueError(f"duplicate feature name: {feature.name}")
         self.features[feature.name] = feature
-        self.enabled.setdefault(feature.name, feature.default_enabled)
+        if feature.show_in_admin:
+            self.enabled.setdefault(feature.name, feature.default_enabled)
+        else:
+            self.enabled[feature.name] = True
         feature.on_enabled_changed(self.enabled[feature.name])
 
     def load_state(self):
@@ -39,7 +42,7 @@ class FeatureManager:
             return
 
         for name, value in data.items():
-            if name in self.features:
+            if name in self.features and self.features[name].show_in_admin:
                 self.enabled[name] = bool(value)
                 self.features[name].on_enabled_changed(self.enabled[name])
 
@@ -48,6 +51,8 @@ class FeatureManager:
 
     def set_enabled(self, name: str, enabled: bool) -> FeatureInfo:
         if name not in self.features:
+            raise KeyError(name)
+        if not self.features[name].show_in_admin:
             raise KeyError(name)
 
         self.enabled[name] = enabled
@@ -68,7 +73,11 @@ class FeatureManager:
         )
 
     def list_features(self) -> list[FeatureInfo]:
-        return [self.info(name) for name in self.features]
+        return [
+            self.info(name)
+            for name, feature in self.features.items()
+            if feature.show_in_admin
+        ]
 
     async def handle_event(self, ctx: MessageContext) -> bool:
         for name, feature in self.features.items():
