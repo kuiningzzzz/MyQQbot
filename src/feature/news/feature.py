@@ -6,6 +6,7 @@ import logging
 import math
 import re
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING
 
 from src.feature.atom import Feature, MessageContext
@@ -13,7 +14,7 @@ from src.feature.news.config import NewsConfig
 from src.feature.news.store import NewsStore, NewsTarget
 from src.feature.summary.client import OpenAICompatibleClient, SummaryApiError
 from src.feature.summary.config import SummaryConfig
-from src.feature.web_search import WebSearchError, WebSearchService
+from src.feature.web_search import SearchResult, WebSearchError, WebSearchService
 from src.master import MasterService
 
 if TYPE_CHECKING:
@@ -183,7 +184,11 @@ class NewsFeature(Feature):
             "全球 重要国际新闻 最新进展",
             "科学 教育 就业 青年 重要新闻",
         ]
-        queries = [f"{stem} 最近48小时 新闻 {time_text}" for stem in query_stems[:query_count]]
+        queries = [
+            f"{stem} 仅限北京时间 {time_text} 发生或发布的新闻，"
+            f"必须是{now.year}年，排除往年同月同日旧闻"
+            for stem in query_stems[:query_count]
+        ]
         batches = await asyncio.gather(
             *[
                 asyncio.to_thread(
@@ -195,18 +200,28 @@ class NewsFeature(Feature):
             ],
             return_exceptions=True,
         )
-        unique: dict[str, object] = {}
+        unique: dict[str, SearchResult] = {}
+        rejected_old = 0
         for batch in batches:
             if isinstance(batch, Exception):
                 logger.warning("每日新闻的一个搜索请求失败：%s", batch)
                 continue
             for result in batch:
-                unique.setdefault(result.url, result)
+                if _source_is_in_current_window(result, cutoff, now):
+                    unique.setdefault(result.url, result)
+                else:
+                    rejected_old += 1
+        if rejected_old:
+            logger.info("每日新闻已过滤 %s 条年份或日期不符的旧结果", rejected_old)
         if not unique:
             raise WebSearchError("所有新闻搜索均未返回结果")
         sources = []
         for index, result in enumerate(unique.values(), 1):
-            date = f" 日期：{result.published_date}" if result.published_date else ""
+            date = (
+                f" 日期：{result.published_date}"
+                if result.published_date
+                else " 日期：未提供（仅可作为背景，不可单独作为播报事件）"
+            )
             sources.append(
                 f"[{index}] {result.title}{date}\nURL: {result.url}\n摘要: {result.content[:800]}"
             )
@@ -215,8 +230,9 @@ class NewsFeature(Feature):
         prompt = f"""请根据联网搜索资料生成一份中文每日新闻播报。
 播报时间：{now:%Y-%m-%d %H:%M}（北京时间）
 重点时间范围：播报前48小时，即 {time_text}
+年份硬性要求：本次播报年份是 {now.year} 年。绝不能因为月、日相同而采用往年新闻；任何发生或发布于 {now.year - 1} 年及更早的事件都必须排除。
 内容需求：{settings.requirements}
-必须输出恰好 {settings.news_count} 条新闻。优先选择时间范围内、信息价值较高且符合需求的内容；资料不足时可以降低主题匹配度，但不要虚构。
+必须输出恰好 {settings.news_count} 条新闻。每一条都必须能从资料中确认属于上述完整年份和48小时窗口；日期未提供的资料只能辅助理解，不能单独成为一条新闻。优先选择信息价值较高且符合需求的内容；资料不足时可以降低主题匹配度，但绝不能使用往年旧闻或虚构。
 你可以看到最近5次已生成的播报，请避免重复相同事件；同一事件只有出现重要新进展时才能再次播报。
 每条尽量用一到两句话说明发生了什么；不要输出搜索过程、Markdown 标题或额外解释。
 严格使用以下格式：
@@ -234,7 +250,7 @@ class NewsFeature(Feature):
         messages = [
             {
                 "role": "system",
-                "content": "你是严谨的每日新闻编辑。只能依据提供的联网资料写作，并严格去重和遵守输出格式。",
+                "content": f"你是严谨的每日新闻编辑。当前北京时间年份是{now.year}年。只能依据提供的联网资料写作，必须核对完整年份而非只看月日，并严格去重和遵守输出格式。",
             },
             {"role": "user", "content": prompt},
         ]
@@ -254,7 +270,7 @@ class NewsFeature(Feature):
                     {"role": "assistant", "content": raw},
                     {
                         "role": "user",
-                        "content": f"条数不符合要求。请仅重写为恰好 {settings.news_count} 条，并保持指定的开头、编号和结尾格式。",
+                        "content": f"条数不符合要求。请仅重写为恰好 {settings.news_count} 条，并保持指定格式。仍必须逐条确认是 {now.year} 年且位于指定48小时窗口，禁止用往年同日新闻补足条数。",
                     },
                 ],
                 0.2,
@@ -287,3 +303,35 @@ def _normalize_news(content: str) -> str:
 
 def _news_item_count(content: str) -> int:
     return len(re.findall(r"(?m)^\s*\d+[.、]\s*\S", content))
+
+
+def _source_is_in_current_window(
+    result: SearchResult, cutoff: datetime, now: datetime
+) -> bool:
+    published = _parse_published_date(result.published_date)
+    if published is not None:
+        return cutoff.date() <= published.date() <= now.date()
+    years = {
+        int(value)
+        for value in re.findall(
+            r"(?<!\d)(20\d{2})(?!\d)",
+            f"{result.published_date or ''} {result.title} {result.content}",
+        )
+    }
+    return not years or now.year in years
+
+
+def _parse_published_date(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = value.strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=BEIJING)
+    except ValueError:
+        pass
+    try:
+        parsed = parsedate_to_datetime(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=BEIJING)
+    except (TypeError, ValueError, OverflowError):
+        return None

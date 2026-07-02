@@ -243,7 +243,7 @@ class SummaryAdmin:
 <template data-feature-panel="summary">
   <div class="feature-extra">
     <p class="ai-config-status">正在读取模型配置...</p>
-    <details class="settings-section" open>
+    <details class="settings-section">
       <summary><span>API 基础设置</span><small>模型、密钥与 Token 参数</small></summary>
       <div class="settings-section-body">
       <label>API URL<input class="ai-api-url" type="text" placeholder="https://api.deepseek.com"></label>
