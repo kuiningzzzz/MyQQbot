@@ -2,9 +2,10 @@ import json
 from collections.abc import Iterable
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from src.admin_auth import AdminAuth, COOKIE_NAME, SESSION_TTL_SECONDS
 from src.feature.atom import FeaturePlugin
 from src.feature.manager import FeatureManager
 from src.logging_service import application_logs
@@ -14,6 +15,10 @@ from src.master.admin import MasterAdmin
 
 class ToggleRequest(BaseModel):
     enabled: bool
+
+
+class LoginRequest(BaseModel):
+    password: str
 
 
 def create_admin_app(
@@ -29,6 +34,52 @@ def create_admin_app(
     for plugin in plugins:
         if plugin.admin is not None:
             plugin.admin.register_routes(app)
+
+    auth = AdminAuth()
+
+    def cookie_is_valid(request: Request) -> bool:
+        return auth.validate(request.cookies.get(COOKIE_NAME))
+
+    def _secure_cookie(request: Request) -> bool:
+        # 经 nginx 反代时用 X-Forwarded-Proto 判断；直连回环 HTTP 时允许不加密 cookie 便于调试。
+        return (request.headers.get("x-forwarded-proto") == "https") or (request.url.scheme == "https")
+
+    @app.middleware("http")
+    async def require_login(request: Request, call_next):
+        if (request.method, request.url.path) in {("POST", "/api/login"), ("GET", "/api/session"), ("POST", "/api/logout")}:
+            return await call_next(request)
+        if request.method == "GET" and request.url.path == "/":
+            # 登录页外壳公开；所有数据端点（/api/*、/memory/* 等）由下方鉴权保护。
+            return await call_next(request)
+        if not cookie_is_valid(request):
+            return JSONResponse(status_code=401, content={"detail": "未登录或会话已过期"})
+        return await call_next(request)
+
+    @app.post("/api/login")
+    async def login(body: LoginRequest, request: Request):
+        if not auth.verify(body.password):
+            raise HTTPException(status_code=401, detail="密码错误")
+        response = JSONResponse(content={"authenticated": True})
+        response.set_cookie(
+            COOKIE_NAME,
+            auth.issue(),
+            max_age=SESSION_TTL_SECONDS,
+            httponly=True,
+            samesite="lax",
+            secure=_secure_cookie(request),
+            path="/",
+        )
+        return response
+
+    @app.get("/api/session")
+    async def session(request: Request):
+        return {"authenticated": cookie_is_valid(request)}
+
+    @app.post("/api/logout")
+    async def logout():
+        response = JSONResponse(content={"ok": True})
+        response.delete_cookie(COOKIE_NAME, path="/")
+        return response
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
@@ -176,6 +227,15 @@ HTML = """
     .level-WARNING { color: #fbbf24; }
     .level-ERROR, .level-CRITICAL { color: #fda4af; font-weight: 700; }
     .empty-setting { padding-top: 16px; border-top: 1px solid #e5e7eb; color: #98a2b3; }
+    #login-mask { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; background: rgba(15, 23, 42, .62); backdrop-filter: blur(2px); }
+    #login-mask[hidden] { display: none; }
+    .login-card { width: min(360px, calc(100vw - 40px)); background: white; border-radius: 14px; padding: 26px 24px 22px; box-shadow: 0 18px 50px rgba(0, 0, 0, .35); }
+    .login-card h1 { font-size: 20px; margin: 0 0 6px; }
+    .login-card p { color: #667085; margin: 0 0 4px; font-size: 14px; }
+    .login-card input { margin-top: 14px; }
+    .login-card button { width: 100%; margin-top: 14px; }
+    .login-error { color: #b42318; font-size: 13px; min-height: 18px; margin-top: 10px; }
+    .logout-button { background: #667085; margin-left: auto; }
     @media (max-width: 720px) {
       .topbar { gap: 10px; padding: 0 12px; }
       nav a { padding: 0 10px; }
@@ -186,6 +246,15 @@ HTML = """
   </style>
 </head>
 <body>
+  <div id="login-mask" hidden>
+    <form class="login-card" id="login-form">
+      <h1>🔐 MyQQbot 管理中心</h1>
+      <p>请输入管理密码以继续</p>
+      <input id="login-password" type="password" placeholder="管理密码" autocomplete="current-password" autofocus>
+      <button type="submit" id="login-button">登录</button>
+      <div id="login-error" class="login-error"></div>
+    </form>
+  </div>
   <header class="topbar">
     <div class="brand">MyQQbot 管理中心</div>
     <nav aria-label="管理页面导航">
@@ -193,6 +262,7 @@ HTML = """
       <a href="#logs" data-view-link="logs">实时日志</a>
       <a href="#master" data-view-link="master">主人管理</a>
     </nav>
+    <button id="logout-button" class="logout-button" type="button">退出登录</button>
   </header>
   <main>
     <section id="view-features" class="view">
@@ -373,8 +443,65 @@ HTML = """
     window.addEventListener("unhandledrejection", event => {
       errorEl.textContent = event.reason instanceof Error ? event.reason.message : "操作失败";
     });
-    loadFeatures().catch(error => { errorEl.textContent = error.message; });
-    showView(location.hash.slice(1));
+
+    const loginMask = document.querySelector("#login-mask");
+    const loginForm = document.querySelector("#login-form");
+    const loginPassword = document.querySelector("#login-password");
+    const loginButton = document.querySelector("#login-button");
+    const loginError = document.querySelector("#login-error");
+
+    function showLogin(message) {
+      stopLogs();
+      document.querySelectorAll(".view").forEach(el => { el.hidden = true; });
+      loginMask.hidden = false;
+      loginError.textContent = message || "";
+      loginPassword.focus();
+    }
+
+    function hideLogin() { loginMask.hidden = true; }
+
+    // 拦截任意 API 401（会话过期/未登录）：直接弹回登录界面。
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (...args) => {
+      const response = await originalFetch(...args);
+      if (response.status === 401 && !String(args[0]).endsWith("/api/session") && !String(args[0]).endsWith("/api/login")) {
+        showLogin("登录已过期，请重新输入密码");
+      }
+      return response;
+    };
+
+    loginForm.addEventListener("submit", async event => {
+      event.preventDefault();
+      const password = loginPassword.value;
+      loginButton.disabled = true;
+      loginError.textContent = "";
+      try {
+        const response = await originalFetch("/api/login", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({password}),
+        });
+        if (response.ok) { location.reload(); return; }
+        const data = await response.json().catch(() => ({}));
+        loginError.textContent = data.detail || "密码错误";
+      } catch (error) { loginError.textContent = error.message; }
+      finally { loginButton.disabled = false; loginPassword.select(); }
+    });
+
+    document.querySelector("#logout-button").addEventListener("click", async () => {
+      try { await originalFetch("/api/logout", {method: "POST"}); } finally { showLogin(); }
+    });
+
+    async function boot() {
+      try {
+        const session = await (await originalFetch("/api/session")).json();
+        if (!session.authenticated) { showLogin(); return; }
+        hideLogin();
+      } catch { showLogin(); return; }
+      try { await loadFeatures(); } catch (error) { errorEl.textContent = error.message; }
+      showView(location.hash.slice(1));
+    }
+    boot();
   </script>
 </body>
 </html>

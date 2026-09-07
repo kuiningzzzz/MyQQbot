@@ -3,3 +3,5 @@ __pycache__/
 data/
 .env
 .venv-ai/
+# WebUI 管理密码（勿提交）
+data/admin/auth.json

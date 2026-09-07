@@ -8,8 +8,10 @@ services:
         PIP_RETRIES: 10
     container_name: myqqbot
     ports:
-      - "8081:8081"
-      - "10010:10010"
+      # 8081 仅宿主机回环可达：NapCat 在宿主机上连接 127.0.0.1:8081，无需对外暴露。
+      - "127.0.0.1:8081:8081"
+      # 管理界面不再直接发布到公网；由宿主机 nginx(HTTPS:10010) 反代到本回环端口。
+      - "127.0.0.1:10012:10010"
     volumes:
       - ./data:/app/data
     extra_hosts:
@@ -17,6 +19,8 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
+      # huggingface.co 在大陆网络不可达；统一走镜像，embedding 模型预下载缓存于 data/ai/.vector_cache。
+      - HF_ENDPOINT=https://hf-mirror.com
       - MYQQBOT_PUBLIC_BASE_URL=${MYQQBOT_PUBLIC_BASE_URL:-http://127.0.0.1:8081}
       - JM_CLEANUP_DELAY_SECONDS=${JM_CLEANUP_DELAY_SECONDS:-300}
       - PIXIV_CLEANUP_DELAY_SECONDS=${PIXIV_CLEANUP_DELAY_SECONDS:-300}

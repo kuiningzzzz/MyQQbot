@@ -233,6 +233,11 @@ class AiFeature(Feature):
 
     async def start(self, bot):
         await self.runtime.start()
+        ok, error = await asyncio.to_thread(self.index.preload)
+        if ok:
+            logger.info("AI 向量索引就绪：embedding 模型已加载")
+        else:
+            logger.warning("AI 向量索引预加载失败：%s（记忆检索已降级为纯文本检索，每 %s 秒自动重试）", error, self.index.MODEL_RETRY_SECONDS)
 
     async def stop(self):
         await self.engine.stop()

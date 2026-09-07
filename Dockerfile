@@ -18,7 +18,15 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 # 复制依赖文件
 COPY requirements.txt .
 
-# 安装依赖
+# 服务器无 GPU：先装 CPU 版 torch，避免 pip 解析到默认 PyPI 的 CUDA 全家桶
+# （torch+cudnn+cublas 等约 3~4GB，纯属浪费镜像体积与构建时间）。
+ARG PYTORCH_CPU_INDEX_URL=https://download.pytorch.org/whl/cpu
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --progress-bar off --index-url ${PYTORCH_CPU_INDEX_URL} \
+        "torch==2.14.0" \
+    || pip install --progress-bar off --index-url ${PYTORCH_CPU_INDEX_URL} torch
+
+# 安装其余依赖（torch 已满足 sentence-transformers 的版本要求，不会再升级为 CUDA 版）
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --progress-bar off -r requirements.txt
 

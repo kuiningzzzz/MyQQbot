@@ -3,10 +3,15 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 
 from .storage import digest
 
 logger = logging.getLogger(__name__)
+
+
+class _ModelUnavailable(RuntimeError):
+    """Embedding 模型未能加载；向量索引降级为纯文本检索。"""
 
 
 def entries(text: str) -> list[dict]:
@@ -39,22 +44,62 @@ def entries(text: str) -> list[dict]:
 
 
 class VectorIndex:
+    # 模型加载失败后，至少间隔多久才允许重试一次（避免每次聊天都触发下载风暴）。
+    MODEL_RETRY_SECONDS = 300
+
     def __init__(self, workspace, config):
         self.workspace, self.config = workspace, config
         self._lock = threading.RLock()
         self._model = self._client = None
         self._model_name = ""
         self.last_error = ""
+        self._model_error = ""
+        self._model_failed_at = 0.0
+        self._degraded_logged = 0.0
 
     def _initialize(self):
         settings = self.config.load()
         if self._model is None or settings.embedding_model != self._model_name:
-            from sentence_transformers import SentenceTransformer
-            import chromadb
-            self._model = SentenceTransformer(settings.embedding_model, device="cpu", cache_folder=str(self.workspace.root / ".vector_cache/models"), trust_remote_code=False)
-            self._model_name = settings.embedding_model
-            self._client = chromadb.PersistentClient(path=str(self.workspace.root / ".vector_cache/chroma"))
+            if self._model_error and time.time() - self._model_failed_at < self.MODEL_RETRY_SECONDS:
+                raise _ModelUnavailable(f"embedding 模型暂不可用：{self._model_error}")
+            try:
+                from sentence_transformers import SentenceTransformer
+                import chromadb
+                model = SentenceTransformer(settings.embedding_model, device="cpu", cache_folder=str(self.workspace.root / ".vector_cache/models"), trust_remote_code=False)
+                client = chromadb.PersistentClient(path=str(self.workspace.root / ".vector_cache/chroma"))
+                recovered = bool(self._model_error)
+                self._model, self._client, self._model_name = model, client, settings.embedding_model
+                self._model_error = ""
+                self._model_failed_at = 0.0
+                if recovered:
+                    logger.warning("embedding 模型已成功加载，向量索引恢复正常：%s", settings.embedding_model)
+            except Exception as exc:
+                # 不保留半初始化状态；下次重试窗口内直接快速失败，不联网。
+                self._model = self._client = None
+                self._model_name = ""
+                self._model_error = f"{settings.embedding_model} 加载失败（{type(exc).__name__}: {exc}）"
+                self._model_failed_at = time.time()
+                raise _ModelUnavailable(self._model_error) from exc
         return self._client
+
+    def preload(self) -> tuple[bool, str]:
+        """启动时显式加载模型，避免聊天进行到一半才联网下载/失败。"""
+        try:
+            self._initialize()
+            return True, ""
+        except _ModelUnavailable as exc:
+            self._degraded(f"{exc}；向量检索已降级为纯文本检索，每 {self.MODEL_RETRY_SECONDS} 秒自动重试一次模型")
+            return False, str(exc)
+
+    def _degraded(self, note: str):
+        """降级提示只会在每次重试窗口出现一次（WARNING），避免日志风暴。"""
+        self.last_error = note
+        now = time.time()
+        if now - self._degraded_logged >= self.MODEL_RETRY_SECONDS:
+            self._degraded_logged = now
+            logger.warning("向量索引降级：%s", note)
+        else:
+            logger.debug("向量索引仍不可用（降级中）：%s", note)
 
     def _collection(self, scope: str):
         client = self._initialize()
@@ -104,6 +149,10 @@ class VectorIndex:
                 self.workspace.save_state("index", {"dirty": False, "model": self._model_name, "hashes": hashes})
                 self.last_error = ""
                 return True
+            except _ModelUnavailable as exc:
+                # 模型不可用时不必反复标记脏索引：索引文件没有变化，只做提示并保持文本检索。
+                self._degraded(f"{exc}；本次同步跳过，继续使用纯文本检索")
+                return False
             except Exception as exc:
                 self.last_error = f"{type(exc).__name__}: 向量索引不可用，暂用文本检索"
                 self.workspace.save_state("index", {"dirty": True})
@@ -137,6 +186,8 @@ class VectorIndex:
                             if item:
                                 hits.append({"source": path, "content": item["content"], "relevance": max(0.0, 1.0 - distance)})
                     return self._dedup(hits, limit)
+                except _ModelUnavailable as exc:
+                    self._degraded(f"{exc}；本次查询已降级为纯文本检索")
                 except Exception:
                     self.last_error = "向量检索失败，暂用文本检索"
                     self.workspace.save_state("index", {"dirty": True})
@@ -172,7 +223,11 @@ class VectorIndex:
             rows = entries(self.workspace.read_memory(path))
             if len(rows) < 2 or not self.config.load().vector_index_enabled:
                 return []
-            vectors = self._encode([row["content"][:400] for row in rows])
+            try:
+                vectors = self._encode([row["content"][:400] for row in rows])
+            except _ModelUnavailable as exc:
+                self._degraded(f"{exc}；碎片整理跳过向量去重")
+                return []
             pairs = []
             for i, left in enumerate(vectors):
                 for j in range(i + 1, len(vectors)):
