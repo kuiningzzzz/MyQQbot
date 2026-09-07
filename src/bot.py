@@ -1,6 +1,8 @@
+import asyncio
 import json
 import logging
 import os
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -25,6 +27,8 @@ class QQBot:
         self.connected_clients: set[WebSocket] = set()
         self.feature_manager = feature_manager
         self.master_service = master_service
+        self._responses: dict[str, tuple[WebSocket, asyncio.Future]] = {}
+        self._self_ids: dict[WebSocket, str] = {}
 
     def extract_text_message(
         self,
@@ -51,6 +55,19 @@ class QQBot:
 
     async def handle_websocket(self, websocket: WebSocket):
         logger.info("收到来自 %s 的 WebSocket 连接请求", websocket.client.host)
+        queue = asyncio.Queue()
+
+        async def consume():
+            while True:
+                event = await queue.get()
+                try:
+                    await self.handle_event(event, websocket)
+                except Exception:
+                    logger.exception("处理 QQ 事件失败")
+                finally:
+                    queue.task_done()
+
+        consumer = asyncio.create_task(consume())
         try:
             await websocket.accept()
             logger.info("WebSocket 连接已建立")
@@ -60,15 +77,40 @@ class QQBot:
                 message = await websocket.receive_text()
                 logger.debug("收到消息: %s...", message[:100])
                 event = json.loads(message)
-                await self.handle_event(event, websocket)
+                if event.get("self_id"):
+                    self._self_ids[websocket] = str(event["self_id"])
+                echo = str(event.get("echo") or "")
+                pending = self._responses.get(echo)
+                if pending and pending[0] is websocket:
+                    if not pending[1].done():
+                        pending[1].set_result(event)
+                else:
+                    self.feature_manager.observe_arrival(event)
+                    queue.put_nowait(event)
         except WebSocketDisconnect:
             logger.info("WebSocket 连接已断开")
         except Exception:
             logger.exception("处理 WebSocket 时发生错误")
         finally:
             self.connected_clients.discard(websocket)
+            for owner, future in list(self._responses.values()):
+                if owner is websocket and not future.done():
+                    future.set_exception(RuntimeError("NapCat连接已断开"))
+            try:
+                await asyncio.wait_for(queue.join(), timeout=5)
+            except TimeoutError:
+                logger.warning("断线时仍有未处理事件，将记录可能的消息丢失")
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+            self._self_ids.pop(websocket, None)
+            await self.feature_manager.observe_system({"kind": "disconnect"})
 
     async def handle_event(self, event: dict[str, Any], ws: WebSocket):
+        if event.get("self_id"):
+            self._self_ids[ws] = str(event["self_id"])
+        if event.get("post_type") == "notice":
+            await self.feature_manager.observe_system({**event, "_bot": self, "_websocket": ws})
+            return
         if event.get("post_type") != "message":
             return
 
@@ -95,6 +137,24 @@ class QQBot:
             return
         await self.feature_manager.handle_event(ctx)
 
+    async def call_action(self, action: str, params: dict, ws: WebSocket) -> dict:
+        if action not in {"get_forward_msg", "get_file", "get_group_file_url"}:
+            raise ValueError("不允许的读取动作")
+        echo = uuid.uuid4().hex
+        future = asyncio.get_running_loop().create_future()
+        self._responses[echo] = (ws, future)
+        try:
+            await ws.send_text(json.dumps({"action": action, "params": params, "echo": echo}))
+            result = await asyncio.wait_for(future, timeout=20)
+            if result.get("status") == "failed" or result.get("retcode", 0) != 0:
+                raise RuntimeError("NapCat读取动作失败")
+            return result.get("data") or {}
+        finally:
+            self._responses.pop(echo, None)
+
+    async def _observe_outgoing(self, scene_type, scene_id, message, ws):
+        await self.feature_manager.observe_system({"kind": "outgoing", "scene_type": scene_type, "scene_id": str(scene_id), "content": message, "self_id": self._self_ids.get(ws)})
+
     async def reply(self, ctx: MessageContext, message: str):
         if ctx.message_type == "group":
             await self.send_group_msg(ctx.group_id, message, ctx.websocket)
@@ -111,6 +171,7 @@ class QQBot:
         }
         logger.info("发送私聊消息给用户 %s: %s", user_id, message)
         await ws.send_text(json.dumps(payload, ensure_ascii=False))
+        await self._observe_outgoing("private", user_id, message, ws)
 
     async def send_group_msg(self, group_id: int | None, message: str, ws: WebSocket):
         payload = {
@@ -122,6 +183,7 @@ class QQBot:
         }
         logger.info("发送群聊消息到群 %s: %s", group_id, message)
         await ws.send_text(json.dumps(payload, ensure_ascii=False))
+        await self._observe_outgoing("group", group_id, message, ws)
 
     async def send_conversation(
         self, conversation_type: str, conversation_id: int, message: str

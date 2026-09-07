@@ -1,0 +1,30 @@
+<template data-feature-panel="ai">
+  <div class="settings-stack">
+    <p class="hint">所有群聊和私聊共享一个人格、上下文和记忆库。账号身份会提供给主 Agent 及所有助理。</p>
+    <details class="settings-section" open><summary><span>账号与人设</span></summary>
+      <div class="settings-body" data-ai-identity></div>
+      <label>人设正文（AGENT.md）<textarea data-ai-prompt rows="8" style="width:100%"></textarea></label>
+    </details>
+    <details class="settings-section"><summary><span>模型与上下文</span></summary><div class="settings-body" data-ai-model></div></details>
+    <details class="settings-section"><summary><span>记忆与本地向量模型</span></summary><div class="settings-body" data-ai-memory></div>
+      <p class="hint">日志按北京时间03:00切日：文件日期为周期开始日。本地模型首次使用时下载，可填写已下载模型的本地目录。</p>
+    </details>
+    <button type="button" data-ai-save>保存 AI 设置</button>
+    <details class="settings-section"><summary><span>联网搜索</span></summary><div class="settings-body" data-ai-search></div><button type="button" data-search-save>保存搜索设置</button></details>
+    <details class="settings-section"><summary><span>记忆文件编辑器</span></summary>
+      <p class="hint">直接编辑 Markdown 画像与通用知识，保存后同步索引。新建文件可填写 user/QQ号/PREFERENCE.md 或 user/QQ号/memory/主题.md。</p>
+      <select data-memory-list aria-label="已有记忆文件"></select><button type="button" data-memory-refresh>刷新文件列表</button>
+      <input data-memory-path placeholder="user/123456/PREFERENCE.md" style="width:100%" aria-label="记忆文件路径">
+      <button type="button" data-memory-open>打开或新建</button>
+      <textarea data-memory-content rows="15" style="width:100%" aria-label="记忆文件内容"></textarea>
+      <button type="button" data-memory-save>保存文件并同步索引</button><button type="button" data-reindex>重建全部索引</button>
+    </details>
+    <details class="settings-section"><summary><span>检索与维护</span></summary>
+      <input data-memory-query placeholder="查询内容" aria-label="查询内容"><input data-memory-qq placeholder="可选：目标QQ" aria-label="目标QQ">
+      <button type="button" data-memory-test>测试 Attention 检索</button>
+      <label>完整日志周期开始日期<input type="date" data-integrate-date></label><button type="button" data-integrate>整合该周期</button>
+      <pre data-memory-result style="white-space:pre-wrap"></pre>
+    </details>
+    <p data-ai-status role="status" style="white-space:pre-wrap"></p>
+  </div>
+</template>

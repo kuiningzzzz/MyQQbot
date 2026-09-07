@@ -13,23 +13,11 @@ DEFAULT_PUBLIC_HELP_MESSAGES = [
     "/set-master 鉴别码 - 将当前 QQ 用户绑定为机器人主人",
     "/jm 号码 - 下载对应 JM 漫画，导出 PDF 并发送到当前会话\n/jm status - 查看 JM 当前处理队列",
     "/pixiv 作品ID - 获取对应 Pixiv 图片或图片集\n/pixiv status - 查看 Pixiv 当前处理队列",
-    "/short 10至200 - AI 总结当前群聊最近指定数量的消息（暂时不支持图片和语音等多模态信息的解析读取）",
-    "/character - 查看可用的 AI 聊天人设\n/change-character 名字 - 切换当前会话的 AI 人设",
-    "/open-news - 为当前群聊或私聊开启每日新闻播报\n/close-news - 关闭当前会话的每日新闻播报",
+    "/short 10至200 - AI 总结当前群聊仍保留的最近消息\n@机器人或提到机器人网名 - 唤醒AI聊天，60秒内可连续交谈",
     "/hello - 回复 hello",
 ]
 
-DEFAULT_MASTER_HELP_MESSAGES = [
-    *DEFAULT_PUBLIC_HELP_MESSAGES[:-3],
-    DEFAULT_PUBLIC_HELP_MESSAGES[-3]
-    + "\n/add-character 名字 触发词 描述 系统提示词正文 - （主人权限）添加 AI 人设"
-    + "\n/del-character 名字 - （主人权限）删除 AI 人设"
-    + "\n/remember [--global] 内容 - （主人权限）显式添加长期记忆"
-    + "\n/memory [关键词] - （主人权限）查看当前范围的长期记忆"
-    + "\n/forget 记忆ID或关键词 - （主人权限）遗忘长期记忆",
-    DEFAULT_PUBLIC_HELP_MESSAGES[-2] + "\n/news - （主人权限）立即联网生成一次新闻播报",
-    *DEFAULT_PUBLIC_HELP_MESSAGES[-1:],
-]
+DEFAULT_MASTER_HELP_MESSAGES = [*DEFAULT_PUBLIC_HELP_MESSAGES, "AI账号、人设与记忆文件请在管理WebUI的AI服务中配置。"]
 
 
 class HelpFeature(Feature):
@@ -102,7 +90,13 @@ class HelpFeature(Feature):
     def _normalize(messages: object) -> list[str]:
         if not isinstance(messages, list):
             return []
-        return [str(message).strip() for message in messages if str(message).strip()]
+        retired = ("/character", "/change-character", "/add-character", "/del-character", "/remember", "/memory", "/forget", "/open-news", "/close-news", "/news")
+        result = []
+        for message in messages:
+            text = "\n".join(line for line in str(message).splitlines() if not line.strip().startswith(retired)).strip()
+            if text:
+                result.append(text)
+        return result
 
     @staticmethod
     def _without_master_commands(messages: list[str]) -> list[str]:

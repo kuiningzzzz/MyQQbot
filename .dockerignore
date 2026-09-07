@@ -13,4 +13,7 @@ build
 .gitignore
 .vscode
 .idea
+.venv*/
+data/
+.env
 *.md

@@ -26,6 +26,12 @@ class Feature(ABC):
     async def observe(self, ctx: MessageContext) -> None:
         """Observe an event even while the feature is disabled."""
 
+    def observe_arrival(self, event: dict) -> None:
+        """Fast notification before potentially slow event/attachment processing."""
+
+    async def observe_system(self, event: dict) -> None:
+        """Observe transport lifecycle, outgoing messages and OneBot notices."""
+
     async def start(self, bot: "BotActions") -> None:
         """Start optional background work after the bot server is ready."""
 

@@ -102,6 +102,20 @@ class FeatureManager:
 
         return False
 
+    def observe_arrival(self, event: dict) -> None:
+        for feature in self.features.values():
+            try:
+                feature.observe_arrival(event)
+            except Exception:
+                logger.exception("Feature %s 处理消息到达通知失败", feature.name)
+
+    async def observe_system(self, event: dict) -> None:
+        for feature in self.features.values():
+            try:
+                await feature.observe_system(event)
+            except Exception:
+                logger.exception("Feature %s 记录系统事件失败", feature.name)
+
     async def start(self, bot) -> None:
         for name, feature in self.features.items():
             try:

@@ -4,6 +4,8 @@ from typing import Any, Protocol
 
 
 class BotActions(Protocol):
+    async def call_action(self, action: str, params: dict, ws: Any) -> dict: ...
+
     async def reply(self, ctx: "MessageContext", message: str) -> None: ...
 
     async def send_forward_msg(
