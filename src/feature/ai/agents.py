@@ -13,6 +13,7 @@ from .client import parse_json
 from .context import bounded_batches, token_count
 from .index import entries
 from .storage import digest
+from .memory_prompts import MEMORY_EXTRACT_PROMPT, MEMORY_COMPARE_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -106,9 +107,10 @@ class IntegrationAgent:
             updated, conflicts = set(), 0
             settings = self.config.load()
             summaries = {key: value.get("compressed_summary", "") for key, value in (context or {}).items()}
-            batch_budget = settings.context_token_limit - settings.max_tokens - token_count(summaries) - 6000
+            system = self.identity.prompt() + "\n" + MEMORY_EXTRACT_PROMPT
+            batch_budget = settings.context_token_limit - settings.max_tokens - token_count(summaries) - token_count(system) - 2000
             for chunk in bounded_batches(lines, 300, batch_budget):
-                data = parse_json(await self.client.complete(self.config.load(), self.identity.prompt() + "\n【记忆整合Agent】从原始记录提取有价值的信息，只引用人类明确表达的证据。跳过闲聊、凭据和机器人自身事实。每项需 evidence 为本批记录的序号（从0开始）；qq 为证据支持的用户QQ，通用黑话知识用空字符串。category 为 PERSON/PREFERENCE/RECENTNESS/GLOSSARY/memory；extra_filename 为可选的额外md文件名；confidence 为 normal/confirmed/joke。content 只写客观条目正文，不写时间后缀。输出 {\"candidates\":[{\"qq\":\"123\",\"category\":\"PREFERENCE\",\"content\":\"喜欢咖啡\",\"evidence\":[0],\"confidence\":\"normal\"}]}。不得仅依据摘要新增事实。", json.dumps({"records": chunk, "scene_summaries": {key: value.get("compressed_summary", "") for key, value in (context or {}).items()}}, ensure_ascii=False)))
+                data = parse_json(await self.client.complete(settings, system, json.dumps({"records": chunk, "scene_summaries": summaries}, ensure_ascii=False)))
                 candidates = data.get("candidates")
                 if not isinstance(candidates, list):
                     raise ValueError("记忆整合返回格式错误")
@@ -158,7 +160,7 @@ class IntegrationAgent:
         qq = path.split("/")[1] if path.startswith("user/") else None
         related = await asyncio.to_thread(self.index.search, content, "user" if qq else "common", qq, 10)
         previous = await asyncio.to_thread(self.workspace.read_memory, path)
-        data = parse_json(await self.client.complete(self.config.load(), self.identity.prompt() + "\n【记忆整合Agent：条目对照】对照现有文件和向量检索结果，判断新内容与文件现有条目是 new/same/conflict。仅真正描述同一事实才算same或conflict。输出 {\"relation\":\"new\",\"old_entry\":\"现有文件中的完整条目原文，new时为空\"}。冲突交给程序概率决策，不自行裁决。", json.dumps({"file": path, "existing": previous, "related": related, "new": content}, ensure_ascii=False)))
+        data = parse_json(await self.client.complete(self.config.load(), self.identity.prompt() + "\n" + MEMORY_COMPARE_PROMPT, json.dumps({"file": path, "existing": previous, "related": related, "new": content}, ensure_ascii=False)))
         relation, old = data.get("relation"), data.get("old_entry", "")
         if relation not in {"new", "same", "conflict"}:
             raise ValueError("条目对照结果无效")
