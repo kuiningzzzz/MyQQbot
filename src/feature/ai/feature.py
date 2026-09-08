@@ -137,6 +137,8 @@ class AiFeature(Feature):
                 result.append(str(data.get("text") or ""))
             elif kind == "at":
                 result.append(f"@QQ:{data.get('qq', '')}")
+            elif kind == "reply":
+                result.append(f"[引用消息ID:{data.get('id', '')}]")
             elif kind in {"image", "file"}:
                 try:
                     url = data.get("url") or data.get("file") or ""
@@ -194,12 +196,13 @@ class AiFeature(Feature):
         elif kind == "outgoing":
             qq = str(event.get("self_id") or self.config.load().bot_qq or "0")
             self.identity.observe(qq)
-            await self.record(event["scene_type"], str(event["scene_id"]), qq, self.config.load().nickname, event["content"], outgoing=True)
+            await self.record(event["scene_type"], str(event["scene_id"]), qq, self.config.load().nickname, event["content"], outgoing=True, message_id=event.get("message_id"))
         elif kind == "disconnect":
             await asyncio.to_thread(self.workspace.append_system, "连接中断 | 消息丢失（断线期间可能有未接收消息）", self.config.load().timezone)
         elif event.get("notice_type") in {"group_recall", "friend_recall"}:
             original = "未在当前上下文找到原消息"
             target = f"group:{event['group_id']}" if event.get("group_id") else f"private:{event.get('user_id')}"
+            await self.context.mark_recalled(target, event.get("message_id"))
             for key, scene in self.context.snapshot().items():
                 if key != target:
                     continue

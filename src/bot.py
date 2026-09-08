@@ -10,6 +10,7 @@ from urllib.parse import quote
 from fastapi import WebSocket, WebSocketDisconnect
 
 from src.feature.atom.context import MessageContext
+from src.onebot_error import OneBotError
 
 if TYPE_CHECKING:
     from src.feature.manager import FeatureManager
@@ -138,8 +139,8 @@ class QQBot:
         await self.feature_manager.handle_event(ctx)
 
     async def call_action(self, action: str, params: dict, ws: WebSocket) -> dict:
-        if action not in {"get_forward_msg", "get_file", "get_group_file_url"}:
-            raise ValueError("不允许的读取动作")
+        if action not in {"get_forward_msg", "get_file", "get_group_file_url", "get_msg", "get_group_member_info", "delete_msg", "send_group_msg", "send_private_msg"}:
+            raise ValueError("不允许的动作")
         echo = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         self._responses[echo] = (ws, future)
@@ -147,13 +148,13 @@ class QQBot:
             await ws.send_text(json.dumps({"action": action, "params": params, "echo": echo}))
             result = await asyncio.wait_for(future, timeout=20)
             if result.get("status") == "failed" or result.get("retcode", 0) != 0:
-                raise RuntimeError("NapCat读取动作失败")
+                raise OneBotError(action, result)
             return result.get("data") or {}
         finally:
             self._responses.pop(echo, None)
 
-    async def _observe_outgoing(self, scene_type, scene_id, message, ws):
-        await self.feature_manager.observe_system({"kind": "outgoing", "scene_type": scene_type, "scene_id": str(scene_id), "content": message, "self_id": self._self_ids.get(ws)})
+    async def _observe_outgoing(self, scene_type, scene_id, message, ws, message_id=None):
+        await self.feature_manager.observe_system({"kind": "outgoing", "scene_type": scene_type, "scene_id": str(scene_id), "content": message, "self_id": self._self_ids.get(ws), "message_id": message_id})
 
     async def reply(self, ctx: MessageContext, message: str):
         if ctx.message_type == "group":
@@ -170,8 +171,8 @@ class QQBot:
             },
         }
         logger.info("发送私聊消息给用户 %s: %s", user_id, message)
-        await ws.send_text(json.dumps(payload, ensure_ascii=False))
-        await self._observe_outgoing("private", user_id, message, ws)
+        result = await self.call_action(payload["action"], payload["params"], ws)
+        await self._observe_outgoing("private", user_id, message, ws, result.get("message_id"))
 
     async def send_group_msg(self, group_id: int | None, message: str, ws: WebSocket):
         payload = {
@@ -182,8 +183,8 @@ class QQBot:
             },
         }
         logger.info("发送群聊消息到群 %s: %s", group_id, message)
-        await ws.send_text(json.dumps(payload, ensure_ascii=False))
-        await self._observe_outgoing("group", group_id, message, ws)
+        result = await self.call_action(payload["action"], payload["params"], ws)
+        await self._observe_outgoing("group", group_id, message, ws, result.get("message_id"))
 
     async def send_conversation(
         self, conversation_type: str, conversation_id: int, message: str

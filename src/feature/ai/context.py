@@ -51,7 +51,6 @@ class ContextManager:
         for scene in snapshot.values():
             for record in scene["recent_messages"]:
                 record.pop("raw_line", None)
-                record.pop("id", None)
         return snapshot
 
     async def for_prompt(self) -> str:
@@ -87,3 +86,10 @@ class ContextManager:
 
     def recent(self, scene: str, count: int) -> list[dict]:
         return copy.deepcopy(self.scenes.get(scene, {}).get("recent_messages", [])[-count:])
+
+    async def mark_recalled(self, scene, message_id):
+        async with self._lock:
+            for record in self.scenes.get(scene, {}).get("recent_messages", []):
+                if record["id"] == str(message_id):
+                    record["recalled"] = True
+            await asyncio.to_thread(self.workspace.save_state, "context", self.scenes)
