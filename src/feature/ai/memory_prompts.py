@@ -97,3 +97,13 @@ conflict：同一主体的同一属性在同一有效时间范围内互不兼容
 不自行改变新事实的类别，不把职业、事件或项目资料解释成喜好。冲突是否替换交给程序决策。
 只输出JSON：{"relation":"new或same或conflict","old_entry":"当前文件中的完整旧条目；new时为空字符串"}。
 """
+
+MEMORY_COMPARE_REPAIR_PROMPT = """
+【记忆整合Agent：条目纠错】
+上一轮你给出的old_entry无法在当前文件中逐字匹配（可能因为你做了改写或夹带了时间戳）。
+下面是当前文件的全部条目（每条以编号列出，均为逐字原文），以及你上一轮的relation和old_entry。
+- 若某一条编号条目确实与你的意图一致：输出 {"relation":"same或conflict","old_entry":"该条目的逐字原文"}
+- 若该事实确实不存在于任何条目：输出 {"relation":"new","old_entry":""}
+old_entry必须与上表某一编号条目的原文完全一致，禁止改写或拼接。
+只输出JSON对象，不写解释或Markdown代码围栏。
+"""

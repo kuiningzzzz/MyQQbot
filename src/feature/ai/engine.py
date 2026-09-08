@@ -5,12 +5,29 @@ import json
 import logging
 import time
 
+from .client import parse_json
 from .context import token_count
 from .recall import RECALL_POLICY, recall_message
 from .workfiles import WORK_POLICY
 from .forward import FORWARD_POLICY, send_forward_message
 
 logger = logging.getLogger(__name__)
+
+CONTINUE_JUDGE_PROMPT = """
+【continue Agent：判断新消息是否需要打断当前回复】
+主Agent 正在回复 replying_to（场景 recent_scene_messages 是最新几条聊天记录，供你判断语境）。
+期间收到新消息 new_message，请判断它是否是“对当前正在回复内容的补充延续”。
+【判定为打断（interrupt=true）的典型情况】
+- 同一主题/同一请求的追加、澄清、补充细节或修正（例：“等等，我补充一下：它其实是蓝色的”）
+- 对主Agent 正要回答的问题的即时回答/追问（“对，就是那个”“然后呢？”）
+- 贴出新证据/图片并指向当前话题（“就是这个 / 你看这张图”）
+- 直接呼叫主Agent 且明显承接当前话题
+【判定为不打断（interrupt=false）的典型情况】
+- 与当前话题无关的新话题、新请求、新问题
+- 别人的插话/无关闲聊/复读，或需要另起一轮处理的内容
+【输出协议】
+只输出 JSON：{"interrupt": true 或 false, "reason": "不超过20字的中文理由"}。不写解释或代码围栏。
+"""
 
 
 def tool(name: str, description: str, properties: dict, required: list[str]) -> dict:
@@ -27,6 +44,18 @@ class ChatEngine:
         self.forced = {}
         self._did_send = {}
         self.work_authorized = {}
+        # continue Agent 门控状态（按场景 key 记录）：
+        # _judging: 有一轮 continue 判断正在进行；_deferring: 本轮回复期间不再询问、新消息只排队；
+        # _current_target: 当前正在回复的那条消息（供 continue 判断“是否补充延续”）。
+        self._judging: dict[str, bool] = {}
+        self._deferring: dict[str, bool] = {}
+        self._current_target: dict[str, dict] = {}
+
+    def reset_transient(self):
+        """功能关闭/重启时清空 continue Agent 门控状态。"""
+        self._judging.clear()
+        self._deferring.clear()
+        self._current_target.clear()
 
     def note_arrival(self, event: dict, text: str | None = None) -> bool:
         feature = self.feature
@@ -48,7 +77,12 @@ class ChatEngine:
             return False
         self.active[key] = time.monotonic() + 60
         self.forced[key] = forced or self.forced.get(key, False)
-        self.revisions[key] = self.revisions.get(key, 0) + 1
+        # 每条消息保留自己的“直接呼叫”标记，避免排队后继承前一条的强制回复状态。
+        event["_ai_arrival_forced"] = forced
+        # revision 不随新消息递增，只在 continue 判定打断或功能开关/停机时变化，
+        # 用于中止已无意义的回合；普通新消息只排队等待，不打断正在进行的回复。
+        if key not in self.revisions:
+            self.revisions[key] = 0
         event["_ai_arrival_revision"] = self.revisions[key]
         return True
 
@@ -61,15 +95,101 @@ class ChatEngine:
             ctx.event.setdefault("user_id", ctx.user_id)
             if not self.note_arrival(ctx.event, ctx.raw_msg or ctx.msg):
                 return False
-        self.pending[key] = (ctx, self.forced.get(key, False), ctx.event["_ai_arrival_revision"])
+        forced_now = bool(ctx.event.get("_ai_arrival_forced", False))
+        arrival_revision = ctx.event["_ai_arrival_revision"]
+        if key not in self.tasks:
+            # 场景空闲：直接进入新一轮回复。
+            self.pending[key] = (ctx, forced_now, arrival_revision)
+            self._ensure_task(key)
+            return True
+        # 场景正在处理一轮回复：
+        # 若 continue 判断进行中，或已决定本轮不再打断（deferring），新消息只排队（合并为最新一条）；
+        # 否则启动一轮 continue 判断，由它决定是否打断重开。
+        if not self._judging.get(key) and not self._deferring.get(key):
+            self._judging[key] = True
+            asyncio.create_task(self._judge_arrival(key, ctx, forced_now, arrival_revision))
+        else:
+            self._queue_latest(key, ctx, forced_now, arrival_revision)
+        return True
+
+    def _ensure_task(self, key):
         if key not in self.tasks:
             self.tasks[key] = asyncio.create_task(self._run(key))
-        return True
+
+    def _queue_latest(self, key, ctx, forced: bool, revision: int) -> None:
+        """把新消息并入待处理队列：忙碌时只保留一条最新待回复；直接呼叫优先于普通消息。"""
+        existing = self.pending.get(key)
+        if existing is None or (not existing[1] and forced):
+            self.pending[key] = (ctx, forced, revision)
+
+    async def _judge_arrival(self, key, ctx, forced: bool, revision: int) -> None:
+        """continue Agent 判定 + 执行打断/排队。"""
+        feature = self.feature
+        try:
+            interrupt, reason = await self._ask_continuation(key, ctx)
+        except Exception as exc:
+            logger.warning("continue Agent 判断异常，按“不打断”处理：%s", exc)
+            interrupt, reason = False, "判断失败默认不打断"
+        finally:
+            self._judging.pop(key, None)
+        if not feature.enabled:
+            return
+        if not interrupt:
+            # 判定为独立新消息：本轮回复剩余时间内 continue Agent 不再工作，只把消息排队，
+            # 等本轮回复完成后再处理。
+            self._deferring[key] = True
+            self._queue_latest(key, ctx, forced, revision)
+            logger.info("continue Agent 判定不打断（%s）：%s 的这条消息待本轮回复完成后处理", key, reason)
+            # 若当前回合恰好已结束，直接为新消息开启一轮；新回合开始时会重置 deferring。
+            self._ensure_task(key)
+            return
+        # 判定为补充延续：作废当前回合的剩余工作，立刻以新消息重新开始一轮思考。
+        # revision +1 会让正在运行的 _turn 在下一个检查点自行退出。
+        new_revision = self.revisions.get(key, 0) + 1
+        self.revisions[key] = new_revision
+        ctx.event["_ai_arrival_revision"] = new_revision
+        self.pending[key] = (ctx, forced, new_revision)
+        self._deferring.pop(key, None)
+        logger.info("continue Agent 判定为补充延续，打断当前回复重新思考：%s（%s）", key, reason)
+        self._ensure_task(key)
+
+    async def _ask_continuation(self, key, ctx) -> tuple[bool, str]:
+        """近 5 条场景消息 + 正在回复的目标 + 新消息，交给 continue Agent 判断。"""
+        feature = self.feature
+        target = self._current_target.get(key) or {}
+        try:
+            recent = feature.context.recent(key, 5)
+        except Exception:
+            recent = []
+        payload = {
+            "recent_scene_messages": [
+                {"qq": str(item.get("qq", "")), "bot_self": bool(item.get("is_self")), "content": str(item.get("content", ""))[:500]}
+                for item in recent
+            ],
+            "replying_to": {
+                "user_qq": str(target.get("user_qq", "")),
+                "content": str(target.get("content", ""))[:500],
+            },
+            "new_message": {
+                "user_qq": str(ctx.user_id),
+                "direct_call": bool(ctx.event.get("_ai_arrival_forced", False)),
+                "content": str(ctx.raw_msg or ctx.msg)[:500],
+            },
+        }
+        system = feature.identity.prompt() + "\n" + CONTINUE_JUDGE_PROMPT
+        raw = await feature.client.complete(feature.config.load(), system, json.dumps(payload, ensure_ascii=False))
+        data = parse_json(raw)
+        interrupt = bool(data.get("interrupt"))
+        reason = str(data.get("reason") or "")
+        logger.info("continue Agent 判断 key=%s interrupt=%s reason=%s", key, interrupt, reason)
+        return interrupt, reason
 
     async def _run(self, key):
         try:
             while key in self.pending:
                 ctx, forced, revision = self.pending.pop(key)
+                self._current_target[key] = {"user_qq": str(ctx.user_id), "content": ctx.raw_msg or ctx.msg}
+                self._deferring.pop(key, None)
                 try:
                     await self._turn(ctx, key, forced, revision)
                 except Exception as exc:
@@ -82,6 +202,8 @@ class ChatEngine:
                 self.active[key] = time.monotonic() + 60
         finally:
             self.tasks.pop(key, None)
+            self._current_target.pop(key, None)
+            self._deferring.pop(key, None)
 
     async def _turn(self, ctx, key, forced, revision):
         feature = self.feature
@@ -221,10 +343,35 @@ class ChatEngine:
                     output = {"error": str(exc)}
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": json.dumps(output, ensure_ascii=False)})
         if forced and not sent and not files_delivered:
+            usage: dict[str, int] = {}
+            for item in messages:
+                for call in item.get("tool_calls") or []:
+                    name = (call.get("function") or {}).get("name", "?")
+                    usage[name] = usage.get(name, 0) + 1
+            logger.warning("直接呼叫触发工具轮数上限：%s forced=%s 工具调用统计=%s", key, forced, usage)
+            # 用尽工具轮数仍无任何消息：撤掉工具让模型直接给文本，兜底发送，
+            # 避免直接呼叫在群里被公开报“请求失败”。
+            if self.revisions.get(key) == revision and feature.enabled:
+                fallback = messages + [{"role": "user", "content": "你已用尽本轮工具调用次数。如果确实需要回复，请直接输出要发送的回复正文（1至4000字），不要再调用任何工具。"}]
+                try:
+                    if token_count(fallback) + settings.max_tokens <= settings.context_token_limit:
+                        result = await feature.client.turn(settings, fallback, [])
+                        if self.revisions.get(key) != revision or not feature.enabled:
+                            return
+                        text = (result.get("content") or "").strip()
+                        if text:
+                            logger.warning("工具轮数耗尽，已用兜底文本回复 %s", key)
+                            await ctx.bot.reply(ctx, text[:4000])
+                            self._did_send[key] = True
+                            self.forced[key] = False
+                            return
+                except Exception:
+                    logger.exception("兜底回复失败：%s", key)
             raise ValueError("模型达到工具轮数上限，仍未发送回复")
 
     async def stop(self):
         self.pending.clear()
+        self.reset_transient()
         for task in self.tasks.values():
             task.cancel()
         await asyncio.gather(*self.tasks.values(), return_exceptions=True)

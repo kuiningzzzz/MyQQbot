@@ -60,6 +60,7 @@ class AiFeature(Feature):
         self.enabled = enabled
         self.runtime.set_enabled(enabled)
         if not enabled:
+            self.engine.reset_transient()
             self.engine.pending.clear()
             self.engine.active.clear()
             for key in self.engine.revisions:

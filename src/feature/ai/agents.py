@@ -13,7 +13,7 @@ from .client import parse_json
 from .context import bounded_batches, token_count
 from .index import entries
 from .storage import digest
-from .memory_prompts import MEMORY_EXTRACT_PROMPT, MEMORY_COMPARE_PROMPT
+from .memory_prompts import MEMORY_EXTRACT_PROMPT, MEMORY_COMPARE_PROMPT, MEMORY_COMPARE_REPAIR_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,12 @@ class IntegrationAgent:
                         continue
                     if qq:
                         await asyncio.to_thread(self.workspace.init_user, qq, self.identity.ids)
-                    changed, conflict = await self._merge(path, content, candidate.get("confidence", "normal"))
+                    try:
+                        changed, conflict = await self._merge(path, content, candidate.get("confidence", "normal"))
+                    except Exception as exc:
+                        # 单条候选失败不应中断整批：跳过该条并继续，其余候选照常落盘。
+                        logger.warning("记忆候选整合异常，已跳过本条：%s（qq=%s）：%s", content[:80], qq, exc)
+                        continue
                     if changed:
                         updated.add(path)
                     conflicts += conflict
@@ -164,8 +169,18 @@ class IntegrationAgent:
         relation, old = data.get("relation"), data.get("old_entry", "")
         if relation not in {"new", "same", "conflict"}:
             raise ValueError("条目对照结果无效")
-        if relation != "new" and old not in [item["content"] for item in entries(previous)]:
-            raise ValueError("模型指定的旧条目并不存在")
+        known = [item["content"] for item in entries(previous)]
+        if relation != "new" and old not in known:
+            # 模型改写/夹带时间戳导致匹配不上：给一次纠错机会，让它从文件条目中逐字选择。
+            relation, old = await self._repair_old_entry(path, previous, relation, old, known)
+            if relation is None:
+                logger.warning("记忆对照修复后仍无法定位旧条目，已放弃本条候选：%s -> %s", path, content[:80])
+                return False, 0
+            if relation == "new":
+                pass  # 修复判定为全新事实，按 new 追加。
+            elif old not in known:
+                logger.warning("记忆对照修复后 old_entry 仍不在文件中，已放弃本条候选：%s -> %s", path, content[:80])
+                return False, 0
         now = datetime.now(ZoneInfo(self.config.load().timezone))
         if relation == "conflict" and not accept_conflict(old, confidence, now):
             return False, 1
@@ -178,6 +193,25 @@ class IntegrationAgent:
         await asyncio.to_thread(self.workspace.write_memory, path, updated, digest(previous))
         await asyncio.to_thread(self.index.sync, path)
         return True, int(relation == "conflict")
+
+    async def _repair_old_entry(self, path: str, previous: str, relation: str, old: str, known: list[str]) -> tuple[str | None, str]:
+        """对照失败后的单次纠错：要求模型从文件现有条目中逐字选择。
+
+        返回 (relation, old_entry)；无法修复时 relation 为 None，由调用方放弃该候选。
+        """
+        system = self.identity.prompt() + "\n" + MEMORY_COMPARE_REPAIR_PROMPT
+        numbered = [f"第{i + 1}条：{row}" for i, row in enumerate(known)]
+        payload = json.dumps({"file": path, "entries": numbered, "previous_relation": relation, "previous_old_entry": old}, ensure_ascii=False)
+        data = parse_json(await self.client.complete(self.config.load(), system, payload))
+        repaired_relation = data.get("relation")
+        if repaired_relation not in {"new", "same", "conflict"}:
+            return None, ""
+        if repaired_relation == "new":
+            return "new", ""
+        repaired_old = str(data.get("old_entry") or "")
+        if repaired_old in known:
+            return repaired_relation, repaired_old
+        return None, ""
 
     async def compact(self) -> list[str]:
         changed = []
