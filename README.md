@@ -269,3 +269,11 @@ PIXIV_PROXY= docker compose up -d
 
 - [QQ Bot 基础开发指南](docs/QQBot基础开发指南.md)
 - [Napcat 事件 JSON 格式说明](docs/Napcat事件JSON格式说明.md)
+
+### AI 发送聊天记录
+
+可以对机器人说“请用聊天记录形式整理并发送”。主 Agent 使用 `send_forward_message(messages)` 将文本列表发送为 QQ 原生合并转发卡片，群聊和私聊均支持，目标固定为当前会话。长篇回复也可自行选择这种形式。
+
+每张卡片包含 1–20 条文本，每条最多 4000 字符、总计最多 20000 字符；每轮最多尝试发送一张。记录统一使用机器人账号和配置的昵称，这是机器人整理的文本，不是保留他人身份的原消息转发。提示词和发送实现位于 `src/feature/ai/forward.py`，工具接入位于 `src/feature/ai/engine.py`。
+
+发送等待 NapCat 回执（最长 120 秒），成功后将正文和真实消息 ID 记入自身上下文。明确权限错误返回 `permission_denied`，其他 NapCat 拒绝返回 `send_failed`；超时返回 `unknown`，提示 Agent 不自动重发。接口参考：[NapCat 发送群合并转发消息](https://napcat.apifox.cn/226657396e0)。更新代码后需重新构建并重启机器人服务。
