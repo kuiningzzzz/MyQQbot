@@ -21,6 +21,9 @@ from .index import VectorIndex
 from .media import FileAgent
 from .runtime import MemoryRuntime
 from .storage import Workspace
+from .sandbox import SandboxClient
+from .workfiles import WorkFiles
+from .media import IMAGE_SUFFIXES
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +43,9 @@ class AiFeature(Feature):
         self.integration = IntegrationAgent(self.workspace, self.config, self.client, self.index, self.identity)
         self.context = ContextManager(self.workspace, self.config, self.client, self.identity.prompt)
         self.attention.context_provider = self.context.prompt_snapshot
-        self.files = FileAgent(self.config, self.client, self.identity)
+        self.sandbox = SandboxClient()
+        self.files = FileAgent(self.config, self.client, self.identity, self.sandbox)
+        self.workfiles = WorkFiles(self)
         self.runtime = MemoryRuntime(self.workspace, self.config, self.integration)
         self.search_config = WebSearchConfig(root.parent / "web_search/config.json")
         self.search = WebSearchService(self.search_config)
@@ -140,26 +145,17 @@ class AiFeature(Feature):
             elif kind == "reply":
                 result.append(f"[引用消息ID:{data.get('id', '')}]")
             elif kind in {"image", "file"}:
-                try:
-                    url = data.get("url") or data.get("file") or ""
-                    filename = str(data.get("name") or data.get("file_name") or data.get("file") or "")
-                    if kind == "file" and data.get("file_id") and ctx.group_id and not str(url).startswith(("http://", "https://", "data:")):
-                        try:
-                            reply = await ctx.bot.call_action("get_group_file_url", {"group_id": str(ctx.group_id), "file_id": data["file_id"]}, ctx.websocket)
-                            url = reply.get("url") or ""
-                        except Exception:
-                            logger.debug("群文件URL不可用，尝试get_file", exc_info=True)
-                    if not str(url).startswith(("http://", "https://", "data:")) and kind == "file" and data.get("file_id"):
-                        reply = await ctx.bot.call_action("get_file", {"file_id": data["file_id"]}, ctx.websocket)
-                        url = reply.get("url") or reply.get("file") or ""
-                        filename = str(reply.get("file_name") or filename)
-                        if not str(url).startswith(("http://", "https://", "data:")) and reply.get("base64"):
-                            url = "data:application/octet-stream;base64," + reply["base64"]
-                    description = await self.files.understand(str(url), kind, filename)
-                    result.append(f"[{'图片' if kind == 'image' else '文件'}: {description}]")
-                except Exception as exc:
-                    logger.warning("QQ附件解析失败：%s", exc)
-                    result.append(f"[{'图片' if kind == 'image' else '文件'}: 未能解析]")
+                identifier, item = self.workfiles.register(ctx, kind, data)
+                label = f"[{'图片' if kind == 'image' else '文件'}: {item['name']}；大小:{item['size'] or '未知'}；附件ID:{identifier}]"
+                result.append(label)
+                if kind == "image" or Path(item["name"]).suffix.casefold() in IMAGE_SUFFIXES | {".pdf"}:
+                    try:
+                        url = await self.workfiles.resolve(ctx, item)
+                        description = await self.files.understand(url, kind, item["name"])
+                        result.append(description)
+                    except Exception as exc:
+                        logger.warning("QQ附件解析失败：%s", exc)
+                        result.append("[附件内容未能解析，可在用户要求时下载处理]")
             elif kind in {"forward", "node"}:
                 children = data.get("content") or data.get("messages")
                 if children is None and data.get("id"):

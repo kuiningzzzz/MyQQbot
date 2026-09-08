@@ -37,6 +37,9 @@ featureAdminControls.ai = async function (row) {
     field($(`[data-ai-${group}]`),key,label,key==='api_key'?'':config[key],key==='thinking_mode'?['inherit','enabled','disabled']:key==='reasoning_effort'?['high','max']:null);
   }
   field($('[data-ai-model]'),'clear_key','清除已保存的API Key',false);
+  field($('[data-ai-workspace]'),'workspace_enabled','启用文件工作区与文件发送',config.workspace_enabled);
+  field($('[data-ai-workspace]'),'ocr_enabled','启用本地OCR',config.ocr_enabled);
+  action('[data-workspace-status]',async()=>{const data=await request('/api/ai/workspace/status');status.textContent=data.success?'独立工作容器已就绪。':data.error;});
   $('[data-ai-prompt]').value=config.agent_prompt;
   function values(target) { return Object.fromEntries(Object.entries(target).map(([key,input])=>[key,input.type==='checkbox'?input.checked:input.type==='number'?Number(input.value):input.value])); }
   action('[data-ai-save]',async()=>{

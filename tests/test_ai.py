@@ -216,14 +216,20 @@ class AsyncAiTests(unittest.IsolatedAsyncioTestCase):
         await f.runtime.tick(now)
         self.assertEqual(len(self.client.calls), 2)
 
-    async def test_group_upload_uses_base64_fallback(self):
+    async def test_group_upload_defers_download_and_uses_base64_fallback(self):
         f = self.feature
         action = AsyncMock(side_effect=[{}, {"file": "C:/napcat/document.txt", "file_name": "document.txt", "base64": "aGVsbG8="}])
         f.files.understand = AsyncMock(return_value="文档描述")
         await f.observe_system({"notice_type": "group_upload", "self_id": 999, "group_id": 12, "user_id": 123, "file": {"id": "file1", "name": "document.txt"}, "_bot": SimpleNamespace(call_action=action), "_websocket": None})
-        f.files.understand.assert_awaited_once_with("data:application/octet-stream;base64,aGVsbG8=", "file", "document.txt")
+        f.files.understand.assert_not_awaited()
+        action.assert_not_awaited()
+        item = f.workfiles.list("group:12")[0]
+        f.sandbox.put = AsyncMock(return_value={"success": True})
+        ctx = MessageContext(bot=SimpleNamespace(call_action=action), websocket=None, event={}, msg="", message_type="group", user_id=123, group_id=12)
+        await f.workfiles.download(ctx, item["attachment_id"], "document.txt", lambda: True)
+        f.sandbox.put.assert_awaited_once_with("group:12", "document.txt", b"hello")
         self.assertEqual(action.await_args_list[0].args[0], "get_group_file_url")
-        self.assertIn("文档描述", f.context.recent("group:12", 1)[0]["content"])
+        self.assertIn("document.txt", f.context.recent("group:12", 1)[0]["content"])
 
     async def test_failed_integration_is_retryable(self):
         f = self.feature

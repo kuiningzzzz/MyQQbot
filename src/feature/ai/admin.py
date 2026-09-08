@@ -56,6 +56,13 @@ class AiAdmin:
     def register_routes(self, app: FastAPI):
         f = self.feature
 
+        @app.get("/api/ai/workspace/status")
+        async def workspace_status():
+            try:
+                return await asyncio.wait_for(f.sandbox.request("status"), timeout=5)
+            except Exception as exc:
+                return {"success": False, "error": str(exc) or "工作容器忙碌或响应超时"}
+
         @app.exception_handler(ModelError)
         async def model_error(_request, exc):
             return JSONResponse(status_code=502, content={"detail": str(exc)})

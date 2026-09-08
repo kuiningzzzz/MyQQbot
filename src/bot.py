@@ -139,14 +139,14 @@ class QQBot:
         await self.feature_manager.handle_event(ctx)
 
     async def call_action(self, action: str, params: dict, ws: WebSocket) -> dict:
-        if action not in {"get_forward_msg", "get_file", "get_group_file_url", "get_msg", "get_group_member_info", "delete_msg", "send_group_msg", "send_private_msg"}:
+        if action not in {"get_forward_msg", "get_file", "get_group_file_url", "get_private_file_url", "get_msg", "get_group_member_info", "delete_msg", "send_group_msg", "send_private_msg", "upload_group_file", "upload_private_file"}:
             raise ValueError("不允许的动作")
         echo = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         self._responses[echo] = (ws, future)
         try:
             await ws.send_text(json.dumps({"action": action, "params": params, "echo": echo}))
-            result = await asyncio.wait_for(future, timeout=20)
+            result = await asyncio.wait_for(future, timeout=120 if action in {"upload_group_file", "upload_private_file"} else 20)
             if result.get("status") == "failed" or result.get("retcode", 0) != 0:
                 raise OneBotError(action, result)
             return result.get("data") or {}

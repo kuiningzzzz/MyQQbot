@@ -6,17 +6,19 @@
 
 ```
 NapCat事件 → QQBot接收队列 → AiFeature
-  ├─ 图片/附件 → FileAgent → 描述
+  ├─ 图片/PDF → 独立沙箱OCR → FileAgent（Vision + OCR原文）→ 描述
+  ├─ 其他附件 → 仅收件元数据 → 用户要求时下载到工作区
   ├─ 原始记录 → raw/YYYY-MM-DD.md（只追加）
   └─ ContextManager（群聊与私聊、发送者和机器人身份标记）
         → ChatEngine → send_message（当前会话）
                     → query_memory → AttentionAgent → BGE/Chroma → Markdown回读
                     → web_search → Tavily/SearXNG
+                    → 工作区工具 → 无网络ai-sandbox → 文件读写/命令 → send_file
         → 回复完成 → 后台IntegrationAgent → 画像更新 → 索引同步
 03:00调度 → 上一完整周期整合 → 每7天碎片整理 → 清理已处理旧日志
 ```
 
-主Agent与子Agent是应用内的独立模型调用、提示词和权限入口，不会创建系统进程或执行模型生成的Python代码。主Agent不提供文件读取工具；Attention仅能查询user/common；整合器读取raw及已有画像、利用向量匹配并更新画像；AGENT.md只由管理端写入。向量服务不索引raw。
+主Agent与子Agent是应用内的独立模型调用、提示词和权限入口。主Agent只能在独立工作容器里执行命令和读写临时文件，不能访问机器人配置或记忆目录；Attention仅能查询user/common；整合器读取raw及已有画像、利用向量匹配并更新画像；AGENT.md只由管理端写入。向量服务不索引raw。
 
 所有Agent都收到机器人QQ号、从NapCat观察到的自身账号、网名和账号说明。机器人消息保留在上下文及原始日志中，但不能独立成为用户事实来源；代码拒绝生成自身QQ目录，并要求提炼候选引用本批真实人类消息。
 
@@ -52,11 +54,31 @@ Token使用保守字符估算，不是服务端精确tokenizer。所有模型调
 
 ## 附件与事件
 
-图片按DeepSeek官方 `image_url` 内容块调用视觉模型，共用主模型API Key。普通文件最大20MiB；文本、PDF前40页、DOCX先提取文本再交给文本模型。扫描PDF无可提取文字时明确提示改发图片。二进制文件可通过base64 data URL传入；不接受任意本机路径。未解析附件仍留下明确占位记录。
+图片在独立工作容器中用Tesseract提取简体中文、繁体中文和英文，规范化图像后把图像及OCR原文一起传给Vision。提示词要求详细描述布局、细节、文字、数字和图表，明确不确定内容；返回描述后另外保留最多12000字符OCR原文供主Agent和记忆Agent使用。OCR不保证手写字、模糊小字识别准确，模型被要求对照图像核实。
+
+PDF最多自动处理前10页文本；前4页附带图像供Vision理解，文本层不足的页面通过渲染图片再OCR。范围限制明确写入上下文。自动OCR整个任务最多120秒。OCR不可用时图片降级为仅Vision并标明状态，PDF明确记录提取失败；Vision失败时仍保留已提取文字。其余格式默认只记录文件名、大小、附件ID，不自动下载或解析。
 
 有完整节点的转发递归展开；只有转发ID时，通过OneBot get_forward_msg读取。群文件优先通过get_group_file_url取得下载地址，get_file返回本地路径时使用其可选Base64内容回退；也记录group_upload通知。QQBot接收循环与事件消费分离，所以等待OneBot动作回执不会堵塞回执自身。
 
 撤回事件只追加系统标记，原消息不删除；原内容优先从当前上下文查找，无法定位时保留消息ID。普通文本中的换行与分隔符转义，避免伪装成新的日志记录；转发子消息使用缩进。机器人文本回复主动入库，10秒内的对应回显去重。
+
+## 隔离工作区与文件发送
+
+更新部署需要执行 `docker compose up -d --build`，会额外启动 `ai-sandbox`。首次构建该镜像需要下载Tesseract语言包、Poppler、中文字体和Python文件处理库。管理页面“附件与临时工作区”提供工作区、OCR独立开关及连接检查。机器人通过只读挂载的 `/control/sandbox.sock` 通信，环境变量 `AI_SANDBOX_SOCKET` 可由部署者调整；模型不能更改该连接。直接以Python运行主服务且没有工作容器时，工作区返回不可用，绝不在宿主机回退执行命令。
+
+隔离边界：工作容器不挂载项目、data、密钥、宿主目录或Docker socket，不连接网络；系统镜像只读。根进程只做固定协议代理，命令和解析进程每会话使用不同非root UID，不能访问代理控制目录或其他会话目录。工作区文件接口用dirfd逐级检查，拒绝路径越界、符号链接、硬链接及设备文件。命令可以读取容器自带运行库，写入范围仅为本会话临时目录；没有服务器文件系统的访问能力。此设计仍依赖Docker及宿主内核的安全性，不是虚拟机隔离。
+
+容器内 `/workspace` 为512MiB tmpfs，全部会话共享容量上限；每会话独立子目录。容器重启后清空，普通工作文件不会进入长时记忆。每个命令最长60秒、输出64000字节；容器限制1 CPU、1GiB内存（禁用额外swap）、64进程。结束时清理该UID的所有进程，包括脱离原进程组的后台进程。OCR使用独立临时子目录，结束后删除。
+
+工具：`list_attachments`、`download_attachment`、`list_workfiles`、`read_workfile`、`write_workfile`、`run_workspace_command`、`send_file`。文件操作需用户点名触发，允许同一用户5分钟内接续处理；Agent根据语义判断是否真的要求处理。下载前先给简短回应。附件注册信息保留最多7天、300项、3MiB；签名URL和Base64不会提供给模型，模型只能用当前会话的附件ID下载。下载验证每次重定向地址并固定已检查的公网IP，阻止访问内网、回环和保留地址。
+
+单文件下载和发送上限20MiB。发送时通过受限文件接口导出实际字节，使用NapCat支持的 `base64://` 引用调用 `upload_group_file` 或 `upload_private_file`，不需要共享宿主路径或发布公网文件链接。目标由程序固定为当前会话，每轮最多3次文件发送，等待最长120秒回执；超时表示结果未知，不能声称发送成功或自动重试。工作区预装Pillow、openpyxl、python-docx、reportlab、pypdf，可创建或修改常见文本、表格、Word、PDF和图片；不能联网安装额外软件。
+
+实际使用：发送文件后 @机器人说“把这个表格整理一下，另存后发给我”，或“生成一个说明文档发给我”。可以引用收件消息明确目标；找不到附件或临时文件已丢失时，Agent应请用户重新发送。
+
+验证：38项自动测试通过，另实际构建Docker镜像并验证越界/符号链接拒绝、无网络、无服务器目录、无控制socket权限、会话隔离、命令时限和文件/输出限制；中文图片与扫描PDF的真实OCR通过，实际机器人异步客户端跨容器读写及导出通过。尚未通过真实QQ账号验证文件上传回执。容器自检可用 `docker compose exec -T ai-sandbox python -I /opt/worker/selftest.py`（仅合成文件）。
+
+来源：[Docker Compose隔离选项](https://docs.docker.com/reference/compose-file/services/)、[Tesseract语言包](https://tesseract-ocr.github.io/tessdoc/Installation.html)、[NapCat上传实现](https://raw.githubusercontent.com/NapNeko/NapCatQQ/main/packages/napcat-onebot/action/go-cqhttp/UploadGroupFile.ts)、[NapCat Base64文件处理](https://raw.githubusercontent.com/NapNeko/NapCatQQ/main/packages/napcat-common/src/file.ts)。
 
 ## AI 撤回消息
 

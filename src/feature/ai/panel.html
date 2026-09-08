@@ -9,6 +9,10 @@
     <details class="settings-section"><summary><span>记忆与本地向量模型</span></summary><div class="settings-body" data-ai-memory></div>
       <p class="hint">日志按北京时间03:00切日：文件日期为周期开始日。本地模型首次使用时下载，可填写已下载模型的本地目录。</p>
     </details>
+    <details class="settings-section"><summary><span>附件与临时工作区</span></summary><div class="settings-body" data-ai-workspace></div>
+      <p class="hint">命令只在独立 ai-sandbox 容器运行，无网络。每会话目录独立，容器重启后清空；单文件20MiB，临时文件总容量512MiB。OCR支持中英文，PDF自动处理前10页文本及前4页图像。</p>
+      <button type="button" data-workspace-status>检查工作容器</button>
+    </details>
     <button type="button" data-ai-save>保存 AI 设置</button>
     <details class="settings-section"><summary><span>联网搜索</span></summary><div class="settings-body" data-ai-search></div><button type="button" data-search-save>保存搜索设置</button></details>
     <details class="settings-section"><summary><span>记忆文件编辑器</span></summary>

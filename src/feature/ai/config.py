@@ -35,6 +35,8 @@ class Settings(BaseModel):
     timezone: str = "Asia/Shanghai"
     timeout_seconds: int = Field(default=60, ge=10, le=300)
     tool_round_limit: int = Field(default=8, ge=1, le=20)
+    workspace_enabled: bool = True
+    ocr_enabled: bool = True
 
     @model_validator(mode="after")
     def budget_valid(self):

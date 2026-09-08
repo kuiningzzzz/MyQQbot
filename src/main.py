@@ -79,6 +79,9 @@ async def serve():
             bot_app,
             host="0.0.0.0",
             port=8081,
+            # A 20MiB attachment encoded as Base64 needs about 27MiB per frame.
+            ws_max_size=32 * 1024 * 1024,
+            ws_max_queue=4,
             log_level="info",
             log_config=None,
         )
