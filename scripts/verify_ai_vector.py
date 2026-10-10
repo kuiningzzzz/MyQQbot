@@ -23,7 +23,7 @@ def main():
     config.save({"embedding_model": model_name})
     index = VectorIndex(workspace, config)
     index._model, index._model_name = model, model_name
-    index._client = chromadb.PersistentClient(path=str(workspace.root / ".vector_cache/chroma"))
+    index._client = chromadb.PersistentClient(path=str(workspace.data_root / ".vector_cache/chroma"))
     workspace.write_memory("user/123/PREFERENCE.md", "# 食物\n- 吃花生会过敏 | 更新时间: 2026-09-07\n- 喜欢玩赛车游戏 | 更新时间: 2026-09-07\n")
     workspace.write_memory("user/456/PREFERENCE.md", "- 喜欢咖啡 | 更新时间: 2026-09-07\n")
     workspace.save_state("index", {"dirty": True})

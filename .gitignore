@@ -2,6 +2,9 @@ __pycache__/
 *.py[cod]
 data/
 .env
+.env.host
+.venv/
 .venv-ai/
+node_modules/
 # WebUI 管理密码（勿提交）
 data/admin/auth.json

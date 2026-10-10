@@ -16,4 +16,9 @@ build
 .venv*/
 data/
 .env
+.env.host
 *.md
+
+**/node_modules/
+!src/feature/ai/skills/**/*.md
+.test_*

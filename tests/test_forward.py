@@ -54,14 +54,14 @@ class ForwardTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.f.context.recent('group:12', 10), [])
 
     async def test_agent_forward_satisfies_direct_call_and_limits_retries(self):
-        call = {'id': '1', 'type': 'function', 'function': {'name': 'send_forward_message', 'arguments': json.dumps({'messages': ['段落一', '段落二']})}}
-        self.f.client.turn = AsyncMock(side_effect=[{'role': 'assistant', 'tool_calls': [call, dict(call, id='2')]}, {'role': 'assistant', 'content': ''}])
-        self.f.engine.revisions['group:12'] = 1
-        await self.f.engine._turn(self.ctx, 'group:12', True, 1)
+        async def run(kind, prompt, **kwargs):
+            for _ in range(2):
+                await kwargs['handler']('send_forward_message', {'messages': ['first', 'second']})
+            return {'finish_reason': 'completed'}
+        self.f.dsh.run = run
+        await self.f.engine._turn(self.ctx, 'group:12', True)
         self.bot.call_action.assert_awaited_once()
         self.bot.reply.assert_not_awaited()
-        self.assertEqual(self.f.client.turn.await_count, 2)
-        self.assertTrue(self.f.engine._did_send['group:12'])
 
     async def test_real_action_dispatch_waits_for_ack(self):
         from src.bot import QQBot

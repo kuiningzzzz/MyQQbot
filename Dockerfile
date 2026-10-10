@@ -1,7 +1,15 @@
 # syntax=docker/dockerfile:1.4
 
 # 使用官方 Python 运行时作为父镜像
+FROM node:24-bookworm-slim AS dsh-runtime
+WORKDIR /build
+COPY dsh/package*.json ./
+RUN npm ci --omit=dev --no-audit --no-fund
+
 FROM python:3.11-slim
+COPY --from=dsh-runtime /usr/local/bin/node /usr/local/bin/node
+RUN apt-get update && apt-get install -y --no-install-recommends bash git ripgrep libstdc++6 fonts-noto-cjk tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim tesseract-ocr-chi-tra poppler-utils && rm -rf /var/lib/apt/lists/*
+COPY --from=dsh-runtime /build/node_modules /app/dsh/node_modules
 
 # 设置工作目录
 WORKDIR /app

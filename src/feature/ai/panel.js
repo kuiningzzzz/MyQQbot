@@ -30,8 +30,8 @@ featureAdminControls.ai = async function (row) {
   const config = await request('/api/ai/config');
   const groups = {
     identity: {bot_qq:'机器人QQ号',nickname:'网名／唤醒姓名',account_description:'账号身份说明'},
-    model: {api_url:'模型API地址',api_key:'API Key',model:'主模型',vision_model:'视觉模型',thinking_mode:'思考模式',reasoning_effort:'思考强度',max_tokens:'最大生成Token',context_token_limit:'总上下文Token上限',context_recent_count:'每场景压缩后保留消息数',context_compress_threshold:'上下文压缩比例',timeout_seconds:'请求超时（秒）',tool_round_limit:'工具轮数上限',chat_enabled:'启用聊天',summary_enabled:'启用群聊总结'},
-    memory: {memory_enabled:'启用Attention检索',memory_auto_learn:'启用后台整合',raw_retention_days:'原始日志保留周期数',vector_index_enabled:'启用向量索引',embedding_model:'本地嵌入模型名称或路径',vector_merge_threshold:'碎片整理间隔（天）',timezone:'时区'}
+    model: {api_url:'视觉与总结API（OpenAI协议）',dsh_api_url:'dsh Messages API地址（留空自动加 /anthropic）',api_key:'API Key',model:'主模型',vision_model:'视觉模型',thinking_mode:'思考模式',reasoning_effort:'思考强度',max_tokens:'最大生成Token',context_token_limit:'总上下文Token上限',context_compress_threshold:'上下文压缩比例',timeout_seconds:'视觉请求超时（秒）',dsh_timeout_seconds:'dsh任务超时（秒）',tool_round_limit:'工具轮数上限',chat_enabled:'启用聊天',summary_enabled:'启用群聊总结'},
+    memory: {memory_enabled:'启用记忆',memory_auto_learn:'启用后台整合',raw_retention_days:'原文保留天数（固定30）',memory_batch_size:'自动整理消息数（固定100）',vector_index_enabled:'启用向量索引',embedding_model:'本地嵌入模型名称或路径',timezone:'时区'}
   };
   for (const [group, labels] of Object.entries(groups)) for (const [key,label] of Object.entries(labels)) {
     field($(`[data-ai-${group}]`),key,label,key==='api_key'?'':config[key],key==='thinking_mode'?['inherit','enabled','disabled']:key==='reasoning_effort'?['high','max']:null);
@@ -39,7 +39,7 @@ featureAdminControls.ai = async function (row) {
   field($('[data-ai-model]'),'clear_key','清除已保存的API Key',false);
   field($('[data-ai-workspace]'),'workspace_enabled','启用文件工作区与文件发送',config.workspace_enabled);
   field($('[data-ai-workspace]'),'ocr_enabled','启用本地OCR',config.ocr_enabled);
-  action('[data-workspace-status]',async()=>{const data=await request('/api/ai/workspace/status');status.textContent=data.success?'独立工作容器已就绪。':data.error;});
+  action('[data-workspace-status]',async()=>{const data=await request('/api/ai/workspace/status');status.textContent=data.success?'dsh原生工作区已就绪。':data.error;});
   $('[data-ai-prompt]').value=config.agent_prompt;
   function values(target) { return Object.fromEntries(Object.entries(target).map(([key,input])=>[key,input.type==='checkbox'?input.checked:input.type==='number'?Number(input.value):input.value])); }
   action('[data-ai-save]',async()=>{
@@ -57,7 +57,8 @@ featureAdminControls.ai = async function (row) {
   action('[data-memory-save]',async()=>{if(openedPath!==$('[data-memory-path]').value||!fileHash)throw new Error('请先打开或新建目标文件');const data=await request('/api/ai/file',{path:openedPath,content:$('[data-memory-content]').value,expected_hash:fileHash});fileHash=data.hash;status.textContent=data.indexed?'文件和索引已保存。':'文件已保存；'+(data.index_error||'向量索引已关闭');});
   action('[data-reindex]',async()=>{const data=await request('/api/ai/reindex',{});status.textContent=data.success?'索引重建完成。':data.error;});
   action('[data-memory-test]',async()=>{const data=await request('/memory/query',{query:$('[data-memory-query]').value,target_qq:$('[data-memory-qq]').value||null,scope:'auto'});$('[data-memory-result]').textContent=JSON.stringify(data,null,2);status.textContent='检索完成。';});
-  action('[data-integrate]',async()=>{const data=await request('/memory/integrate',{mode:'full',date:$('[data-integrate-date]').value});$('[data-memory-result]').textContent=JSON.stringify(data,null,2);status.textContent='整合完成。';});
+  action('[data-integrate]',async()=>{const data=await request('/memory/integrate',{mode:'queue'});$('[data-memory-result]').textContent=JSON.stringify(data,null,2);status.textContent='整合完成。';});
+  fields.raw_retention_days.disabled=true; fields.memory_batch_size.disabled=true;
   await refresh();
-  status.textContent=`API Key：${config.api_key_configured?'已配置':'未配置'}；已识别机器人QQ：${config.observed_self_ids.join('、')||'尚未连接'}\n${config.index_error||config.integration_error||''}`;
+  status.textContent=`API Key：${config.api_key_configured?'已配置':'未配置'}；已识别机器人QQ：${config.observed_self_ids.join('、')||'尚未连接'}\ndsh ${config.dsh_version}；待整理 ${config.pending_messages} 条\n工作区：${config.workspace_path}\n记忆规则：${config.memory_skill_path}\n${config.index_error||config.integration_error||''}`;
 };

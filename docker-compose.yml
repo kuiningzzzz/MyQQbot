@@ -14,54 +14,14 @@ services:
       - "127.0.0.1:10012:10010"
     volumes:
       - ./data:/app/data
-      - ai-control:/control:ro
-    depends_on:
-      - ai-sandbox
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
-      - AI_SANDBOX_SOCKET=/control/sandbox.sock
       # huggingface.co 在大陆网络不可达；统一走镜像，embedding 模型预下载缓存于 data/ai/.vector_cache。
       - HF_ENDPOINT=https://hf-mirror.com
       - MYQQBOT_PUBLIC_BASE_URL=${MYQQBOT_PUBLIC_BASE_URL:-http://127.0.0.1:8081}
       - JM_CLEANUP_DELAY_SECONDS=${JM_CLEANUP_DELAY_SECONDS:-300}
       - PIXIV_CLEANUP_DELAY_SECONDS=${PIXIV_CLEANUP_DELAY_SECONDS:-300}
       - PIXIV_PROXY=${PIXIV_PROXY:-socks5h://host.docker.internal:20170}
-
-  ai-sandbox:
-    build:
-      context: .
-      dockerfile: sandbox/Dockerfile
-    restart: unless-stopped
-    init: true
-    network_mode: none
-    read_only: true
-    security_opt:
-      - no-new-privileges:true
-    cap_drop: [ALL]
-    # Only the broker retains these; commands run with a separate non-root UID.
-    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, KILL]
-    pids_limit: 64
-    mem_limit: 1g
-    memswap_limit: 1g
-    cpus: 1.0
-    shm_size: 16m
-    tmpfs:
-      - /workspace:size=512m,mode=0711,nosuid,nodev
-    volumes:
-      - ai-control:/control
-    logging:
-      driver: json-file
-      options:
-        max-size: 5m
-        max-file: "2"
-
-volumes:
-  ai-control:
-    driver: local
-    driver_opts:
-      type: tmpfs
-      device: tmpfs
-      o: size=8m,mode=0700,nosuid,nodev,noexec

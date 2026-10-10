@@ -11,7 +11,6 @@ import httpx
 
 from src.feature.ai.feature import AiFeature
 from src.feature.atom.context import MessageContext
-from sandbox.server import parts
 
 
 class WorkFileTests(unittest.IsolatedAsyncioTestCase):
@@ -86,29 +85,24 @@ class WorkFileTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_download_acknowledged_before_processing(self):
         identifier, _ = self.f.workfiles.register(self.ctx, "file", {"name": "a.txt", "url": "https://example.com/a"})
-        calls = 0
-        async def turn(settings, messages, tools):
-            nonlocal calls
-            calls += 1
-            if calls == 1:
-                return {"role": "assistant", "tool_calls": [{"id": "t1", "type": "function", "function": {"name": "download_attachment", "arguments": json.dumps({"attachment_id": identifier})}}]}
-            return {"role": "assistant", "content": ""}
+        async def run(kind, prompt, **kwargs):
+            await kwargs['handler']('download_attachment', {'attachment_id': identifier})
+            return {'finish_reason': 'completed'}
         async def download(*args):
             self.bot.reply.assert_awaited_once()
-            return {"success": True}
-        self.f.client.turn = turn
+            return {'success': True}
+        self.f.dsh.run = run
         self.f.workfiles.download = download
-        self.f.engine.revisions["group:12"] = 1
-        await self.f.engine._turn(self.ctx, "group:12", True, 1)
-        self.assertIn("下载", self.bot.reply.await_args.args[1])
+        await self.f.engine._turn(self.ctx, 'group:12', True)
+        self.assertIn('下载', self.bot.reply.await_args.args[1])
 
-    async def test_unavailable_sandbox_never_executes_locally(self):
-        with patch("src.feature.ai.sandbox.asyncio.open_unix_connection", side_effect=OSError("not running"), create=True):
-            with self.assertRaisesRegex(RuntimeError, "禁止回退"):
-                await self.f.sandbox.request("run", "group:12", command="echo hi")
+    async def test_arbitrary_commands_require_native_owner_tool(self):
+        with self.assertRaises(ValueError):
+            await self.f.sandbox.request('run', 'group:12', command='echo hi')
 
     def test_invalid_paths(self):
-        for name in ("../x", "/etc/passwd", "x/../../y", "x\\y", "x//y", "x/./y", ""):
+        for name in ('../x', '/etc/passwd', 'x/../../y', ''):
             with self.assertRaises(ValueError):
-                parts(name)
-        self.assertEqual(parts("output/报告.txt"), ("output", "报告.txt"))
+                self.f.sandbox.resolve('group:12', name)
+        own = self.f.sandbox.resolve('group:12', 'output/report.txt')
+        self.assertTrue(own.is_relative_to(self.f.sandbox.scene_dir('group:12')))

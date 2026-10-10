@@ -53,36 +53,48 @@ def single_line(value: object) -> str:
 
 class Workspace:
     def __init__(self, root: Path):
-        self.root = root.resolve()
-        for directory in ("raw", "user", "common", ".vector_cache", ".state"):
+        self.data_root = root.resolve()
+        self.root = self.data_root / "workspace"
+        self.memory_root = self.root / "memory"
+        (self.data_root / ".state").mkdir(parents=True, exist_ok=True)
+        for directory in ("memory/raw", "memory/user", "memory/common", "files", "tmp"):
             path = self.root / directory
             if path.resolve() != path.absolute():
                 raise ValueError("记忆目录不能是符号链接")
             path.mkdir(parents=True, exist_ok=True)
         if not (self.root / "AGENT.md").exists():
             atomic_write(self.root / "AGENT.md", "你是一位自然、友善的 QQ 聊天成员。回答简洁，依据事实，不编造记忆。\n")
-        if not (self.root / "common/GLOSSARY.md").exists():
-            atomic_write(self.root / "common/GLOSSARY.md", "# 网络黑话与通用知识\n")
+        if not (self.memory_root / "common/GLOSSARY.md").exists():
+            atomic_write(self.memory_root / "common/GLOSSARY.md", "# 网络黑话与通用知识\n")
 
     def memory_path(self, relative: str) -> Path:
         if "\\" in relative or not re.fullmatch(r"(?:user/[0-9]+/(?:PERSON|PREFERENCE|RECENTNESS)\.md|user/[0-9]+/memory/[^/]+\.md|common/GLOSSARY\.md)", relative):
             raise ValueError("只允许访问 user 用户画像和 common/GLOSSARY.md")
-        path = self.root / relative
+        path = self.memory_root / relative
         if path.resolve() != path.absolute() or not path.resolve().is_relative_to(self.root) or any(part in {"..", "."} for part in Path(relative).parts) or any(char in relative for char in '<>:"|?*'):
             raise ValueError("路径越界")
         return path
 
     def files(self) -> list[str]:
-        return sorted(str(p.relative_to(self.root)).replace("\\", "/") for folder in ("user", "common") for p in (self.root / folder).rglob("*.md") if p.resolve().is_relative_to(self.root))
+        result = []
+        for folder in ('user', 'common'):
+            for file in (self.memory_root / folder).rglob('*.md'):
+                relative = file.relative_to(self.memory_root).as_posix()
+                try:
+                    self.memory_path(relative)
+                except ValueError:
+                    continue
+                result.append(relative)
+        return sorted(result)
 
     def read_memory(self, relative: str) -> str:
-        path = self.memory_path(relative)
-        with FileLock(str(self.root / ".state/memory.lock")):
+        with FileLock(str(self.data_root / ".state/memory.lock")):
+            path = self.memory_path(relative)
             return path.read_text("utf-8") if path.exists() else ""
 
     def write_memory(self, relative: str, content: str, expected_hash: str | None = None) -> None:
-        path = self.memory_path(relative)
-        with FileLock(str(self.root / ".state/memory.lock")):
+        with FileLock(str(self.data_root / ".state/memory.lock")):
+            path = self.memory_path(relative)
             previous = path.read_text("utf-8") if path.exists() else ""
             if expected_hash is not None and digest(previous) != expected_hash:
                 raise ValueError("文件已被更新，请重新读取后保存")
@@ -95,14 +107,7 @@ class Workspace:
             relative = f"user/{qq}/{name}.md"
             if not self.memory_path(relative).exists():
                 self.write_memory(relative, f"# {name}\n", digest(""))
-        (self.root / f"user/{qq}/memory").mkdir(exist_ok=True)
-
-    def append_raw(self, record: dict, timezone: str) -> dict:
-        now = datetime.fromisoformat(record["timestamp"]).astimezone(ZoneInfo(timezone))
-        path = self.root / "raw" / (period_date(now) + ".md")
-        line = self.format_raw(record, timezone)
-        self._append(path, line + "\n")
-        return {"success": True, "raw_path": f"raw/{path.name}", "recorded_at": now.strftime("%Y-%m-%d %H:%M:%S"), "raw_line": line}
+        (self.memory_root / f"user/{qq}/memory").mkdir(exist_ok=True)
 
     @staticmethod
     def format_raw(record: dict, timezone: str) -> str:
@@ -115,41 +120,9 @@ class Workspace:
         fields = [f"[{now:%Y-%m-%d %H:%M:%S}]", f"[{scene}]", location, f"[QQ:{record['qq']}]", f"[昵称:{single_line(record['nickname'])}]", "[机器人自己]" if record.get("is_self") else "[人类用户]", f"说：{content}"]
         return " | ".join(fields)
 
-    def append_system(self, content: str, timezone: str) -> None:
-        now = datetime.now(ZoneInfo(timezone))
-        self._append(self.root / "raw" / (period_date(now) + ".md"), f"[{now:%Y-%m-%d %H:%M:%S}] | [系统] | {single_line(content)}\n")
-
-    def _append(self, path: Path, text: str) -> None:
-        for attempt in range(3):
-            try:
-                with FileLock(str(path) + ".lock"):
-                    with path.open("a", encoding="utf-8") as stream:
-                        stream.write(text)
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                return
-            except OSError:
-                if attempt == 2:
-                    raise
-                time.sleep(1)
-
-    def read_raw(self, date: str) -> list[str]:
-        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
-            raise ValueError("日期格式应为 YYYY-MM-DD")
-        path = self.root / "raw" / (date + ".md")
-        with FileLock(str(path) + ".lock"):
-            rows = path.read_text("utf-8").splitlines() if path.exists() else []
-            records = []
-            for row in rows:
-                if row.startswith("  ") and records:
-                    records[-1] += "\n" + row
-                else:
-                    records.append(row)
-            return records
-
     def load_state(self, name: str, default):
-        path = self.root / ".state" / (name + ".json")
-        return json.loads(path.read_text("utf-8")) if path.exists() else default
+        path = self.data_root / '.state' / (name + '.json')
+        return json.loads(path.read_text('utf-8')) if path.exists() else default
 
     def save_state(self, name: str, value) -> None:
-        atomic_write(self.root / ".state" / (name + ".json"), json.dumps(value, ensure_ascii=False))
+        atomic_write(self.data_root / ".state" / (name + ".json"), json.dumps(value, ensure_ascii=False))

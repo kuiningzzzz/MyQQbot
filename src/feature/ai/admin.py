@@ -69,7 +69,7 @@ class AiAdmin:
 
         @app.get("/api/ai/config")
         async def config():
-            return {**f.config.public(), "observed_self_ids": sorted(f.identity.observed_ids), "agent_prompt": (f.workspace.root / "AGENT.md").read_text("utf-8"), "index_error": f.index.last_error, "integration_error": f.runtime.last_error}
+            return {**f.config.public(), "observed_self_ids": sorted(f.identity.observed_ids), "agent_prompt": (f.workspace.root / "AGENT.md").read_text("utf-8"), "index_error": f.index.last_error, "integration_error": f.runtime.last_error, "pending_messages": f.journal.pending_count(), "dsh_version": "0.2.0-rc.2", "workspace_path": str(f.workspace.root), "memory_skill_path": str(f.workspace.root / ".agents/skills/memory-management/SKILL.md")}
 
         @app.post("/api/ai/config")
         async def save_config(data: dict = Body(...)):
@@ -84,6 +84,8 @@ class AiAdmin:
                     await asyncio.to_thread(atomic_write, f.workspace.root / "AGENT.md", prompt)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+            async with f.dsh.turn_lock:
+                await f.dsh.stop()
             return await config()
 
         @app.get("/api/ai/files")
@@ -136,40 +138,21 @@ class AiAdmin:
         @app.post("/memory/query")
         async def query(data: QueryRequest):
             try:
-                return await f.attention.query(**data.model_dump())
+                return await f.query_memory(**data.model_dump())
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
 
         @app.post("/memory/integrate")
         async def integrate(data: IntegrateRequest):
             try:
-                if data.mode == "full" and data.date:
-                    return await f.runtime.full(data.date)
-                if data.mode == "incremental":
-                    snapshot = data.context_snapshot
-                    if snapshot is None:
-                        raise ValueError("增量整合必须提供 context_snapshot")
-                    # Support the documented single-scene envelope and full snapshots.
-                    if "messages" in snapshot:
-                        snapshot = {str(snapshot.get("scene_type", "group")) + ":" + str(snapshot.get("scene_id", "")): {"recent_messages": snapshot["messages"]}}
-                    lines = []
-                    for key, scene in snapshot.items():
-                        for record in scene.get("recent_messages", []):
-                            if "raw_line" in record:
-                                lines.append(record["raw_line"])
-                                continue
-                            scene_type, _, scene_id = key.partition(":")
-                            qq = str(record.get("qq") or record.get("user_id") or "")
-                            if not qq.isdigit() or scene_type not in {"group", "private"} or not scene_id.isdigit():
-                                raise ValueError("每条快照消息需要QQ号和有效场景")
-                            normalized = {"qq": qq, "nickname": str(record.get("nickname") or qq), "scene_type": scene_type, "scene_id": scene_id, "content": str(record.get("content") or ""), "is_self": qq in f.identity.ids or bool(record.get("is_self")), "timestamp": record.get("timestamp") or datetime.now(ZoneInfo(f.config.load().timezone)).isoformat()}
-                            lines.append(f.workspace.format_raw(normalized, f.config.load().timezone))
-                    if not lines:
-                        raise ValueError("快照没有可整合的消息")
-                    return await f.integration.integrate(lines, snapshot)
-                raise ValueError("请选择 incremental 或 full，并提供相应参数")
+                if data.mode not in {'queue', 'full'} or data.date or data.context_snapshot:
+                    raise ValueError('使用mode=queue整理当前队列；旧每日/快照整合接口已移除')
+                return await f.runtime.full()
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+            except (RuntimeError, TimeoutError) as exc:
+                f.runtime.last_error = str(exc)
+                raise HTTPException(502, '整理失败，消息队列已保留；请查看运行日志') from exc
 
         @app.post("/memory/understand_file")
         async def understand(data: FileRequest):

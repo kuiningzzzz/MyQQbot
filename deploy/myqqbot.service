@@ -1,0 +1,24 @@
+[Unit]
+Description=MyQQbot with native DeepSeek Harness
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Change these paths and User to the account whose permissions the owner should have.
+User=myqqbot
+WorkingDirectory=/opt/MyQQbot
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONUTF8=1
+Environment=TZ=Asia/Shanghai
+Environment=HF_ENDPOINT=https://hf-mirror.com
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=-/opt/MyQQbot/.env.host
+ExecStart=/opt/MyQQbot/.venv/bin/python -m src.main
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

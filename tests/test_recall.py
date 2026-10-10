@@ -84,19 +84,14 @@ class RecallTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await recall_message(self.f, self.ctx, "105", "本人申请"))["code"], "permission_denied")
 
     async def test_tool_failure_is_returned_to_agent(self):
-        responses = []
-        async def turn(settings, messages, tools):
-            responses.append(json.loads(json.dumps(messages)))
-            if len(responses) == 1:
-                self.assertIn("非发送者请求", messages[0]["content"])
-                return {"role": "assistant", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "recall_message", "arguments": '{"message_id":"101","reason":"本人申请"}'}}]}
-            return {"role": "assistant", "content": ""}
-        self.f.client.turn = turn
-        self.action.side_effect = OneBotError("delete_msg", {"retcode": 1200, "message": "权限不足"})
-        self.f.engine.revisions["group:12"] = 1
-        await self.f.engine._turn(self.ctx, "group:12", False, 1)
-        output = json.loads(responses[1][-1]["content"])
-        self.assertEqual(output["code"], "permission_denied")
+        async def run(kind, prompt, **kwargs):
+            self.assertIn('非发送者请求', kwargs['system'])
+            result = await kwargs['handler']('recall_message', {'message_id': '101', 'reason': '本人申请'})
+            self.assertEqual(result['code'], 'permission_denied')
+            return {'finish_reason': 'completed'}
+        self.f.dsh.run = run
+        self.action.side_effect = OneBotError('delete_msg', {'retcode': 1200, 'message': '权限不足'})
+        await self.f.engine._turn(self.ctx, 'group:12', False)
 
     async def test_outgoing_ack_records_real_message_id_and_errors(self):
         manager = SimpleNamespace(observe_system=AsyncMock())

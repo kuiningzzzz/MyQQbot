@@ -1,4 +1,4 @@
-"""Fixed OCR entry point, invoked only as an unprivileged sandbox user."""
+"""Fixed OCR entry point, invoked by the fixed OCR subprocess."""
 import base64
 import io
 import json

@@ -1,17 +1,17 @@
 <template data-feature-panel="ai">
   <div class="settings-stack">
-    <p class="hint">所有群聊和私聊共享一个人格、上下文和记忆库。账号身份会提供给主 Agent 及所有助理。</p>
+    <p class="hint">所有群聊和私聊共享一个人格、上下文和记忆库。聊天与记忆整理是两个独立的 dsh 对话，共用记忆目录。</p>
     <details class="settings-section" open><summary><span>账号与人设</span></summary>
       <div class="settings-body" data-ai-identity></div>
       <label>人设正文（AGENT.md）<textarea data-ai-prompt rows="8" style="width:100%"></textarea></label>
     </details>
     <details class="settings-section"><summary><span>模型与上下文</span></summary><div class="settings-body" data-ai-model></div></details>
     <details class="settings-section"><summary><span>记忆与本地向量模型</span></summary><div class="settings-body" data-ai-memory></div>
-      <p class="hint">日志按北京时间03:00切日：文件日期为周期开始日。本地模型首次使用时下载，可填写已下载模型的本地目录。</p>
+      <p class="hint">每100条去重的人类消息触发整理；原始事件滚动保留30天。本地模型首次使用时下载，可填写已下载模型的本地目录。</p>
     </details>
     <details class="settings-section"><summary><span>附件与临时工作区</span></summary><div class="settings-body" data-ai-workspace></div>
-      <p class="hint">命令只在独立 ai-sandbox 容器运行，无网络。每会话目录独立，容器重启后清空；单文件20MiB，临时文件总容量512MiB。OCR支持中英文，PDF自动处理前10页文本及前4页图像。</p>
-      <button type="button" data-workspace-status>检查工作容器</button>
+      <p class="hint">工作文件按会话存放；普通用户只能修改自身记忆和当前会话文件。服务器命令仅主人当前请求可执行。单文件20MiB。OCR支持中英文，PDF自动处理前10页文本及前4页图像。</p>
+      <button type="button" data-workspace-status>检查工作区</button>
     </details>
     <button type="button" data-ai-save>保存 AI 设置</button>
     <details class="settings-section"><summary><span>联网搜索</span></summary><div class="settings-body" data-ai-search></div><button type="button" data-search-save>保存搜索设置</button></details>
@@ -25,8 +25,8 @@
     </details>
     <details class="settings-section"><summary><span>检索与维护</span></summary>
       <input data-memory-query placeholder="查询内容" aria-label="查询内容"><input data-memory-qq placeholder="可选：目标QQ" aria-label="目标QQ">
-      <button type="button" data-memory-test>测试 Attention 检索</button>
-      <label>完整日志周期开始日期<input type="date" data-integrate-date></label><button type="button" data-integrate>整合该周期</button>
+      <button type="button" data-memory-test>测试记忆检索</button>
+      <button type="button" data-integrate>立即整理队列（最多100条）</button>
       <pre data-memory-result style="white-space:pre-wrap"></pre>
     </details>
     <p data-ai-status role="status" style="white-space:pre-wrap"></p>

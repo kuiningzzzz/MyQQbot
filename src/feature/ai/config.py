@@ -12,6 +12,7 @@ from .storage import atomic_write
 
 class Settings(BaseModel):
     api_url: str = "https://api.deepseek.com"
+    dsh_api_url: str = ""
     api_key: str = ""
     model: str = "deepseek-v4-flash"
     vision_model: str = "deepseek-v4-flash-vision-exp"
@@ -26,15 +27,15 @@ class Settings(BaseModel):
     reasoning_effort: str = "high"
     max_tokens: int = Field(default=8192, ge=256, le=131072)
     context_token_limit: int = Field(default=1_000_000, ge=4096, le=1_000_000)
-    context_recent_count: int = Field(default=20, ge=1, le=200)
     context_compress_threshold: float = Field(default=0.8, ge=0.1, le=0.9)
-    raw_retention_days: int = Field(default=7, ge=1, le=365)
+    raw_retention_days: int = Field(default=30, ge=30, le=30)
+    memory_batch_size: int = Field(default=100, ge=100, le=100)
+    dsh_timeout_seconds: int = Field(default=300, ge=30, le=1800)
     vector_index_enabled: bool = True
-    vector_merge_threshold: int = Field(default=7, ge=1, le=365)
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     timezone: str = "Asia/Shanghai"
     timeout_seconds: int = Field(default=60, ge=10, le=300)
-    tool_round_limit: int = Field(default=8, ge=1, le=20)
+    tool_round_limit: int = Field(default=32, ge=1, le=128)
     workspace_enabled: bool = True
     ocr_enabled: bool = True
 
@@ -76,6 +77,13 @@ class Settings(BaseModel):
             raise ValueError("时区名称无效") from exc
         return value
 
+    @field_validator("dsh_api_url")
+    @classmethod
+    def dsh_url_valid(cls, value):
+        if value and not value.startswith(("http://", "https://")):
+            raise ValueError("dsh API URL 必须是 HTTP(S) 地址")
+        return value.rstrip("/")
+
     @field_validator("api_url")
     @classmethod
     def url_valid(cls, value: str) -> str:
@@ -99,10 +107,12 @@ class Config:
         data = yaml.safe_load(self.path.read_text("utf-8")) or {}
         for name in Settings.model_fields:
             value = os.getenv("AI_" + name.upper())
-            if value is None and name in {"raw_retention_days", "context_recent_count", "context_compress_threshold", "vector_index_enabled", "vector_merge_threshold", "timezone"}:
+            if value is None and name in {"context_compress_threshold", "vector_index_enabled", "timezone"}:
                 value = os.getenv(name.upper())
             if value is not None:
                 data[name] = value
+        data['raw_retention_days'] = 30
+        data['memory_batch_size'] = 100
         return Settings.model_validate(data)
 
     def save(self, changes: dict) -> Settings:

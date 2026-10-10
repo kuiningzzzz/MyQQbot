@@ -12,16 +12,19 @@ from zoneinfo import ZoneInfo
 from src.feature.atom import Feature, MessageContext
 from src.feature.web_search import WebSearchConfig, WebSearchService
 
-from .agents import AttentionAgent, Identity, IntegrationAgent
+from .identity import Identity
+from .migrate import migrate
+from .journal import Journal
+from .dsh_runtime import DshRuntime
+from .local_workspace import LocalWorkspace
 from .client import ModelClient
 from .config import Config
 from .context import ContextManager
 from .engine import ChatEngine
 from .index import VectorIndex
-from .media import FileAgent
+from .media import MediaReader
 from .runtime import MemoryRuntime
 from .storage import Workspace
-from .sandbox import SandboxClient
 from .workfiles import WorkFiles
 from .media import IMAGE_SUFFIXES
 
@@ -31,22 +34,23 @@ logger = logging.getLogger(__name__)
 class AiFeature(Feature):
     name = "ai"
     title = "AI 服务"
-    description = "单一人格、跨场景上下文、Attention 检索与文件记忆整合。"
+    description = "dsh 原生双会话、共享记忆与 QQ 工具。"
 
     def __init__(self, root: Path = Path("data/ai"), client=None, index=None):
+        self.migration = migrate(root)
         self.workspace = Workspace(root)
+        self.journal = Journal(self.workspace)
         self.config = Config(root)
         self.client = client or ModelClient()
         self.identity = Identity(self.config, self.workspace)
         self.index = index or VectorIndex(self.workspace, self.config)
-        self.attention = AttentionAgent(self.config, self.client, self.index, self.identity)
-        self.integration = IntegrationAgent(self.workspace, self.config, self.client, self.index, self.identity)
         self.context = ContextManager(self.workspace, self.config, self.client, self.identity.prompt)
-        self.attention.context_provider = self.context.prompt_snapshot
-        self.sandbox = SandboxClient()
-        self.files = FileAgent(self.config, self.client, self.identity, self.sandbox)
+        self.sandbox = LocalWorkspace(self.workspace.root)
+        self.files = MediaReader(self.config, self.client, self.identity, self.sandbox)
         self.workfiles = WorkFiles(self)
-        self.runtime = MemoryRuntime(self.workspace, self.config, self.integration)
+        self.dsh = DshRuntime(self)
+        self.runtime = MemoryRuntime(self)
+        self.install_memory_skill()
         self.search_config = WebSearchConfig(root.parent / "web_search/config.json")
         self.search = WebSearchService(self.search_config)
         self.engine = ChatEngine(self)
@@ -61,10 +65,14 @@ class AiFeature(Feature):
         self.runtime.set_enabled(enabled)
         if not enabled:
             self.engine.reset_transient()
-            self.engine.pending.clear()
             self.engine.active.clear()
             for key in self.engine.revisions:
                 self.engine.revisions[key] += 1
+            # Revoke native writes/shell too, rather than just QQ callbacks.
+            for task in self.engine.tasks.values():
+                task.cancel()
+            if self.runtime.worker:
+                self.runtime.worker.cancel()
 
     @staticmethod
     def scene_key(ctx) -> str:
@@ -75,7 +83,7 @@ class AiFeature(Feature):
         if self.enabled and self.config.load().chat_enabled:
             self.engine.note_arrival(event)
 
-    async def record(self, scene_type: str, scene_id: str, qq: str, nickname: str, content: str, *, message_type="text", file_data=None, filename="", timestamp=None, message_id=None, outgoing=False) -> dict:
+    async def record(self, scene_type: str, scene_id: str, qq: str, nickname: str, content: str, *, message_type="text", file_data=None, filename="", timestamp=None, message_id=None, outgoing=False, raw_event=None, defer_trigger=False) -> dict:
         if scene_type not in {"group", "private"} or not str(scene_id).isdigit() or not str(qq).isdigit():
             raise ValueError("场景和QQ号无效")
         settings = self.config.load()
@@ -100,8 +108,11 @@ class AiFeature(Feature):
                 if match:
                     self._sent.remove(match)
                     return {"success": True, "duplicate": True}
-            result = await asyncio.to_thread(self.workspace.append_raw, record, settings.timezone)
-            record["raw_line"] = result["raw_line"]
+            seq, added = self.journal.append(record, raw_event)
+            if not added:
+                return {"success": True, "duplicate": True}
+            result = {"success": True, "seq": seq, "id": record["id"]}
+            record["raw_line"] = self.workspace.format_raw(record, settings.timezone)
             await self.context.append(record)
             if message_id:
                 self._message_ids.add(identity)
@@ -109,7 +120,9 @@ class AiFeature(Feature):
                     self._message_ids = {identity}
             if outgoing:
                 self._sent.append((clock, scene_type, str(scene_id), content))
-        return {key: value for key, value in result.items() if key != "raw_line"}
+        if not defer_trigger:
+            self.runtime.trigger()
+        return result
 
     async def observe(self, ctx: MessageContext):
         self.identity.observe(ctx.event.get("self_id"))
@@ -119,14 +132,23 @@ class AiFeature(Feature):
         if re.match(r"^/(set-master|remember|short)(?:\s|$)", ctx.msg):
             return
         segments = ctx.event.get("message") or []
-        content = await self._render(segments, ctx)
-        if not content.strip():
-            return
         sender = ctx.event.get("sender") or {}
         timestamp = None
         if ctx.event.get("time"):
             timestamp = datetime.fromtimestamp(int(ctx.event["time"]), ZoneInfo(self.config.load().timezone)).isoformat()
-        await self.record(ctx.message_type, str(ctx.group_id if ctx.message_type == "group" else ctx.user_id), str(ctx.user_id), str(sender.get("card") or sender.get("nickname") or ctx.user_id), content, timestamp=timestamp, message_id=ctx.event.get("message_id"))
+        original = {k: v for k, v in ctx.event.items() if not k.startswith('_')}
+        # Persist the unmodified original BEFORE network/OCR work, so a crash
+        # cannot lose the event or publish a paraphrase as its original text.
+        text = ctx.event.get('raw_message') or (segments if isinstance(segments, str) else '\n'.join(str(s.get('data', {}).get('text', '')) if s.get('type') == 'text' else '[' + str(s.get('type')) + ']' for s in segments))
+        result = await self.record(ctx.message_type, str(ctx.group_id if ctx.message_type == "group" else ctx.user_id), str(ctx.user_id), str(sender.get("card") or sender.get("nickname") or ctx.user_id), str(text), timestamp=timestamp, message_id=ctx.event.get("message_id"), raw_event=original, defer_trigger=True)
+        if result.get('duplicate'):
+            return
+        try:
+            content = await self._render(segments, ctx)
+            await asyncio.to_thread(self.journal.annotate, result['seq'], content)
+            await self.context.update_content(self.scene_key(ctx), str(ctx.event.get('message_id') or result['id']), content)
+        finally:
+            self.runtime.trigger()
 
     async def _render(self, segments, ctx, depth=0) -> str:
         if isinstance(segments, str):
@@ -195,7 +217,7 @@ class AiFeature(Feature):
             self.identity.observe(qq)
             await self.record(event["scene_type"], str(event["scene_id"]), qq, self.config.load().nickname, event["content"], outgoing=True, message_id=event.get("message_id"))
         elif kind == "disconnect":
-            await asyncio.to_thread(self.workspace.append_system, "连接中断 | 消息丢失（断线期间可能有未接收消息）", self.config.load().timezone)
+            self.record_system("连接中断 | 消息丢失（断线期间可能有未接收消息）", event)
         elif event.get("notice_type") in {"group_recall", "friend_recall"}:
             original = "未在当前上下文找到原消息"
             target = f"group:{event['group_id']}" if event.get("group_id") else f"private:{event.get('user_id')}"
@@ -206,7 +228,7 @@ class AiFeature(Feature):
                 for record in scene["recent_messages"]:
                     if record["id"] == str(event.get("message_id")):
                         original = record["content"]
-            await asyncio.to_thread(self.workspace.append_system, f"消息撤回 | 原消息:{original} | 消息ID:{event.get('message_id')} | 撤回者:{event.get('operator_id') or event.get('user_id')} | 群号:{event.get('group_id', '')}", self.config.load().timezone)
+            self.record_system(f"消息撤回 | 原消息:{original} | 消息ID:{event.get('message_id')}", event)
 
     async def handle(self, ctx):
         if ctx.msg.startswith("/short"):
@@ -233,6 +255,8 @@ class AiFeature(Feature):
 
     async def start(self, bot):
         await self.runtime.start()
+        if not self.config.load().vector_index_enabled:
+            return
         ok, error = await asyncio.to_thread(self.index.preload)
         if ok:
             logger.info("AI 向量索引就绪：embedding 模型已加载")
@@ -242,3 +266,35 @@ class AiFeature(Feature):
     async def stop(self):
         await self.engine.stop()
         await self.runtime.stop()
+        await self.dsh.stop()
+
+    def record_system(self, content, event):
+        self.journal.append({"id": uuid.uuid4().hex, "scene_type": "system", "scene_id": "0", "qq": "0", "nickname": "system", "content": content, "is_self": True, "timestamp": datetime.now(ZoneInfo(self.config.load().timezone)).isoformat()}, {k: v for k, v in event.items() if not k.startswith("_")})
+
+    def install_memory_skill(self):
+        from .storage import atomic_write
+        source = Path(__file__).with_name('skills') / 'memory-management'
+        target = self.workspace.root / '.agents/skills/memory-management'
+        for file in source.rglob('*'):
+            if file.is_file() and file.suffix in {".md", ".py"}:
+                dest = target / file.relative_to(source)
+                if not dest.exists():
+                    atomic_write(dest, file.read_text('utf-8'))
+
+    async def query_memory(self, query, target_qq=None, scope='auto'):
+        if scope not in {'auto', 'user', 'common'} or (target_qq and not str(target_qq).isdigit()):
+            raise ValueError('检索范围或QQ号无效')
+        if not self.config.load().memory_enabled:
+            return {'success': False, 'error': '记忆已关闭'}
+        hits = await asyncio.to_thread(self.index.search, query, scope, target_qq)
+        hits = [h for h in hits if not any(str(h.get('source') or h.get('path') or '').startswith('user/' + qq + '/') for qq in self.identity.ids)]
+        return {'success': True, 'memories': hits}
+
+    def journal_record(self, row):
+        data = self.journal.load(row)
+        record = data['record']
+        scene = record['scene_type'] + ':' + record['scene_id']
+        cached = next((r for r in self.context.scenes.get(scene, {}).get('recent_messages', []) if r['id'] == record['id']), None)
+        if cached:
+            data['rendered_content'] = cached['content']
+        return data

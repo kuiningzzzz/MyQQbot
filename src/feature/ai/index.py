@@ -65,8 +65,8 @@ class VectorIndex:
             try:
                 from sentence_transformers import SentenceTransformer
                 import chromadb
-                model = SentenceTransformer(settings.embedding_model, device="cpu", cache_folder=str(self.workspace.root / ".vector_cache/models"), trust_remote_code=False)
-                client = chromadb.PersistentClient(path=str(self.workspace.root / ".vector_cache/chroma"))
+                model = SentenceTransformer(settings.embedding_model, device="cpu", cache_folder=str(self.workspace.data_root / ".vector_cache/models"), trust_remote_code=False)
+                client = chromadb.PersistentClient(path=str(self.workspace.data_root / ".vector_cache/chroma"))
                 recovered = bool(self._model_error)
                 self._model, self._client, self._model_name = model, client, settings.embedding_model
                 self._model_error = ""
@@ -164,6 +164,9 @@ class VectorIndex:
             if self.config.load().vector_index_enabled:
                 try:
                     state = self.workspace.load_state("index", {})
+                    if state.get("hashes", {}) != {p: digest(self.workspace.read_memory(p)) for p in self.workspace.files()}:
+                        state["dirty"] = True
+                        self.workspace.save_state("index", state)
                     if state.get("dirty", True) or state.get("model") != self.config.load().embedding_model:
                         if not self.sync():
                             return self._lexical(query, scope, qq, limit)
