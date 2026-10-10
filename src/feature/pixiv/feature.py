@@ -21,6 +21,8 @@ from src.feature.pixiv.client import (
     PixivWork,
 )
 from src.feature.pixiv.config import PixivConfig
+from src.feature.atom.diagnostics import DiagnosticRunner
+from src.feature.pixiv.diagnostics import CHECKS
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,10 @@ class PixivFeature(Feature):
         self.client = client or PixivClient(self.config.load_refresh_token())
         self._next_sequence = 1
         self.queue = SerialTaskQueue(self.process_task)
+        self.diagnostics = DiagnosticRunner('src.feature.pixiv.diagnostics', CHECKS)
+
+    async def stop(self):
+        await self.diagnostics.stop()
 
     async def handle(self, ctx: MessageContext) -> bool:
         if ctx.msg == "/pixiv status":

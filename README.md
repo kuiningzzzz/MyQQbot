@@ -107,6 +107,10 @@ python -m src.main
 
 Help 的详细设置支持编辑、保存，以及一键恢复并保存代码中的默认帮助文本。
 
+JM 和 Pixiv 的详细设置都提供“一键测试可用性”：Pixiv 使用当前保存的 refresh token 重新认证，检查作品详情和首张原图；JM 检查首章首图下载/还原及单页 PDF 导出。结果分阶段显示成功、失败、耗时和排查建议。无需先开启模块，不发送 QQ 消息，每个模块同时只运行一项测试，180 秒超时自动终止并清理样本。页面刷新后可继续查看当前测试和当前进程的最近一次结果。
+
+测试作品 ID 可留空：Pixiv 自动选择日榜普通图片作品，JM 使用样本 `438696`。单个作品下架或受限不代表整个功能不可用，可改用已知有效 ID 再测。测试使用点击时已保存的配置，修改 token 后需重新测试；测试通过不覆盖 QQ/NapCat 上传链路。实现复用 [PixivPy 的认证与下载接口](https://github.com/upbit/pixivpy) 和 [jmcomic 的 PDF 导出 Feature](https://jmcomic.readthedocs.io/zh-cn/latest/tutorial/13_export_and_feature/)，不下载整部漫画作为探针。
+
 Docker:
 
 ```bash

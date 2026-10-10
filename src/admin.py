@@ -185,6 +185,19 @@ HTML = """
     input:checked + .slider { background: #2563eb; }
     input:checked + .slider:before { transform: translateX(24px); }
     .feature-extra { padding-top: 16px; border-top: 1px solid #e5e7eb; }
+    .diagnostic-panel { margin: 16px 0; padding: 18px; border: 1px solid #dbe3ef; border-radius: 10px; background: #f8fafc; }
+    .diagnostic-panel h3 { margin: 0 0 10px; }
+    .diagnostic-panel p { line-height: 1.65; overflow-wrap: anywhere; }
+    .diagnostic-panel label { display: block; margin-top: 14px; font-weight: 600; }
+    .diagnostic-panel .diagnostic-note { font-size: 13px; color: #667085; }
+    .diagnostic-panel .diagnostic-summary { margin: 14px 0 0; }
+    .diagnostic-checks { list-style: none; padding: 0; margin: 12px 0 0; }
+    .diagnostic-check { padding: 12px 14px; margin-top: 8px; border-left: 3px solid #d0d5dd; border-radius: 5px; background: white; }
+    .diagnostic-check p { margin: 6px 0 0; font-size: 14px; }
+    .diagnostic-check.passed { border-color: #079455; }
+    .diagnostic-check.failed { border-color: #d92d20; }
+    .diagnostic-check.running { border-color: #2563eb; }
+    .diagnostic-check .diagnostic-hint { color: #667085; }
     textarea, select, input[type="password"], input[type="text"] { width: 100%; border: 1px solid #d0d5dd; border-radius: 8px; padding: 12px; color: #1f2937; font: 14px/1.5 ui-monospace, monospace; }
     textarea { min-height: 180px; resize: vertical; }
     select, input[type="password"], input[type="text"] { margin-top: 10px; }

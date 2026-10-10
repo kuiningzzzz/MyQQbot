@@ -28,6 +28,7 @@ class PixivClient:
         self,
         refresh_token: str | None = None,
         proxy_url: str | None = None,
+        request_timeout: float | None = None,
     ):
         self.refresh_token = refresh_token
         self.proxy_url = (
@@ -36,30 +37,18 @@ class PixivClient:
             else os.getenv("PIXIV_PROXY", "").strip()
         )
         self._api: Any = None
+        self.request_timeout = request_timeout
 
     def set_refresh_token(self, refresh_token: str | None) -> None:
         self.refresh_token = refresh_token.strip() if refresh_token else None
         self._api = None
 
-    def download_work(self, illust_id: str, output_dir: Path) -> PixivWork:
+    def download_work(self, illust_id: str, output_dir: Path, *, max_images: int | None = None, illust=None) -> PixivWork:
         api = self._get_api()
-        response = api.illust_detail(illust_id)
-        error = getattr(response, "error", None)
-        if error:
-            message = self._error_message(error)
-            if not self.refresh_token:
-                raise PixivAuthenticationRequired(
-                    f"{message}；该作品可能需要登录，请在管理 WebUI 配置 refresh token"
-                )
-            raise PixivDownloadError(message)
-
-        illust = getattr(response, "illust", None)
-        if illust is None:
-            raise PixivDownloadError(f"Pixiv 作品 {illust_id} 不存在或无法访问")
-
+        illust = illust if illust is not None else self._get_illust(api, illust_id)
         image_urls = self._original_image_urls(illust)
-        if not image_urls:
-            raise PixivDownloadError(f"Pixiv 作品 {illust_id} 没有可下载的图片")
+        if max_images is not None:
+            image_urls = image_urls[:max_images]
 
         output_dir.mkdir(parents=True, exist_ok=True)
         image_paths: list[Path] = []
@@ -82,6 +71,27 @@ class PixivClient:
             image_paths=image_paths,
         )
 
+    def _get_illust(self, api, illust_id):
+        response = api.illust_detail(illust_id)
+        error = getattr(response, "error", None)
+        if error:
+            message = self._error_message(error)
+            if not self.refresh_token:
+                raise PixivAuthenticationRequired(
+                    f"{message}；该作品可能需要登录，请在管理 WebUI 配置 refresh token"
+                )
+            raise PixivDownloadError(message)
+
+        illust = getattr(response, "illust", None)
+        if illust is None:
+            raise PixivDownloadError(f"Pixiv 作品 {illust_id} 不存在或无法访问")
+
+        image_urls = self._original_image_urls(illust)
+        if not image_urls:
+            raise PixivDownloadError(f"Pixiv 作品 {illust_id} 没有可下载的图片")
+
+        return illust
+
     def _get_api(self):
         if self._api is not None:
             return self._api
@@ -94,6 +104,8 @@ class PixivClient:
             ) from exc
 
         request_options = {}
+        if self.request_timeout is not None:
+            request_options['timeout'] = self.request_timeout
         if self.proxy_url:
             request_options["proxies"] = {
                 "http": self.proxy_url,

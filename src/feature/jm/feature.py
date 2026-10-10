@@ -8,6 +8,8 @@ from datetime import datetime
 from pathlib import Path
 
 from src.feature.atom import Feature, FeatureBusyError, MessageContext, SerialTaskQueue
+from src.feature.atom.diagnostics import DiagnosticRunner
+from src.feature.jm.diagnostics import CHECKS
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,10 @@ class JmPdfFeature(Feature):
         self.cleanup_delay_seconds = int(os.getenv("JM_CLEANUP_DELAY_SECONDS", "300"))
         self._next_sequence = 1
         self.queue = SerialTaskQueue(self.process_task)
+        self.diagnostics = DiagnosticRunner('src.feature.jm.diagnostics', CHECKS)
+
+    async def stop(self):
+        await self.diagnostics.stop()
 
     async def handle(self, ctx: MessageContext) -> bool:
         if ctx.msg == "/jm status":
@@ -132,7 +138,7 @@ class JmPdfFeature(Feature):
     def current_tasks(self) -> list[tuple[str, JmQueueTask]]:
         return self.queue.snapshot()
 
-    def download_pdf(self, task: JmQueueTask) -> Path:
+    def download_pdf(self, task: JmQueueTask, *, downloader=None, request_timeout=None) -> Path:
         from jmcomic import Feature as JmFeature
         from jmcomic import create_option_by_str, download_album
 
@@ -140,18 +146,18 @@ class JmPdfFeature(Feature):
         task.download_dir.mkdir(parents=True, exist_ok=True)
 
         before = self._existing_pdfs(task.output_dir)
-        option = create_option_by_str(
-            f"""
-dir_rule:
-  base_dir: {task.download_dir.resolve().as_posix()}
-"""
-        )
+        import yaml
+        options = {'dir_rule': {'base_dir': task.download_dir.resolve().as_posix()}}
+        if request_timeout is not None:
+            options.update(log=False, client={'retry_times': 0, 'postman': {'meta_data': {'timeout': request_timeout}}},
+                download={'threading': {'image': 1, 'photo': 1}})
+        option = create_option_by_str(yaml.safe_dump(options))
         extra = JmFeature.export_pdf(
             pdf_dir=str(task.output_dir.resolve()),
             delete_original_file=True,
         )
 
-        download_album(task.album_id, option, extra=extra)
+        download_album(task.album_id, option, downloader=downloader, extra=extra)
 
         created = self._existing_pdfs(task.output_dir) - before
         if created:
