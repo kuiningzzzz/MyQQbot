@@ -25,7 +25,7 @@ const definitions = {
   recall_message: ['撤回消息；本人申请直接批准，第三方申请根据上下文判断', {message_id: {type: 'string', required: true}, reason: {type: 'string', required: true}}],
   list_attachments: ['列出当前QQ会话收到的附件', {}],
   download_attachment: ['先发简短确认后下载附件到当前会话files目录', {attachment_id: {type: 'string', required: true}, path: {type: 'string'}}],
-  send_file: ['发送当前会话工作目录内的文件，等待回执', {path: {type: 'string', required: true}, name: {type: 'string'}}],
+  send_file: ['将files_directory内已创建、下载或修改的文件发送为当前群的群文件或当前私聊文件；path为文件路径，name为可选显示文件名；单文件最多20MiB，等待NapCat回执。需文件开关开启且当前为明确请求', {path: {type: 'string', required: true}, name: {type: 'string'}}],
   search_memory: ['本地向量与文本检索，无额外Agent；也可直接原生grep/read记忆文件', {query: {type: 'string', required: true}, target_qq: {type: 'string'}, scope: {type: 'string'}}],
 };
 

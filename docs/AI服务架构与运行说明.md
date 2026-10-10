@@ -57,6 +57,10 @@ data/ai/
 
 `SKILL.md` 模板在 `src/feature/ai/skills/memory-management/SKILL.md`，首次启动复制到工作区，此后不覆盖你的微调。实际运行请修改工作区的副本，每轮会重新读取。聊天基础规则在 `src/feature/ai/engine.py` 的 `CHAT_RULES`，整理任务规则在 `src/feature/ai/runtime.py`。原生工具权限在 `dsh/policy.mjs`，它们不随人设修改而放宽。
 
+机器人自身架构、工具用法和能力边界集中在 `src/feature/ai/self_description.md`，由聊天和记忆整理入口每轮强制注入系统上下文；已有工作区和恢复的会话同样生效，不依赖Agent主动发现，也不覆盖已有 `AGENT.md` 或记忆SKILL。`src/feature/ai/self_context.py` 同时生成当轮宿主状态，包含真实请求者/主人标记、会话目的地、实际目录和功能开关，不包含连接密钥。部署更新并重启服务后即可使用；微调自身说明请修改源码中的Markdown，修改权限仍以 `dsh/policy.mjs` 和Python实际校验为准。
+
+自身说明同时涵盖整个QQ机器人的命令、模块分发、JM/Pixiv队列和admin三个页面。FeatureManager通过通用 `bind_application_context` 回调提供每轮最新的已注册模块、简介及开关状态；各模块通过 `agent_usage` 选择性提供使用资料，不读取模块配置或凭据。帮助模块直接提供与admin和 `/help` 共用的内存文本，保存/恢复后下一轮生效；普通任务与记忆整理只注入普通帮助，主人聊天任务还注入主人帮助。帮助内容是使用资料，不能授权或创造AI工具；当前AI不能直接调用JM/Pixiv处理队列，也不能靠发出斜杠命令触发自身模块。
+
 ## 队列、记忆与上下文
 
 每条收到的人类消息全局计数一次，机器人自己发的、回显重复消息、系统事件不计数。绑定口令不入档。事件先保存原始JSON，再做附件OCR和视觉转述；转述是派生上下文，与原文分开。

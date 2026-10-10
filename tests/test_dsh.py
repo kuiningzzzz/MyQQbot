@@ -18,6 +18,18 @@ from src.feature.ai.transactions import MemoryTransaction, recover
 from src.feature.atom.context import MessageContext
 
 
+def host_state(system):
+    return json.JSONDecoder().raw_decode(system.rsplit('【当轮宿主状态】\n', 1)[1].lstrip())[0]
+
+
+def model_instructions(request):
+    # DeepSeek can receive subsequent system-prompt replacements in history
+    # to preserve its prompt cache. Inspect the latest effective update too.
+    return request['system'] + '\n' + '\n'.join(
+        block['text'] for message in request['messages'] for block in message['content']
+        if block['type'] == 'text')
+
+
 class StateTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -30,6 +42,89 @@ class StateTests(unittest.IsolatedAsyncioTestCase):
 
     async def record(self, identifier, **kwargs):
         return await self.f.record('group', '12', '123', '甲', '事实', message_id=str(identifier), **kwargs)
+
+    async def test_self_context_refreshes_identity_paths_and_feature_gates(self):
+        # One logical conversation must not retain the last request's authority
+        # or attachment destination, including after settings are changed.
+        calls = []
+        async def run(kind, prompt, **kwargs):
+            calls.append(host_state(kwargs['system']))
+            await kwargs['handler']('send_message', {'message': '已检查当前权限'})
+            return {'finish_reason': 'completed'}
+        self.f.dsh.run = run
+        bot = SimpleNamespace(reply=AsyncMock(), master_service=SimpleNamespace(is_master=lambda qq: qq == 123))
+        for qq, group, explicit in ((123, 12, True), (456, 34, False)):
+            if qq == 456:
+                self.f.config.save({'workspace_enabled': False, 'ocr_enabled': False, 'memory_enabled': False})
+            ctx = MessageContext(bot=bot, websocket=None, event={}, msg='检查权限', message_type='group', user_id=qq, group_id=group)
+            await self.f.engine._turn(ctx, f'group:{group}', explicit)
+        first, second = calls
+        self.assertTrue(first['owner'])
+        self.assertTrue(first['shell_allowed'])
+        self.assertTrue(first['file_transfer_allowed'])
+        self.assertEqual(first['files_directory'], str(self.f.sandbox.scene_dir('group:12')))
+        self.assertEqual(second['requester_qq'], '456')
+        self.assertEqual(second['current_scene'], 'group:34')
+        self.assertFalse(second['owner'])
+        self.assertFalse(second['shell_allowed'])
+        self.assertFalse(second['file_transfer_allowed'])
+        self.assertFalse(second['file_transfer_enabled'])
+        self.assertFalse(second['ocr_enabled'])
+        self.assertFalse(second['memory_enabled'])
+        self.assertEqual(second['files_directory'], str(self.f.sandbox.scene_dir('group:34')))
+
+    async def test_admin_help_and_module_switches_refresh_chat_and_memory_context(self):
+        import httpx
+        from fastapi import FastAPI
+        from src.feature.help.admin import HelpAdmin
+        from src.feature.help.feature import HelpFeature, DEFAULT_PUBLIC_HELP_MESSAGES
+        from src.feature.hello.feature import HelloFeature
+        from src.feature.manager import FeatureManager
+        master = SimpleNamespace(is_master=lambda qq: qq == 123)
+        help_feature = HelpFeature(Path(self.temp.name) / 'help.json', master)
+        manager = FeatureManager(Path(self.temp.name) / 'features.json', [self.f, help_feature, HelloFeature()])
+        app = FastAPI()
+        HelpAdmin(help_feature).register_routes(app)
+        calls = []
+        async def run(kind, prompt, **kwargs):
+            calls.append((kwargs['system'], host_state(kwargs['system'])))
+            if kind == 'memory':
+                return {'finish_reason': 'completed', 'final_response': json.dumps({'completed': True, 'batch': json.loads(prompt)['batch']})}
+            await kwargs['handler']('send_message', {'message': '当前用法已说明'})
+            return {'finish_reason': 'completed'}
+        self.f.dsh.run = run
+        bot = SimpleNamespace(reply=AsyncMock(), master_service=master)
+        async def chat(qq):
+            ctx = MessageContext(bot=bot, websocket=None, event={}, msg='介绍机器人', message_type='private', user_id=qq, group_id=None)
+            await self.f.engine._turn(ctx, f'private:{qq}', True)
+            return calls[-1]
+        def modules(state):
+            return {item['name']: item for item in state['application']['features']}
+        _, initial = await chat(456)
+        self.assertEqual(modules(initial)['help']['usage']['public_messages'], DEFAULT_PUBLIC_HELP_MESSAGES)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            saved = await client.post('/api/help', json={
+                'public_messages': ['在线修改的普通帮助：发送 /hello 测试'],
+                'master_messages': ['仅主人可见的自定义帮助标记'],
+            })
+            self.assertEqual(saved.status_code, 200)
+            manager.set_enabled('hello', False)
+            _, owner_state = await chat(123)
+            self.assertEqual(modules(owner_state)['help']['usage']['master_messages'], saved.json()['master_messages'])
+            system, state = await chat(456)
+            self.assertEqual(modules(state)['help']['usage']['public_messages'], saved.json()['public_messages'])
+            self.assertNotIn('master_messages', modules(state)['help']['usage'])
+            self.assertNotIn('仅主人可见的自定义帮助标记', system)
+            self.assertFalse(modules(state)['hello']['enabled'])
+            await self.record(1)
+            await self.f.runtime.full()
+            memory_system, memory_state = calls[-1]
+            self.assertEqual(modules(memory_state)['help']['usage']['public_messages'], saved.json()['public_messages'])
+            self.assertNotIn('仅主人可见的自定义帮助标记', memory_system)
+            reset = await client.post('/api/help/reset')
+            self.assertEqual(reset.status_code, 200)
+            _, restored = await chat(456)
+            self.assertEqual(modules(restored)['help']['usage']['public_messages'], reset.json()['public_messages'])
 
     async def test_immutable_event_precedes_ocr_and_restart_queue_deduplicates(self):
         original = {'message_id': 1, 'self_id': 999, 'message': [{'type': 'image', 'data': {'url': 'https://example.org/a.png'}}]}
@@ -58,6 +153,14 @@ class StateTests(unittest.IsolatedAsyncioTestCase):
             calls.append(data)
             self.assertEqual(kind, 'memory')
             self.assertEqual(data['count'], 100)
+            state = host_state(kwargs['system'])
+            self.assertEqual(state['conversation'], 'memory')
+            self.assertEqual(state['editable_memory_directory'], str(kwargs['cwd'] / 'memory'))
+            self.assertEqual(state['formal_memory_directory'], str(self.f.workspace.memory_root))
+            self.assertIsNone(state['requester_qq'])
+            self.assertIsNone(state['current_scene'])
+            for permission in ('owner', 'shell_allowed', 'qq_tools_allowed', 'web_tools_allowed', 'file_transfer_allowed'):
+                self.assertFalse(state[permission])
             atomic_write(kwargs['cwd'] / 'memory/user/123/PERSON.md', '- 大三学生\n')
             return {'finish_reason': 'completed', 'final_response': json.dumps({'completed': True, 'batch': data['batch']})}
         self.f.dsh.run = run
@@ -379,6 +482,9 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('大三', self.f.workspace.read_memory('user/123/PERSON.md'))
 
         self.assertIn('摄影', self.f.workspace.read_memory('user/123/PREFERENCE.md'))
+        system = model_instructions(self.requests[-1])
+        self.assertEqual(host_state(system)['conversation'], 'memory')
+        self.assertIn('机器人自身架构、能力与边界', system)
 
     async def test_native_search_and_global_chat_scene_routing(self):
         self.f.workspace.write_memory('user/123/PERSON.md', '- 大学生')
@@ -388,11 +494,22 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(results[-1].get('is_error'))
         self.assertIn('PERSON.md', json.dumps(results[-1]['content'], ensure_ascii=False))
         bot = SimpleNamespace(reply=AsyncMock(), master_service=SimpleNamespace(is_master=lambda qq: False))
+        from src.feature.help.feature import HelpFeature
+        from src.feature.manager import FeatureManager
+        help_feature = HelpFeature(Path(self.temp.name) / 'help.json', bot.master_service)
+        FeatureManager(Path(self.temp.name) / 'features.json', [self.f, help_feature])
         for group in (12, 34):
+            help_feature.save_messages([f'群{group}当轮实时帮助'], ['仅主人帮助'])
             await self.f.record('group', str(group), '123', '甲', 'group ' + str(group))
             self.responses = [self.tool('send_message', message='reply ' + str(group)), 'done']
             ctx = MessageContext(bot=bot, event={'self_id': 999}, websocket=None, msg='reply here', message_type='group', user_id=123, group_id=group)
             await self.f.engine._turn(ctx, 'group:' + str(group), True)
+            system = model_instructions(self.requests[-1])
+            self.assertEqual(host_state(system)['current_scene'], f'group:{group}')
+            self.assertIn('send_file(path, name?)', system)
+            registered = {item['name']: item for item in host_state(system)['application']['features']}
+            self.assertEqual(registered['help']['usage']['public_messages'], [f'群{group}当轮实时帮助'])
+            self.assertNotIn('master_messages', registered['help']['usage'])
         self.assertEqual([call.args[0].group_id for call in bot.reply.await_args_list], [12, 34])
         history = json.dumps(self.requests[-1]['messages'], ensure_ascii=False)
         self.assertIn('group:12', history)

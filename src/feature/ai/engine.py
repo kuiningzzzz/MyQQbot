@@ -8,6 +8,7 @@ import uuid
 
 from .forward import FORWARD_POLICY, send_forward_message
 from .recall import RECALL_POLICY, recall_message
+from .self_context import self_context
 from src.onebot_error import OneBotError
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,8 @@ class ChatEngine:
             'files_directory': str(directory), 'new_messages_file': str(feed), 'new_message_count': len(rows),
             'recent_context': [{**r, 'content': r['content'][:4000], 'rendered_content': r.get('rendered_content', '')[:4000]} for r in records[-30:]], 'preview_notice': '预览可能截断，完整原文用read读取raw_path；所有新消息见new_messages_file'}, ensure_ascii=False)
         system = (f.workspace.root / 'AGENT.md').read_text('utf-8') + '\n' + f.identity.prompt() + '\n' + CHAT_RULES + RECALL_POLICY + FORWARD_POLICY
+        system += '\n' + self_context(f, 'chat', scene=key, requester=ctx.user_id, owner=owner,
+            explicit=forced, files_directory=directory)
 
         async def handler(name, args):
             if not current():

@@ -52,10 +52,14 @@ class AiFeature(Feature):
         self.install_memory_skill()
         self.engine = ChatEngine(self)
         self.enabled = True
+        self.application_context = None
         self._record_lock = asyncio.Lock()
         self._sent = []
         self._message_ids = set()
         self._summary_locks = {}
+
+    def bind_application_context(self, provider):
+        self.application_context = provider
 
     def on_enabled_changed(self, enabled: bool) -> None:
         self.enabled = enabled

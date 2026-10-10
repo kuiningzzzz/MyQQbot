@@ -42,6 +42,7 @@ class HelpAdmin:
 <template data-feature-panel="help">
   <div class="feature-extra">
     <p>使用单独一行的 <code>---</code> 分隔聊天记录消息；普通换行会保留在同一条消息中。</p>
+    <p>保存后的帮助会同步给 AI，下一轮对话生效。AI 会结合功能开关解释用法；帮助文本不会新增工具或授予权限。</p>
     <h3>普通用户帮助文本</h3>
     <p>非主人发送 <code>/help</code> 时使用。</p>
     <textarea class="public-help" spellcheck="false"></textarea>

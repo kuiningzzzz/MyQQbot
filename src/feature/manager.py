@@ -25,6 +25,16 @@ class FeatureManager:
         else:
             self.enabled[feature.name] = True
         feature.on_enabled_changed(self.enabled[feature.name])
+        feature.bind_application_context(self.agent_context)
+
+    def agent_context(self, owner: bool = False) -> dict:
+        """Current registry and curated usage, shared with the AI without configs."""
+        return {'features': [
+            {'name': feature.name, 'title': feature.title,
+             'description': feature.description, 'enabled': self.is_enabled(name),
+             'usage': feature.agent_usage(owner)}
+            for name, feature in self.features.items()
+        ]}
 
     def load_state(self):
         if not self.state_path.exists():

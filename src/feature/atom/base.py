@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 from dataclasses import dataclass
 
@@ -40,6 +41,13 @@ class Feature(ABC):
 
     def on_enabled_changed(self, enabled: bool) -> None:
         """Receive the persisted WebUI feature switch state."""
+
+    def bind_application_context(self, provider: Callable[[bool], dict]) -> None:
+        """Optionally consume a fresh, credential-free application description."""
+
+    def agent_usage(self, owner: bool = False) -> dict:
+        """Expose user-facing usage only; never return config or credentials."""
+        return {}
 
     @abstractmethod
     async def handle(self, ctx: MessageContext) -> bool:

@@ -43,6 +43,14 @@ class HelpFeature(Feature):
         await ctx.bot.send_forward_msg(ctx, messages)
         return True
 
+    def agent_usage(self, owner: bool = False) -> dict:
+        # Use the same in-memory texts that /help and admin read; admin saves
+        # and resets become visible next turn without restarting the service.
+        usage = {'public_messages': self.public_messages.copy()}
+        if owner:
+            usage['master_messages'] = self.master_messages.copy()
+        return usage
+
     def load_messages(self) -> tuple[list[str], list[str]]:
         if not self.state_path.exists():
             self.save_messages(DEFAULT_PUBLIC_HELP_MESSAGES, DEFAULT_MASTER_HELP_MESSAGES)
