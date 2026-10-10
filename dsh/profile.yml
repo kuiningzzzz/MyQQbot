@@ -18,6 +18,8 @@
       config: { includeHarnessIdentity: false, includeRuntimeContext: false }
     - { id: tools, name: '@deepseek-ai/dsh-tools' }
     - { id: agent, name: '@deepseek-ai/dsh-agent' }
+    - { id: subagents, name: '@deepseek-ai/dsh-subagent' }
+    - { id: spawn, name: '@deepseek-ai/dsh-subagent-spawn-in-process' }
     - id: loop
       name: '@deepseek-ai/dsh-agent-loop'
       config: { agents: [] }
@@ -63,4 +65,4 @@
     - { id: tool-skill, name: '@deepseek-ai/dsh-tool-skill' }
     - id: qqbot
       name: ./plugin.mjs
-      inject: [agents, sessions, agentLoop, tools, systemPrompt, sessionPersistence, fs, compaction]
+      inject: [agents, sessions, agentLoop, tools, systemPrompt, sessionPersistence, fs, compaction, subagents]

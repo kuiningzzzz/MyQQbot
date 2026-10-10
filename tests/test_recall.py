@@ -86,8 +86,11 @@ class RecallTests(unittest.IsolatedAsyncioTestCase):
     async def test_tool_failure_is_returned_to_agent(self):
         async def run(kind, prompt, **kwargs):
             self.assertIn('非发送者请求', kwargs['system'])
-            result = await kwargs['handler']('recall_message', {'message_id': '101', 'reason': '本人申请'})
+            child = await kwargs['spawn']('recall-test', '撤回消息')
+            result = await child['handler']('recall_message', {'message_id': '101', 'reason': '本人申请'})
             self.assertEqual(result['code'], 'permission_denied')
+            child['revoke']()
+            await child['finish']({'state': 'cancelled'})
             return {'finish_reason': 'completed'}
         self.f.dsh.run = run
         self.action.side_effect = OneBotError('delete_msg', {'retcode': 1200, 'message': '权限不足'})

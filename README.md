@@ -161,16 +161,16 @@ QQ 账号向机器人发送页面给出的完整指令：
 
 ### AI 服务
 
-AI模块采用官方dsh内核、单一人格、跨群聊与私聊的共享对话，以及独立记忆整理对话。原始 [memory_structure.md](memory_structure.md) 仅保留为历史设计参考；现行机制见下方运行说明。
+AI模块采用官方dsh内核、单一人格、跨群聊与私聊的共享主对话，以及独立记忆整理对话。主 Agent 只处理聊天与分派，所有执行工作交给原生 Spawn 子 Agent 在后台完成；结果和文件回到发起任务的 QQ 会话，新聊天不会打断任务。原始 [memory_structure.md](memory_structure.md) 仅保留为历史设计参考；现行机制见下方运行说明。
 
 在管理WebUI的“AI服务”中配置：
 
-- 机器人QQ号、网名（也是文本唤醒词）、账号身份说明和人设正文。两个对话都知道机器人自身账号，整理任务不会为其建立画像。
+- 机器人QQ号、网名（也是文本唤醒词）、账号身份说明和人设正文。主对话、Spawn子Agent和记忆整理均知道机器人自身账号，不会为其建立画像。
 - 模型固定为 `deepseek-flash`，密钥放 `.env` 的 `DEEPSEEK_API_KEY`，管理界面只显示配置状态。
 - 上下文、输出与压缩由dsh/DeepSeek默认策略管理，原文仍可在30天档案中读取；联网使用dsh原生DeepSeek搜索。
 - dsh聊天与独立记忆整理会话、每100条消息自动整理、原文30天保留、本地向量检索。
 
-聊天、记忆、主人服务器权限、文件/OCR、合并转发、部署和自动数据迁移详见 [AI服务架构与运行说明](docs/AI服务架构与运行说明.md)。本次升级移除Attention、主/子Agent、每日任务及ai-sandbox；新镜像直接运行官方dsh。升级执行 `docker compose up -d --build --remove-orphans`，首次启动自动迁移旧data。需要主人控制宿主服务器时，使用文档中的原生systemd部署。
+聊天、后台 Spawn、记忆、主人服务器权限、文件/OCR、合并转发、部署和自动数据迁移详见 [AI服务架构与运行说明](docs/AI服务架构与运行说明.md)。Attention、每日整理任务及ai-sandbox已移除；新镜像直接运行官方dsh。升级执行 `docker compose up -d --build --remove-orphans`，首次启动自动迁移旧data。需要主人控制宿主服务器时，使用文档中的原生systemd部署。
 
 ## 文档
 

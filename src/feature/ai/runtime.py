@@ -1,4 +1,4 @@
-"""Durable 100-message batches, no daily integration and no child agents."""
+"""Durable 100-message batches in the independent maintenance conversation."""
 import asyncio
 import json
 import logging
@@ -117,9 +117,12 @@ class MemoryRuntime:
         stage = self.workspace.root / 'tmp/memory-stage'
         if stage.is_dir() and not stage.is_symlink() and stage.resolve().is_relative_to(self.workspace.root.resolve()):
             shutil.rmtree(stage)
-        for file in (self.workspace.root / 'tmp').glob('chat-*.json'):
-            if not file.is_symlink():
-                file.unlink()
+        temporary = self.workspace.root / 'tmp'
+        if temporary.is_dir() and not temporary.is_symlink() and temporary.resolve().is_relative_to(self.workspace.root.resolve()):
+            for pattern in ('chat-*.json', 'worker-*.json'):
+                for file in temporary.glob(pattern):
+                    if file.is_file() and not file.is_symlink():
+                        file.unlink()
         self.running = True
         await self.tick()
         self.scheduler = asyncio.create_task(self._schedule())

@@ -6,7 +6,7 @@ import {defineTool} from '@deepseek-ai/dsh-tools';
 import {denial} from './policy.mjs';
 
 export const name = 'myqqbot-bridge';
-export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt', 'sessionPersistence', 'fs', 'compaction'];
+export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt', 'sessionPersistence', 'fs', 'compaction', 'subagents'];
 
 const text = value => [{type: 'text', text: value}];
 function writeJSON(file, value) {
@@ -27,6 +27,9 @@ const definitions = {
   download_attachment: ['先发简短确认后下载附件到当前会话files目录', {attachment_id: {type: 'string', required: true}, path: {type: 'string'}}],
   send_file: ['将files_directory内已创建、下载或修改的文件发送为当前群的群文件或当前私聊文件；path为文件路径，name为可选显示文件名；单文件最多20MiB，等待NapCat回执。需文件开关开启且当前为明确请求', {path: {type: 'string', required: true}, name: {type: 'string'}}],
   search_memory: ['本地向量与文本检索，无额外Agent；也可直接原生grep/read记忆文件', {query: {type: 'string', required: true}, target_qq: {type: 'string'}, scope: {type: 'string'}}],
+  spawn_task: ['立即启动一次性后台Spawn子Agent并返回task_id，不等待执行完成。所有读写、搜索、记忆编辑、附件处理、撤回等工作均须委派。说明目标、必要上下文与交付要求，不能提升授权。结果自动回原会话，无需轮询。', {title: {type: 'string', required: true}, prompt: {type: 'string', required: true}}],
+  task_status: ['查询当前请求者在当前QQ会话的后台任务状态，省略task_id列出最近任务', {task_id: {type: 'string'}}],
+  cancel_task: ['取消当前请求者在当前QQ会话的指定后台任务；文件修改不回滚', {task_id: {type: 'string', required: true}}],
 };
 
 export async function apply(ctx) {
@@ -35,6 +38,10 @@ export async function apply(ctx) {
   const home = process.env.DSH_HOME;
   const handles = new Map();
   const tasks = new Map();
+  const jobs = new Map();
+  const pendingChildren = new Map();
+  let creation = Promise.resolve();
+  let closing = false;
   const manifest = path.join(home, 'qqbot-sessions.json');
   const retentionFile = path.join(home, 'qqbot-retention.json');
   const retained = fs.existsSync(retentionFile) ? JSON.parse(fs.readFileSync(retentionFile, 'utf8')) : {};
@@ -48,12 +55,102 @@ export async function apply(ctx) {
     if (!result.ok) throw new Error(result.error);
     return result.result;
   }
+  function instructions(agentCtx, agent, fixedTask) {
+    agentCtx.systemPrompt.section({name: 'qqbot:instructions', order: 0, interpolate: false, text: () => {
+      const task = fixedTask || currentTask(agent);
+      const skill = fs.readFileSync(path.join(workspace, '.agents/skills/memory-management/SKILL.md'), 'utf8');
+      const boundary = task?.role === 'main' ? '主对话只聊天与分派，SKILL中的所有读写/搜索均交给spawn_task子Agent执行。'
+        : task?.role === 'worker' ? '你是一次性Spawn执行者；SKILL中的聊天回复由主对话交付，你只返回最终结果，可用send_file交付文件，不能spawn或聊天。'
+        : '独立记忆整理对话按批次规则返回JSON，不能聊天或spawn。';
+      return (task?.system || '') + '\n【必读记忆规则】\n' + skill + '\n【本Agent角色边界】\n' + boundary;
+    }});
+  }
+  // A fresh Spawn scope must receive frozen authority before its first step.
+  ctx.on('agent/created', ({agent}) => {
+    const task = pendingChildren.get(agent.session.header.parentSession);
+    if (!task || agent.session.header.origin !== 'subagent') return;
+    tasks.set(agent.id, task);
+    task.agent_id = agent.id;
+    instructions(agent.ctx, agent, task);
+    retained[agent.id] = task.expires_at;
+    writeJSON(retentionFile, retained);
+  });
+  const owned = (job, task) => job && job.task.qq === task.qq && job.task.scene_dir === task.scene_dir;
+  async function settle(job, result) {
+    clearTimeout(job.timer);
+    job.state = job.task.cancelled ? 'cancelled' : result.stopReason === 'completed' ? 'completed' : 'failed';
+    try {
+      if (job.run?.localAgent) await ctx.sessions.flush(job.run.localAgent.session);
+      await callback(job.task, '__finish', {task_id: job.task.task_id, title: job.title, state: job.state,
+        output: (result.output || []).filter(b => b.type === 'text').map(b => b.text).join('\n').slice(0, 24000)});
+    } catch (error) {
+      process.stderr.write('QQBOT_BACKGROUND_RESULT ' + error.message + '\n');
+    } finally {
+      tasks.delete(job.task.agent_id);
+      if (job.run) {
+        try { await job.run.dispose(); }
+        catch (error) { process.stderr.write('QQBOT_BACKGROUND_DISPOSE ' + error.message + '\n'); }
+      }
+      job.run = null;
+      job.finished = Date.now();
+      job.task = {task_id: job.task.task_id, qq: job.task.qq, scene_dir: job.task.scene_dir, cancelled: job.task.cancelled};
+      const finished = [...jobs.entries()].filter(([, value]) => value.finished);
+      for (const [id] of finished.slice(0, Math.max(0, finished.length - 50))) jobs.delete(id);
+    }
+  }
+  async function dispatch(name, args, exec, parent) {
+    for (const [id, job] of jobs) if (job.finished && Date.now() - job.finished > 3600000) jobs.delete(id);
+    if (name !== 'spawn_task') {
+      if (args.task_id && !owned(jobs.get(args.task_id), parent)) return {success: false, code: 'task_not_found'};
+      const selected = [...jobs.values()].filter(job => owned(job, parent) && (!args.task_id || args.task_id === job.task.task_id));
+      if (name === 'cancel_task') {
+        for (const job of selected) if (!job.finished) {
+          job.task.cancelled = true;
+          try { await callback(job.task, '__revoke', {}); }
+          finally { job.controller.abort(); }
+        }
+      }
+      return {success: true, tasks: selected.map(job => ({task_id: job.task.task_id, title: job.title, state: job.task.cancelled ? 'cancelled' : job.state}))};
+    }
+    if (closing || exec.signal.aborted) throw new Error('TASK_EXPIRED');
+    if (!args.title?.trim() || args.title.length > 120 || !args.prompt?.trim() || args.prompt.length > 16000) throw new Error('任务标题或说明长度无效');
+    const running = [...jobs.values()].filter(job => !job.finished);
+    if (running.length >= 4 || running.filter(job => owned(job, parent)).length >= 2) return {success: false, code: 'task_capacity', error: '同时最多4个后台任务，每位请求者每会话最多2个'};
+    const id = randomUUID();
+    const task = {...parent, task_id: id, role: 'worker', system: parent.worker_system, cancelled: false};
+    const job = {task, parent_id: exec.agent.id, title: args.title, state: 'starting', controller: new AbortController()};
+    jobs.set(id, job);
+    try {
+      const prepared = await callback(parent, '__spawn', {task_id: id, title: args.title}, exec.signal);
+      // Only scope creation is serialized. Model/tool execution is independent.
+      const start = creation.then(async () => {
+        if (closing || job.controller.signal.aborted) throw new Error('TASK_EXPIRED');
+        pendingChildren.set(exec.agent.id, task);
+        try {
+          return await ctx.subagents.start('spawn', {parent: exec.agent, label: args.title,
+            prompt: text(JSON.stringify({assignment: args.prompt, origin: prepared.context})),
+            signal: job.controller.signal, maxDepth: 1,
+            toolFilter: {deny: ['spawn_task', 'task_status', 'cancel_task', 'send_message', 'send_forward_message']}});
+        } finally { pendingChildren.delete(exec.agent.id); }
+      });
+      creation = start.then(() => {}, () => {});
+      job.run = await start;
+      job.state = 'running';
+      job.timer = setTimeout(() => { task.cancelled = true; job.controller.abort(); }, Math.max(1, task.expires_at - Date.now()));
+      job.done = job.run.result.then(result => settle(job, result), error => settle(job, {stopReason: 'error', output: text(error.message)}));
+      return {success: true, task_id: id, state: 'running', mode: 'spawn-one-shot', delivery: '完成后自动回原QQ会话报告'};
+    } catch (error) {
+      await settle(job, {stopReason: 'error', output: text(error.message)});
+      throw error;
+    }
+  }
   for (const [toolName, [description, parameters]] of Object.entries(definitions)) {
     ctx.tools.register(defineTool({name: toolName, description, parameters,
       output: {schema: {type: 'json'}, render: (_args, value) => text(JSON.stringify(value))},
       async execute(args, exec) {
         const task = currentTask(exec.agent);
         if (!task || task.cancelled) throw new Error('TASK_EXPIRED');
+        if (['spawn_task', 'task_status', 'cancel_task'].includes(toolName)) return dispatch(toolName, args, exec, task);
         return callback(task, toolName, args, exec.signal);
       }}));
   }
@@ -62,19 +159,18 @@ export async function apply(ctx) {
     // Roll physical logs weekly without importing their raw history. Logical
     // conversations persist via memory + Python's retained recent context.
     if (generation && generation.expires <= Date.now()) {
+      // Do not dispose a parent underneath live children. Retention guard and
+      // child deadlines cancel expired work before the next rotation.
+      const children = [...jobs.values()].filter(job => job.parent_id === handles.get(kind)?.agent.id && !job.finished);
+      for (const job of children) { job.task.cancelled = true; job.controller.abort(); }
+      await Promise.allSettled(children.map(job => job.done));
       const old = handles.get(kind);
       if (old) await old.dispose();
       handles.delete(kind);
       generation = null;
     }
     if (handles.has(kind)) return handles.get(kind);
-    const setup = (agentCtx, agent) => {
-      agentCtx.systemPrompt.section({name: 'qqbot:instructions', order: 0, interpolate: false, text: () => {
-        const task = currentTask(agent);
-        const skill = fs.readFileSync(path.join(workspace, '.agents/skills/memory-management/SKILL.md'), 'utf8');
-        return (task?.system || '') + '\n【必读记忆规则】\n' + skill;
-      }});
-    };
+    const setup = (agentCtx, agent) => instructions(agentCtx, agent);
     let handle;
     if (generation && stored(generation.id)) {
       handle = await ctx.agents.resume({resumeSessionId: generation.id, agentOptions: data.options, setup});
@@ -92,6 +188,7 @@ export async function apply(ctx) {
     if (busy) throw new Error('运行中，请顺序提交任务');
     busy = true;
     let handle;
+    let lift;
     try {
       if (!['chat', 'memory'].includes(data.kind)) throw new Error('未知对话');
       handle = await getHandle(data.kind, {...data, options: {provider: 'deepseek-official', model: 'deepseek-flash'}});
@@ -103,8 +200,11 @@ export async function apply(ctx) {
       retained[generation.id] = generation.expires;
       writeJSON(retentionFile, retained);
       writeJSON(manifest, generations);
-      const task = {...data, cancelled: false};
+      const task = {...data, expires_at: generation.expires, cancelled: false};
       tasks.set(agent.id, task);
+      lift = agent.ctx.tools.restrict(data.role === 'main'
+        ? {allow: data.delivery ? ['send_message', 'send_forward_message'] : ['send_message', 'send_forward_message', 'spawn_task', 'task_status', 'cancel_task']}
+        : {deny: ['spawn_task', 'task_status', 'cancel_task']});
       const before = agent.session.snapshotEvents().length;
       agent.followup({id: randomUUID(), role: 'user', source: {kind: 'user'}, content: text(data.prompt)});
       await agent.whenIdle();
@@ -114,6 +214,7 @@ export async function apply(ctx) {
       const output = agent.session.deriveMessages().filter(m => m.role === 'assistant').at(-1);
       return {cancelled: task.cancelled, finish_reason: end?.data?.reason?.kind, error: end?.data?.reason?.error, final_response: (output?.content || []).filter(b => b.type === 'text').map(b => b.text).join('\n')};
     } finally {
+      lift?.();
       if (handle) tasks.delete(handle.agent.id);
       busy = false;
     }
@@ -127,12 +228,18 @@ export async function apply(ctx) {
       const data = JSON.parse(body);
       if (request.url === '/run') result = await run(data);
       else if (request.url === '/cancel') {
+        const job = jobs.get(data.task_id);
+        if (job) { job.task.cancelled = true; job.controller.abort(); }
         for (const handle of handles.values()) {
           const task = currentTask(handle.agent);
           if (task?.task_id === data.task_id) { task.cancelled = true; handle.agent.cancel({kind: 'user'}); await handle.agent.whenIdle(); }
         }
         result = {cancelled: true};
       } else if (request.url === '/close') {
+        closing = true;
+        for (const job of jobs.values()) { job.task.cancelled = true; job.controller.abort(); }
+        await creation;
+        await Promise.allSettled([...jobs.values()].map(job => job.done));
         for (const handle of handles.values()) await handle.dispose();
         handles.clear();
         result = {closed: true};
@@ -143,6 +250,10 @@ export async function apply(ctx) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   process.stdout.write('QQBOT_READY http://127.0.0.1:' + server.address().port + '\n');
   ctx.on('dispose', async () => {
+    closing = true;
+    for (const job of jobs.values()) { job.task.cancelled = true; job.controller.abort(); }
+    await creation;
+    await Promise.allSettled([...jobs.values()].map(job => job.done));
     for (const handle of handles.values()) await handle.dispose();
     await new Promise(resolve => server.close(resolve));
   });

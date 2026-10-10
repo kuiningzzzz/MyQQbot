@@ -86,7 +86,11 @@ class WorkFileTests(unittest.IsolatedAsyncioTestCase):
     async def test_download_acknowledged_before_processing(self):
         identifier, _ = self.f.workfiles.register(self.ctx, "file", {"name": "a.txt", "url": "https://example.com/a"})
         async def run(kind, prompt, **kwargs):
-            await kwargs['handler']('download_attachment', {'attachment_id': identifier})
+            await kwargs['handler']('send_message', {'message': '好的，我下载下来看看能不能处理。'})
+            child = await kwargs['spawn']('download-test', '下载附件')
+            await child['handler']('download_attachment', {'attachment_id': identifier})
+            child['revoke']()
+            await child['finish']({'state': 'cancelled'})
             return {'finish_reason': 'completed'}
         async def download(*args):
             self.bot.reply.assert_awaited_once()

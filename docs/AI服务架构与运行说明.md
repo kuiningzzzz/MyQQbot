@@ -2,11 +2,27 @@
 
 ## 本次改造
 
-聊天和记忆整理分别使用一个持久化 dsh 会话。所有群聊和私聊共用聊天会话，历史消息包含真实QQ号、昵称、场景、时间和消息ID；记忆整理共用另一个会话。没有主/子Agent、Attention或continue判断Agent，也没有03:00记忆任务。
+聊天和记忆整理分别使用一个持久化 dsh 会话。所有群聊和私聊共用聊天会话，历史消息包含真实QQ号、昵称、场景、时间和消息ID；记忆整理共用另一个会话。聊天启用原生一次性 Spawn 子 Agent，主 Agent 只处理对话和分派。没有 Attention、可续聊/多层子 Agent 或03:00记忆任务。
 
 锁定官方 npm 版本 `@deepseek-ai/dsh@0.2.0-rc.2`，依赖完整锁在 `dsh/package-lock.json`。官方仓库：https://github.com/deepseek-ai/deepseek-harness 。`dsh/profile.yml` 组合官方模型适配器、Agent循环、JSONL会话持久化、token计量、自动上下文压缩、原生read/write/edit/glob/grep、Bash/PowerShell和SKILL。模型循环及上下文压缩由官方实现承担。
 
-Python处理QQ事件、持久消息队列、文件/OCR、记忆提交和OneBot回执；Node插件只桥接这些业务能力和原生工具执行权限。两端仅监听127.0.0.1，使用启动时生成的随机令牌，模型无法指定回调地址。不会启动dsh网页、SDK公网服务、MCP、子Agent、插件管理或后台任务工具。
+Python处理QQ事件、持久消息队列、文件/OCR、记忆提交、后台任务来源及OneBot回执；Node插件桥接业务能力、原生工具权限和 Spawn 生命周期。两端仅监听127.0.0.1，使用启动时生成的随机令牌，模型无法指定回调地址。不会启动dsh网页、SDK公网服务、MCP、可续聊子Agent或插件管理。
+
+## 一次性后台 Spawn
+
+主 Agent 只有 `send_message`、`send_forward_message`、`spawn_task`、`task_status`、`cancel_task`。原生文件/搜索/命令、记忆检索、附件处理、文件发送和撤回工具从主对话的工具列表移除，执行守卫也会拒绝直接调用；主人身份不能绕过这条角色边界。普通聊天可直接回答，凡需执行的工作均委派，包括“请记住”这样的简单修改。
+
+`spawn_task(title,prompt)` 使用官方 `dsh-subagent` 服务和 `dsh-subagent-spawn-in-process` provider，调用 `ctx.subagents.start('spawn', ...)`；模型、工具循环、文件观察、网页搜索及压缩继续使用 dsh 原生实现。宿主持有独立 AbortController，工具只等待子 Agent 创建，立即返回任务 ID，不等待 `run.result`，因此主回合结束和新消息到达都不会取消它。没有 fork、continuable 或子 Agent 的继续委派，深度上限为1。
+
+子 Agent 使用全新上下文，不复制主对话整段历史；宿主附上原请求、真实 QQ、主人授权、绑定场景、引用、文件目录及独立原文输入文件，主 Agent 在说明中补充必要事实与交付要求。人设、账号身份、整体架构及记忆SKILL同样强制注入。权限固定来自发起请求，不能因主对话后来切换到主人或别的群而扩大。各任务使用独立 QQ 回调和发送计数；文件最多3次、20MiB，目的地始终是原会话。
+
+子 Agent 不能发送聊天文字或聊天记录；可使用 `send_file` 交付文件。结束后向宿主返回一次结果并释放内核句柄，文字结果作为 `background_result` 排入共享主对话，在原会话解释一次。这一交付回合不能再 Spawn，结果文本不视为新授权。文件修改和下载可以保留；临时原文输入在任务结束时清理，子会话日志使用来源原文的剩余保留期，最长7天。
+
+同时最多4个任务，每位请求者每个QQ会话最多2个，满额返回 `task_capacity`；不自动重排或重复提交。用户询问进度时查询 `task_status`，明确取消时调用 `cancel_task`，只能查看/取消本人在同一会话的任务。状态最多保存最近50个已结束任务，查询时清理1小时前状态。新聊天及补充说明不会自动修改任务；需要改要求时取消后重建。
+
+取消、关闭AI、保存AI配置、服务停止、运行时重启或上下文到期都会终止任务；在途QQ操作可能无法撤销，已完成文件修改不回滚。后台执行状态不跨进程恢复、不自动重做，因此重启后如需继续，应先检查已有文件再发起新任务。更新仅启用现有锁定依赖中的 Spawn 插件，不改数据格式，无需额外迁移；保留原人设和记忆SKILL微调。
+
+提示词入口：`src/feature/ai/engine.py` 的 `CHAT_RULES`（主对话）和 `WORKER_RULES`（执行子Agent）；整体说明在 `src/feature/ai/self_description.md`；硬性角色与路径权限在 `dsh/policy.mjs`，原生生命周期桥接在 `dsh/plugin.mjs`。
 
 ```mermaid
 flowchart LR
@@ -14,13 +30,18 @@ flowchart LR
   Archive --> Chat[dsh全局聊天会话]
   Archive --> Batch[每100条人类消息]
   Batch --> Memory[dsh记忆整理会话]
-  Chat --> Tools[原生文件与命令工具]
+  Chat --> Spawn[dsh一次性后台Spawn]
+  Spawn --> Tools[原生读写搜索与命令工具]
+  Spawn --> Result[一次性结果事件]
+  Result --> Chat
   Memory --> Stage[暂存Markdown]
   Stage --> Commit[校验/冲突检查/可恢复提交]
   Commit --> Files[共享memory]
-  Chat --> Files
-  Chat --> Bridge[绑定当前场景的QQ工具]
+  Tools --> Files
+  Chat --> Bridge[绑定原会话的文字与聊天记录发送]
   Bridge --> QQ
+  Spawn --> FileSend[绑定原会话的文件发送与撤回]
+  FileSend --> QQ
 ```
 
 ## 数据目录
@@ -40,7 +61,7 @@ data/ai/
   workspace/
     AGENT.md                       唯一聊天人设，管理界面可编辑
     .agents/skills/memory-management/
-      SKILL.md                     两个会话每轮硬性必读的分类与读写规则
+      SKILL.md                     主对话、子Agent及整理每轮必读的分类与读写规则
       scripts/search.py            可选的纯Python记忆搜索脚本
     memory/
       user/<QQ>/PERSON.md
@@ -79,7 +100,7 @@ data/ai/
 
 主人当前请求可以使用原生Bash（Linux）或PowerShell（Windows），以及工作区外读写，其操作范围取决于服务进程的OS权限。Docker方式可控制容器及挂载目录；要控制宿主服务器，应使用下面的原生部署方式。没有默认挂载Docker socket或整个宿主根目录。
 
-聊天请求按全局顺序执行。其他群的新消息排队；同一场景、同一请求者明确说“等等/取消刚才/纠正一下/补充一下/先别”会取消旧任务再处理新消息。取消或关闭功能会撤销旧任务工具桥接与原生运行。已经送到NapCat的在途动作无法事后取消，按回执记录真实结果。
+主对话回合按全局顺序执行，后台 Spawn 的执行不占用这个队列。其他群的新聊天只等待当前对话回合；同一场景、同一请求者明确说“等等/取消刚才/纠正一下/补充一下/先别”会取消正在输出的旧主回合再处理新消息，已启动的子任务由主 Agent 根据新意图显式调用 cancel_task。取消或关闭功能撤销工具桥接与原生运行。已经送到NapCat的在途动作无法事后取消，按回执记录真实结果。
 
 QQ工具不接受任意目标，始终绑定当轮真实请求场景。最多4条文字、1张合并转发卡片、3个文件；发送失败返回结构化错误，权限不足保留 `permission_denied`，超时是 `unknown`，本轮禁止重复该类发送。撤回仍执行当前场景/已知或引用消息检查。文件只能从当前场景files目录导出，单文件20MiB。
 

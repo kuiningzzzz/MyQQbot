@@ -20,6 +20,15 @@ export function within(root, target) {
 
 export function denial(task, name, args, workspace) {
   if (!task || task.cancelled) return 'TASK_EXPIRED: 当前任务已结束';
+  if (task.expires_at && task.expires_at <= Date.now()) return 'TASK_EXPIRED: 上下文已过保留期';
+  const dispatch = new Set(['spawn_task', 'task_status', 'cancel_task']);
+  if (task.role === 'main') {
+    const allowed = ['send_message', 'send_forward_message', ...(task.delivery ? [] : dispatch)];
+    if (allowed.includes(name)) return;
+    return 'DELEGATION_REQUIRED: 主对话只能聊天和分派，执行工作必须spawn子Agent';
+  }
+  if (dispatch.has(name)) return 'PERMISSION_DENIED: 只有主对话可分派任务，子Agent只能一次性返回';
+  if (task.role === 'worker' && ['send_message', 'send_forward_message'].includes(name)) return 'PERMISSION_DENIED: 子任务结果由主对话交付，文件使用send_file';
   if (task.owner) return;
   const fileTools = new Set(['read', 'write', 'edit', 'glob', 'grep']);
   const qqTools = new Set(['send_message', 'send_forward_message', 'recall_message', 'inspect_message', 'list_attachments', 'download_attachment', 'send_file', 'web_search', 'web_fetch', 'search_memory']);

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import secrets
 import shutil
 import time
@@ -49,9 +50,28 @@ class DshRuntime:
                     raise ValueError("工具桥接请求无效")
                 payload = json.loads(await reader.readexactly(size))
                 task = self.active.get(payload.get("task_id"))
-                if task is None or not task["current"]():
+                # Completion is idempotent, including after a host-side revoke.
+                if task is None and payload.get('name') != '__finish':
                     raise PermissionError("任务已结束或权限已撤销")
-                result = await task["handler"](payload["name"], payload.get("arguments") or {})
+                name, args = payload['name'], payload.get('arguments') or {}
+                if task is None:
+                    result = {'success': True}
+                elif name == '__revoke' and task.get('revoke'):
+                    task['revoke']()
+                    result = {'success': True}
+                elif name == '__finish' and task.get('finish'):
+                    self.active.pop(payload['task_id'], None)
+                    await task['finish'](args)
+                    result = {'success': True}
+                else:
+                    if not task['current']():
+                        raise PermissionError('任务已结束或权限已撤销')
+                    if name == '__spawn' and task.get('spawn'):
+                        child = await task['spawn'](args['task_id'], args['title'])
+                        self.active[args['task_id']] = child
+                        result = {'context': child['context']}
+                    else:
+                        result = await task['handler'](name, args)
                 data = json.dumps({"ok": True, "result": result}, ensure_ascii=False).encode()
         except Exception as exc:
             data = json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False).encode()
@@ -100,12 +120,22 @@ class DshRuntime:
                 raise
 
     async def _diagnostics(self):
-        while self.process and self.process.stderr:
-            line = await self.process.stderr.readline()
+        process = self.process
+        while process and process.stderr:
+            line = await process.stderr.readline()
             if not line:
-                return
+                break
             # Keep bounded diagnostics, never print model requests or credentials.
             self.stderr = (self.stderr + [line.decode(errors="replace").strip()])[-20:]
+        if process:
+            await process.wait()
+        if self.process is process:
+            # A crashed native process cannot call __finish. Release its input
+            # files and notify the original scene; never silently restart work.
+            children = [(identifier, task) for identifier, task in self.active.items() if task.get('finish')]
+            for identifier, task in children:
+                if self.active.pop(identifier, None) is task:
+                    await task['finish']({'state': 'failed', 'output': '后台执行进程意外退出，任务已中断，未自动重做。请检查已有文件后重新发起。'})
 
     async def request(self, endpoint, data, timeout=30):
         async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
@@ -116,12 +146,12 @@ class DshRuntime:
                 raise RuntimeError(result.get("error", "dsh操作失败"))
             return result.get("result", {})
 
-    async def run(self, kind, prompt, *, task_id, handler, current, owner=False, qq="", cwd=None, system="", scene_dir="", expires_at=None):
+    async def run(self, kind, prompt, *, task_id, handler, current, owner=False, qq="", cwd=None, system="", scene_dir="", expires_at=None, role=None, worker_system='', spawn=None, delivery=False):
         async with self.turn_lock:
             if not current():
                 return {"cancelled": True}
             await self.start()
-            self.active[task_id] = {"handler": handler, "current": current}
+            self.active[task_id] = {"handler": handler, "current": current, 'spawn': spawn}
             try:
                 # Any native read can consult the oldest retained raw record.
                 # Bound the entire session (including compaction/tool output)
@@ -130,7 +160,8 @@ class DshRuntime:
                 deadline = expires_at or time.time() + 30 * 86400
                 if oldest is not None:
                     deadline = min(deadline, oldest + 30 * 86400)
-                return await self.request("/run", {"kind": kind, "task_id": task_id, "owner": owner, "qq": qq,
+                return await self.request("/run", {"kind": kind, "role": role or ('main' if kind == 'chat' else 'memory'), 'worker_system': worker_system,
+                    'delivery': delivery, "task_id": task_id, "owner": owner, "qq": qq,
                     "prompt": prompt, "system": system, "self_ids": sorted(self.feature.identity.ids), "scene_dir": scene_dir, "cwd": str(cwd or self.feature.workspace.root),
                     "expires_at": deadline * 1000}, timeout=None)
             except BaseException:
@@ -144,12 +175,17 @@ class DshRuntime:
                 self.active.pop(task_id, None)
 
     async def cancel(self, task_id):
-        self.active.pop(task_id, None)
+        task = self.active.pop(task_id, None)
+        if task and task.get('finish'):
+            await task['finish']({'task_id': task_id, 'state': 'cancelled', 'output': ''})
         if self.url:
             await self.request("/cancel", {"task_id": task_id})
 
     async def stop(self):
+        children = [task for task in self.active.values() if task.get('finish')]
         self.active.clear()
+        for task in children:
+            await task['finish']({'state': 'cancelled', 'output': ''})
         if self.process and self.process.returncode is None:
             if self.url:
                 try:
@@ -190,7 +226,7 @@ class DshRuntime:
                 if temporary.is_dir() and not temporary.is_symlink():
                     shutil.rmtree(temporary)
                 for identity in expired:
-                    if '/' in identity or '\\' in identity or not identity.startswith(('chat-', 'memory-')):
+                    if not re.fullmatch(r'(?:chat-|memory-)?[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', identity):
                         raise ValueError('会话路径越界')
                     for target in (self.home / 'sessions').glob('*/' + identity):
                         if not target.is_symlink() and target.resolve().is_relative_to((self.home / 'sessions').resolve()):

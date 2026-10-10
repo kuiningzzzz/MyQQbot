@@ -60,7 +60,8 @@ class StateTests(unittest.IsolatedAsyncioTestCase):
             await self.f.engine._turn(ctx, f'group:{group}', explicit)
         first, second = calls
         self.assertTrue(first['owner'])
-        self.assertTrue(first['shell_allowed'])
+        self.assertFalse(first['shell_allowed'])
+        self.assertTrue(first['background_spawn_available'])
         self.assertTrue(first['file_transfer_allowed'])
         self.assertEqual(first['files_directory'], str(self.f.sandbox.scene_dir('group:12')))
         self.assertEqual(second['requester_qq'], '456')
@@ -205,6 +206,15 @@ class StateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.f.journal.rows()), 1)
         self.assertEqual(len(self.f.context.recent('group:12', 10)), 1)
         self.assertEqual(self.f.workspace.read_memory('user/123/PERSON.md'), 'long term')
+
+    async def test_startup_discards_interrupted_worker_input_but_preserves_artifacts(self):
+        temporary = self.f.workspace.root / 'tmp/worker-interrupted.json'
+        artifact = self.f.sandbox.scene_dir('group:12') / 'report.md'
+        atomic_write(temporary, '["raw excerpts"]')
+        atomic_write(artifact, 'persistent output')
+        await self.f.runtime.start()
+        self.assertFalse(temporary.exists())
+        self.assertEqual(artifact.read_text('utf-8'), 'persistent output')
 
     async def test_startup_migration_preserves_bytes_is_idempotent_and_conflicts_stop(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -406,7 +416,7 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             request = json.loads(await reader.readexactly(int(headers['content-length'])))
             self.requests.append(request)
             self.model_started.set()
-            response = self.responses.pop(0)
+            response = self.dispatcher if hasattr(self, 'dispatcher') else self.responses.pop(0)
             if callable(response):
                 response = response(request)
             if asyncio.iscoroutine(response):
@@ -425,9 +435,14 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             data = ''.join('event: ' + e['type'] + '\ndata: ' + json.dumps(e, ensure_ascii=False) + '\n\n' for e in events).encode()
             writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\nContent-Length: ' + str(len(data)).encode() + b'\r\n\r\n' + data)
             await writer.drain()
+        except (ConnectionResetError, BrokenPipeError):
+            pass  # Cancellation deliberately closes a live model stream.
         finally:
             writer.close()
-            await writer.wait_closed()
+            try:
+                await writer.wait_closed()
+            except (ConnectionResetError, BrokenPipeError):
+                pass
 
     @staticmethod
     def tool(name, **args):
@@ -435,7 +450,157 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         return [{'type': 'tool_use', 'id': 'call-' + uuid.uuid4().hex, 'name': name, 'input': args}]
 
     async def native(self, kind='chat', **kwargs):
-        return await self.f.dsh.run(kind, kwargs.pop('prompt', 'native test'), task_id=kwargs.pop('task_id', 'test'), current=lambda: True, handler=kwargs.pop('handler', AsyncMock(return_value={'success': True})), qq='123', scene_dir='scene', system='必读分类规则', **kwargs)
+        return await self.f.dsh.run(kind, kwargs.pop('prompt', 'native test'), task_id=kwargs.pop('task_id', 'test'), current=lambda: True, handler=kwargs.pop('handler', AsyncMock(return_value={'success': True})), qq='123', scene_dir='scene', system='必读分类规则', role=kwargs.pop('role', 'worker' if kind == 'chat' else 'memory'), **kwargs)
+
+    async def test_spawn_runs_in_background_and_delivers_files_to_original_scene(self):
+        began, release = asyncio.Event(), asyncio.Event()
+        counts = {'main': 0, 'worker': 0}
+        target = self.f.sandbox.scene_dir('group:12') / 'docker.md'
+        async def respond(request):
+            tools = {t['name'] for t in request.get('tools', [])}
+            worker = 'write' in tools
+            role = 'worker' if worker else 'main'
+            counts[role] += 1
+            if worker:
+                self.assertNotIn('spawn_task', tools)
+                self.assertNotIn('send_message', tools)
+                self.assertIn('必读记忆规则', request['system'])
+                self.assertIn('999', request['system'])
+                if counts[role] == 1:
+                    began.set()
+                    await release.wait()
+                    return self.tool('write', file_path=str(target), content='# Docker 使用说明')
+                if counts[role] == 2:
+                    return self.tool('send_file', path=str(target))
+                return '已生成docker.md并发送成功。'
+            self.assertNotIn('read', tools)
+            self.assertNotIn('web_search', tools)
+            self.assertNotIn('pwsh', tools)
+            if counts[role] == 1:
+                return self.tool('spawn_task', title='制作Docker手册', prompt='生成详细说明并发送文件')
+            return {2: '任务已启动，稍后发给你。', 3: '可以继续聊天。'}.get(counts[role], '手册已完成并发送。')
+        self.dispatcher = respond
+        bot = SimpleNamespace(reply=AsyncMock(), master_service=SimpleNamespace(is_master=lambda qq: qq == 123))
+        self.f.workfiles.send = AsyncMock(return_value={'success': True, 'message_id': 'file-1'})
+        def context(group, text):
+            return MessageContext(bot=bot, event={}, websocket=None, msg=text, message_type='group', user_id=123, group_id=group)
+        try:
+            await asyncio.wait_for(self.f.engine._turn(context(12, '制作Docker手册'), 'group:12', True), 25)
+            await asyncio.wait_for(began.wait(), 10)
+            self.assertEqual(len(self.f.engine.background), 1)
+            feeds = list((self.f.workspace.root / 'tmp').glob('worker-*.json'))
+            self.assertEqual(len(feeds), 1)
+            self.assertTrue(feeds[0].exists())
+            await asyncio.wait_for(self.f.engine._turn(context(34, '还能聊天吗'), 'group:34', True), 10)
+            self.assertFalse(target.exists())
+            release.set()
+            async with asyncio.timeout(20):
+                while self.f.engine.background or self.f.engine.tasks:
+                    await asyncio.sleep(.05)
+            self.assertEqual(target.read_text('utf-8'), '# Docker 使用说明')
+            self.assertEqual(self.f.workfiles.send.await_args.args[0].group_id, 12)
+            self.assertEqual([call.args[0].group_id for call in bot.reply.await_args_list], [12, 34, 12])
+            self.assertFalse(feeds[0].exists())
+            # Background results are data; their delivery turn cannot spawn.
+            self.assertNotIn('spawn_task', {t['name'] for t in self.requests[-1]['tools']})
+            await self.f.dsh.stop()
+            retention = self.f.dsh.home / 'qqbot-retention.json'
+            entries = json.loads(retention.read_text('utf-8'))
+            self.assertEqual(len(entries), 2)  # parent and one-shot child logs
+            atomic_write(retention, json.dumps({identity: 0 for identity in entries}))
+            await self.f.dsh.prune()
+            self.assertEqual(list((self.f.dsh.home / 'sessions').glob('*/*/*.jsonl')), [])
+            self.assertTrue(target.exists())
+        finally:
+            release.set()
+
+    async def test_main_cannot_execute_even_with_owner_authority(self):
+        outside = self.f.workspace.data_root / 'forbidden.txt'
+        self.responses = [self.tool('write', file_path=str(outside), content='bad'), 'blocked']
+        result = await self.native(owner=True, role='main')
+        self.assertEqual(result['finish_reason'], 'completed')
+        self.assertFalse(outside.exists())
+        self.assertNotIn('write', {t['name'] for t in self.requests[0]['tools']})
+
+    async def test_spawn_cancellation_is_scoped_and_disable_stops_native_writes(self):
+        for mode in ('cancel', 'disable'):
+            began, release = asyncio.Event(), asyncio.Event()
+            commands = [self.tool('spawn_task', title='后台测试', prompt='写入测试文件')]
+            target = self.f.sandbox.scene_dir('group:12') / (mode + '.txt')
+            main_steps = 0
+            async def respond(request):
+                nonlocal main_steps
+                if 'write' in {t['name'] for t in request.get('tools', [])}:
+                    began.set()
+                    await release.wait()
+                    return self.tool('write', file_path=str(target), content='must not execute')
+                main_steps += 1
+                return commands.pop(0) if commands else '任务状态已说明。'
+            self.dispatcher = respond
+            bot = SimpleNamespace(reply=AsyncMock(), master_service=SimpleNamespace(is_master=lambda qq: qq == 123))
+            def context(qq=123, group=12):
+                return MessageContext(bot=bot, event={}, websocket=None, msg='任务操作', message_type='group', user_id=qq, group_id=group)
+            try:
+                await asyncio.wait_for(self.f.engine._turn(context(), 'group:12', True), 20)
+                await asyncio.wait_for(began.wait(), 10)
+                identifier = next(iter(self.f.engine.background))
+                if mode == 'cancel':
+                    commands.append(self.tool('cancel_task', task_id=identifier))
+                    await self.f.engine._turn(context(456, 34), 'group:34', True)
+                    self.assertIn('task_not_found', json.dumps(self.requests[-1]['messages']))
+                    self.assertIn(identifier, self.f.engine.background)
+                    commands.append(self.tool('cancel_task', task_id=identifier))
+                    await self.f.engine._turn(context(), 'group:12', True)
+                else:
+                    self.f.on_enabled_changed(False)
+                    self.f.on_enabled_changed(True)
+                    await asyncio.gather(*self.f.engine.cleanup_tasks)
+                async with asyncio.timeout(10):
+                    while self.f.engine.background:
+                        await asyncio.sleep(.05)
+                self.assertTrue(self.f.engine.pending.empty())
+                release.set()
+                await self.f.dsh.stop()
+                self.assertFalse(target.exists())
+                self.assertEqual(list((self.f.workspace.root / 'tmp').glob('worker-*.json')), [])
+            finally:
+                release.set()
+
+    async def test_spawn_runtime_crash_reports_failure_without_repeating_work(self):
+        began, release = asyncio.Event(), asyncio.Event()
+        dispatched = False
+        worker_requests = 0
+        async def respond(request):
+            nonlocal dispatched, worker_requests
+            if 'write' in {t['name'] for t in request.get('tools', [])}:
+                worker_requests += 1
+                began.set()
+                await release.wait()
+                return 'late result'
+            if not dispatched:
+                dispatched = True
+                return self.tool('spawn_task', title='进程中断测试', prompt='执行一次后台工作')
+            return '任务状态已说明。'
+        self.dispatcher = respond
+        bot = SimpleNamespace(reply=AsyncMock())
+        ctx = MessageContext(bot=bot, event={}, websocket=None, msg='后台任务', message_type='group', user_id=123, group_id=12)
+        try:
+            await self.f.engine._turn(ctx, 'group:12', True)
+            await asyncio.wait_for(began.wait(), 10)
+            process = self.f.dsh.process
+            process.kill()
+            await process.wait()
+            async with asyncio.timeout(20):
+                while self.f.engine.background or self.f.engine.tasks or bot.reply.await_count < 2:
+                    await asyncio.sleep(.05)
+            self.assertEqual(worker_requests, 1)
+            last = json.loads(self.requests[-1]['messages'][-1]['content'][-1]['text'])
+            self.assertEqual(last['background_result']['state'], 'failed')
+            self.assertIn('进程意外退出', last['background_result']['output'])
+            self.assertEqual(bot.reply.await_args.args[0].group_id, 12)
+            self.assertEqual(list((self.f.workspace.root / 'tmp').glob('worker-*.json')), [])
+        finally:
+            release.set()
 
     async def test_native_write_guard_owner_downgrade_and_session_resume(self):
         target = self.f.workspace.root / 'memory/user/123/PERSON.md'

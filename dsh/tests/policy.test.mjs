@@ -10,7 +10,7 @@ const work = path.join(root, 'workspace');
 fs.mkdirSync(path.join(work, 'memory/user/123'), {recursive:true});
 fs.mkdirSync(path.join(work, 'files/scene'), {recursive:true});
 fs.mkdirSync(path.join(work, 'tmp/memory-stage/memory/user/123'), {recursive:true});
-const task = {kind:'chat', cwd:work, qq:'123', scene_dir:'scene', self_ids:['999']};
+const task = {kind:'chat', role:'worker', cwd:work, qq:'123', scene_dir:'scene', self_ids:['999']};
 const check = (name, file, override={}) => denial({...task,...override}, name, {file_path:file}, work);
 
 test('ordinary user can use native own-memory and scene writes', () => {
@@ -19,6 +19,14 @@ test('ordinary user can use native own-memory and scene writes', () => {
   assert.match(check('write', 'memory/user/456/PERSON.md'), /PERMISSION_DENIED/);
   assert.match(check('write', 'files/another/result.txt'), /PERMISSION_DENIED/);
   assert.match(check('write', '.agents/skills/memory-management/SKILL.md'), /PERMISSION_DENIED/);
+});
+test('main delegates every execution even for owner; children cannot spawn or chat', () => {
+  assert.match(check('write', 'files/scene/a', {role:'main', owner:true}), /DELEGATION_REQUIRED/);
+  assert.match(check('web_search', '.', {role:'main', owner:true}), /DELEGATION_REQUIRED/);
+  assert.equal(check('spawn_task', '.', {role:'main'}), undefined);
+  assert.match(check('spawn_task', '.', {owner:true}), /PERMISSION_DENIED/);
+  assert.match(check('send_message', '.', {owner:true}), /PERMISSION_DENIED/);
+  assert.match(check('read', '.', {expires_at:1}), /TASK_EXPIRED/);
 });
 test('owner status belongs only to current task and expired tasks never run', () => {
   assert.match(check('bash', '.'), /OWNER_REQUIRED/);

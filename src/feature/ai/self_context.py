@@ -7,13 +7,17 @@ DESCRIPTION = Path(__file__).with_name('self_description.md')
 
 
 def self_context(feature, kind, *, cwd=None, scene=None, requester=None,
-                 owner=False, explicit=False, files_directory=None):
+                 owner=False, explicit=False, files_directory=None, role=None):
     if kind not in {'chat', 'memory'}:
         raise ValueError('未知对话类型')
     settings = feature.config.load()
     chat = kind == 'chat'
+    role = role or ('main' if chat else 'memory')
     state = {
         'conversation': kind,
+        'agent_role': role,
+        'background_spawn_available': role == 'main',
+        'native_execution_allowed': role in {'worker', 'memory'},
         'workspace': str(feature.workspace.root),
         'cwd': str(cwd or feature.workspace.root),
         'formal_memory_directory': str(feature.workspace.memory_root),
@@ -23,9 +27,9 @@ def self_context(feature, kind, *, cwd=None, scene=None, requester=None,
         'owner': bool(chat and owner),
         'explicit_request': bool(chat and explicit),
         'files_directory': str(files_directory) if chat and files_directory else None,
-        'shell_allowed': bool(chat and owner),
+        'shell_allowed': bool(chat and owner and role == 'worker'),
         'qq_tools_allowed': chat,
-        'web_tools_allowed': chat,
+        'web_tools_allowed': bool(chat and role == 'worker'),
         'file_transfer_allowed': bool(chat and settings.workspace_enabled and explicit),
         'chat_enabled': settings.chat_enabled,
         'summary_enabled': settings.summary_enabled,

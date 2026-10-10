@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 class AiFeature(Feature):
     name = "ai"
     title = "AI 服务"
-    description = "dsh 原生双会话、共享记忆与 QQ 工具。"
+    description = "dsh 共享对话、后台 Spawn 执行、独立记忆整理与 QQ 工具。"
 
     def __init__(self, root: Path = Path("data/ai"), client=None, index=None):
         self.migration = migrate(root)

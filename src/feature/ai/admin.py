@@ -95,6 +95,9 @@ class AiAdmin:
                     await asyncio.to_thread(atomic_write, f.workspace.root / "AGENT.md", prompt)
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
+            # Saving configuration restarts the native runtime. Revoke running
+            # workers first, including their in-flight QQ callback checks.
+            await f.engine.stop()
             async with f.dsh.turn_lock:
                 await f.dsh.stop()
             return await config()
