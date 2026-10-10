@@ -166,11 +166,6 @@ class ChatEngine:
                         result = await f.workfiles.send(ctx, args.get('path', ''), args.get('name'), current)
                 elif name == 'search_memory':
                     result = await f.query_memory(**args)
-                elif name == 'web_search':
-                    if not f.search.enabled:
-                        return {'success': False, 'error': '联网搜索未启用'}
-                    from dataclasses import asdict
-                    result = {'success': True, 'results': [asdict(r) for r in await asyncio.to_thread(f.search.search, args.get('query', ''))]}
                 else:
                     raise ValueError('未知QQ工具')
                 if name in caps and result.get('success'):

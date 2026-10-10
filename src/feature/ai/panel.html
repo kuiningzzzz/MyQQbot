@@ -1,34 +1,223 @@
 <template data-feature-panel="ai">
-  <div class="settings-stack">
-    <p class="hint">所有群聊和私聊共享一个人格、上下文和记忆库。聊天与记忆整理是两个独立的 dsh 对话，共用记忆目录。</p>
-    <details class="settings-section" open><summary><span>账号与人设</span></summary>
-      <div class="settings-body" data-ai-identity></div>
-      <label>人设正文（AGENT.md）<textarea data-ai-prompt rows="8" style="width:100%"></textarea></label>
-    </details>
-    <details class="settings-section"><summary><span>模型与上下文</span></summary><div class="settings-body" data-ai-model></div></details>
-    <details class="settings-section"><summary><span>记忆与本地向量模型</span></summary><div class="settings-body" data-ai-memory></div>
-      <p class="hint">每100条去重的人类消息触发整理；原始事件滚动保留30天。本地模型首次使用时下载，可填写已下载模型的本地目录。</p>
-    </details>
-    <details class="settings-section"><summary><span>附件与临时工作区</span></summary><div class="settings-body" data-ai-workspace></div>
-      <p class="hint">工作文件按会话存放；普通用户只能修改自身记忆和当前会话文件。服务器命令仅主人当前请求可执行。单文件20MiB。OCR支持中英文，PDF自动处理前10页文本及前4页图像。</p>
-      <button type="button" data-workspace-status>检查工作区</button>
-    </details>
-    <button type="button" data-ai-save>保存 AI 设置</button>
-    <details class="settings-section"><summary><span>联网搜索</span></summary><div class="settings-body" data-ai-search></div><button type="button" data-search-save>保存搜索设置</button></details>
-    <details class="settings-section"><summary><span>记忆文件编辑器</span></summary>
-      <p class="hint">直接编辑 Markdown 画像与通用知识，保存后同步索引。新建文件可填写 user/QQ号/PREFERENCE.md 或 user/QQ号/memory/主题.md。</p>
-      <select data-memory-list aria-label="已有记忆文件"></select><button type="button" data-memory-refresh>刷新文件列表</button>
-      <input data-memory-path placeholder="user/123456/PREFERENCE.md" style="width:100%" aria-label="记忆文件路径">
-      <button type="button" data-memory-open>打开或新建</button>
-      <textarea data-memory-content rows="15" style="width:100%" aria-label="记忆文件内容"></textarea>
-      <button type="button" data-memory-save>保存文件并同步索引</button><button type="button" data-reindex>重建全部索引</button>
-    </details>
-    <details class="settings-section"><summary><span>检索与维护</span></summary>
-      <input data-memory-query placeholder="查询内容" aria-label="查询内容"><input data-memory-qq placeholder="可选：目标QQ" aria-label="目标QQ">
-      <button type="button" data-memory-test>测试记忆检索</button>
-      <button type="button" data-integrate>立即整理队列（最多100条）</button>
-      <pre data-memory-result style="white-space:pre-wrap"></pre>
-    </details>
-    <p data-ai-status role="status" style="white-space:pre-wrap"></p>
-  </div>
+<style>
+.ai-panel{--ai-border:#e2e8f0;line-height:1.65;padding-top:8px}
+.ai-panel [hidden]{display:none!important}
+.ai-panel h3{margin:0;font-size:17px}
+.ai-panel .ai-muted{color:#667085;font-size:13px}
+
+.ai-panel .ai-overview{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:12px 0 20px}
+.ai-panel .ai-stat{padding:14px 18px;background:#f8fafc;border:1px solid var(--ai-border);border-radius:10px}
+.ai-panel .ai-stat strong{display:block;font-size:22px;color:#1e3a8a}
+
+.ai-panel .ai-tabs{display:flex;gap:6px;border-bottom:1px solid var(--ai-border);margin-bottom:20px}
+.ai-panel button{margin:0}
+.ai-panel .ai-tabs button{background:transparent;color:#667085;border-radius:6px 6px 0 0;padding:12px 16px;border-bottom:3px solid transparent}
+.ai-panel .ai-tabs button[aria-selected="true"]{color:#1d4ed8;border-bottom-color:#2563eb;background:#eff6ff}
+
+.ai-panel .ai-toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:16px}
+.ai-panel .ai-toolbar h3{margin-right:auto}
+.ai-panel .ai-secondary{background:#eef2f6;color:#344054}
+.ai-panel .ai-danger{color:#b42318;background:#fff1f0}
+
+.ai-panel input[type="text"],.ai-panel select,.ai-panel textarea{margin:0;font-family:inherit;padding:10px 12px}
+.ai-panel .ai-field{display:flex;flex-direction:column;gap:7px;min-width:0;color:#344054;font-size:14px}
+.ai-panel .ai-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.ai-panel .ai-check{display:flex;gap:10px;align-items:center;padding:10px 0}
+.ai-panel .ai-check input{width:18px;height:18px;accent-color:#2563eb}
+
+.ai-panel .ai-card{border:1px solid var(--ai-border);border-radius:10px;padding:20px;margin-bottom:18px}
+.ai-panel .ai-card>h3,.ai-panel .ai-card>p{margin-bottom:14px}
+.ai-panel .ai-library{display:grid;grid-template-columns:280px minmax(0,1fr);border:1px solid var(--ai-border);border-radius:10px;overflow:hidden}
+.ai-panel .ai-sidebar{padding:16px;background:#f8fafc;border-right:1px solid var(--ai-border)}
+.ai-panel .ai-filters{display:grid;gap:10px;margin-bottom:14px}
+
+.ai-panel .ai-file-list{max-height:580px;overflow:auto;display:grid;gap:5px;align-content:start}
+.ai-panel .ai-file-group{font-size:12px;color:#667085;padding:12px 6px 4px;overflow-wrap:anywhere}
+.ai-panel .ai-file{background:transparent;color:#344054;text-align:left;font-weight:500;padding:9px 10px;width:100%}
+.ai-panel .ai-file:hover{background:#e8eef8}
+.ai-panel .ai-file[aria-pressed="true"]{background:#dbeafe;color:#1d4ed8}
+.ai-panel .ai-file small{display:block;font-weight:400;color:#667085}
+
+.ai-panel .ai-editor{padding:20px;min-width:0}
+.ai-panel .ai-editor-heading{display:flex;justify-content:space-between;gap:12px;align-items:start;margin-bottom:12px}
+.ai-panel .ai-editor-meta{font-size:12px;color:#667085;overflow-wrap:anywhere;margin-top:5px}
+.ai-panel .ai-editor textarea{font:14px/1.85 ui-monospace,SFMono-Regular,Consolas,monospace;min-height:380px}
+.ai-panel .ai-editor-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}
+.ai-panel .ai-editor-actions .ai-danger{margin-left:auto}
+.ai-panel .ai-empty{padding:65px 16px;color:#667085;text-align:center}
+
+.ai-panel .ai-note{background:#eff6ff;border-radius:8px;padding:12px 15px;margin-top:14px;font-size:13px;color:#475467}
+.ai-panel .ai-status{white-space:pre-wrap;overflow-wrap:anywhere;margin-top:18px;padding:12px 14px;background:#f8fafc;border-radius:8px}
+.ai-panel .ai-status:empty{display:none}
+.ai-panel .ai-status[data-error="true"]{background:#fff1f0;color:#b42318}
+.ai-panel .ai-results{display:grid;gap:12px;margin-top:16px}
+.ai-panel .ai-result{border:1px solid var(--ai-border);border-radius:8px;padding:14px}
+.ai-panel .ai-result pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0 0}
+
+.ai-panel .ai-runtime{display:grid;grid-template-columns:110px minmax(0,1fr);gap:8px 12px;margin:0;font-size:14px}
+.ai-panel .ai-runtime dt{color:#667085}
+.ai-panel .ai-runtime dd{margin:0;overflow-wrap:anywhere}
+.ai-panel dialog{width:min(480px,calc(100vw - 32px));border:1px solid var(--ai-border);border-radius:14px;padding:24px;color:#1f2937}
+.ai-panel dialog::backdrop{background:#0f172a80}
+.ai-panel dialog form{display:grid;gap:16px}
+
+@media(max-width:760px){.ai-panel .ai-library{grid-template-columns:1fr}
+.ai-panel .ai-sidebar{border-right:0;border-bottom:1px solid var(--ai-border)}
+.ai-panel .ai-file-list{max-height:220px}
+.ai-panel .ai-grid{grid-template-columns:1fr}
+.ai-panel .ai-overview{gap:6px}
+.ai-panel .ai-stat{padding:10px;font-size:12px}
+.ai-panel .ai-stat strong{font-size:19px}
+.ai-panel .ai-editor,.ai-panel .ai-card{padding:16px}
+.ai-panel .ai-tabs button{padding:10px}
+}
+
+</style>
+<div class="ai-panel">
+<p class="ai-muted">所有群聊和私聊共用聊天上下文；记忆由独立 dsh 对话持续整理。</p>
+<div class="ai-overview">
+<div class="ai-stat">
+<strong data-ai-pending>—</strong>待整理消息 / 每100条自动整理</div>
+<div class="ai-stat">
+<strong data-ai-users>—</strong>已有用户记忆</div>
+<div class="ai-stat">
+<strong data-ai-file-count>—</strong>记忆文件 / 原文保留30天</div>
+</div>
+<div class="ai-tabs" role="tablist" aria-label="AI管理">
+<button type="button" id="ai-tab-memory" data-ai-tab="memory" role="tab" aria-controls="ai-view-memory" aria-selected="true">记忆库</button>
+<button type="button" id="ai-tab-settings" data-ai-tab="settings" role="tab" aria-controls="ai-view-settings" aria-selected="false" tabindex="-1">账号与功能</button>
+<button type="button" id="ai-tab-maintenance" data-ai-tab="maintenance" role="tab" aria-controls="ai-view-maintenance" aria-selected="false" tabindex="-1">检索与维护</button>
+</div>
+<section id="ai-view-memory" data-ai-view="memory" role="tabpanel" aria-labelledby="ai-tab-memory">
+<div class="ai-toolbar">
+<h3>记忆库</h3>
+<button type="button" class="ai-secondary" data-memory-refresh>刷新列表</button>
+<button type="button" data-memory-new>新建记忆</button>
+</div>
+<div class="ai-library">
+<aside class="ai-sidebar" aria-label="记忆文件导航">
+<div class="ai-filters">
+<input type="text" data-memory-filter placeholder="搜索昵称、QQ、主题…" aria-label="筛选记忆文件">
+<select data-memory-category aria-label="筛选分类">
+<option value="">所有分类</option>
+<option value="PERSON">身份与关系</option>
+<option value="PREFERENCE">偏好与习惯</option>
+<option value="RECENTNESS">近期状态</option>
+<option value="EVENT">主题与事件</option>
+<option value="GLOSSARY">公共知识</option>
+</select>
+</div>
+<div class="ai-file-list" data-memory-list>
+</div>
+</aside>
+<div class="ai-editor">
+<div data-memory-empty class="ai-empty">从左侧选择记忆文件，或点击“新建记忆”。<br>按用户和分类管理，无需填写文件路径。</div>
+<div data-memory-editor hidden>
+<div class="ai-editor-heading">
+<div>
+<h3 data-memory-title>
+</h3>
+<div class="ai-editor-meta" data-memory-meta>
+</div>
+</div>
+<span class="ai-muted" data-memory-dirty>已保存</span>
+</div>
+<textarea data-memory-content rows="18" aria-label="Markdown记忆正文" spellcheck="false">
+</textarea>
+<div class="ai-editor-actions">
+<button type="button" data-memory-save disabled>保存修改</button>
+<button type="button" class="ai-secondary" data-memory-reload>重新读取</button>
+<button type="button" class="ai-danger" data-memory-delete>删除文件</button>
+</div>
+<div class="ai-note">支持 Markdown。保存时检查文件版本；如果 Agent 已更新记忆，你的修改会保留在编辑器中，不会覆盖新内容。</div>
+</div>
+</div>
+</div>
+</section>
+<section id="ai-view-settings" data-ai-view="settings" role="tabpanel" aria-labelledby="ai-tab-settings" hidden>
+<div class="ai-card">
+<h3>账号与人设</h3>
+<div class="ai-grid" data-ai-identity>
+</div>
+<label class="ai-field" style="margin-top:18px">人设描述<textarea data-ai-prompt rows="8" placeholder="描述机器人的性格、表达方式与行为习惯">
+</textarea>
+</label>
+</div>
+<div class="ai-card">
+<h3>功能开关</h3>
+<div class="ai-grid" data-ai-switches>
+</div>
+<p class="ai-muted">普通用户可修改自己的记忆和当前会话文件；服务器命令仅主人当前请求可执行。OCR支持图片与PDF。</p>
+</div>
+<div class="ai-card">
+<h3>本地记忆检索</h3>
+<div class="ai-grid" data-ai-memory>
+</div>
+<p class="ai-muted">嵌入模型在本地运行，首次使用自动下载；也可填写本地模型目录。</p>
+</div>
+<div class="ai-toolbar">
+<button type="button" data-ai-save>保存账号与功能设置</button>
+</div>
+<div class="ai-card">
+<h3>运行配置</h3>
+<dl class="ai-runtime" data-ai-runtime>
+</dl>
+<div class="ai-note">模型固定为 deepseek-flash。API Key从环境变量读取；上下文、输出、超时与压缩使用 dsh / DeepSeek 默认策略。联网使用 dsh 原生 DeepSeek 搜索，无需另配搜索服务。</div>
+</div>
+</section>
+<section id="ai-view-maintenance" data-ai-view="maintenance" role="tabpanel" aria-labelledby="ai-tab-maintenance" hidden>
+<div class="ai-card">
+<h3>测试记忆检索</h3>
+<div class="ai-grid">
+<label class="ai-field">查询内容<input type="text" data-memory-query placeholder="例如：谁喜欢摄影？">
+</label>
+<label class="ai-field">限定用户（可选）<input type="text" data-memory-qq inputmode="numeric" placeholder="填写QQ号，留空检索全部">
+</label>
+</div>
+<div class="ai-editor-actions">
+<button type="button" data-memory-test>检索记忆</button>
+</div>
+<div class="ai-results" data-memory-result>
+</div>
+</div>
+<div class="ai-card">
+<h3>记忆整理与索引</h3>
+<p class="ai-muted">手动整理最早一批消息（最多100条），失败时保留队列。索引可重建，不影响Markdown记忆原文。</p>
+<div class="ai-toolbar">
+<button type="button" data-integrate>立即整理队列</button>
+<button type="button" class="ai-secondary" data-reindex>重建索引</button>
+<button type="button" class="ai-secondary" data-workspace-status>检查工作区</button>
+</div>
+<div class="ai-results" data-maintenance-result>
+</div>
+</div>
+</section>
+<p class="ai-status" data-ai-status role="status" aria-live="polite">
+</p>
+<dialog data-memory-create aria-labelledby="ai-create-title">
+<form data-memory-create-form>
+<h3 id="ai-create-title">新建记忆</h3>
+<label class="ai-field">记忆分类<select data-create-category>
+<option value="PERSON">身份与关系</option>
+<option value="PREFERENCE">偏好与习惯</option>
+<option value="RECENTNESS">近期状态</option>
+<option value="EVENT">主题与事件</option>
+<option value="GLOSSARY">公共知识</option>
+</select>
+</label>
+<label class="ai-field" data-create-user-field>用户QQ号<input type="text" data-create-qq inputmode="numeric" pattern="[0-9]+" required placeholder="例如：123456789">
+</label>
+<label class="ai-field" data-create-title-field hidden>主题名称<input type="text" data-create-title maxlength="100" placeholder="例如：摄影项目">
+</label>
+<p class="ai-muted" data-create-hint>
+</p>
+<p class="ai-muted" data-create-error role="alert">
+</p>
+<div class="ai-toolbar">
+<button type="submit" data-create-submit>创建并编辑</button>
+<button type="button" class="ai-secondary" data-create-cancel>取消</button>
+</div>
+</form>
+</dialog>
+</div>
 </template>

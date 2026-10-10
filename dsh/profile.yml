@@ -6,11 +6,6 @@
       config:
         apiKeyEnv: DEEPSEEK_API_KEY
         baseURL: !!js process.env.DEEPSEEK_BASE_URL
-        thinking: !!js process.env.QQBOT_THINKING
-        reasoningEffort: !!js process.env.QQBOT_REASONING
-        defaultContextWindow: !!js Number(process.env.QQBOT_CONTEXT)
-        models: !!js "[{id: process.env.QQBOT_MODEL, contextWindow: Number(process.env.QQBOT_CONTEXT), maxTokens: Number(process.env.QQBOT_MAX_TOKENS)}]"
-        streamIdleTimeoutMs: 120000
     - { id: session, name: '@deepseek-ai/dsh-session' }
     - { id: projection, name: '@deepseek-ai/dsh-session-projection' }
     - id: sessions
@@ -29,11 +24,13 @@
     - { id: meter, name: '@deepseek-ai/dsh-token-meter' }
     - id: compaction
       name: '@deepseek-ai/dsh-compaction-basic'
-      config:
-        thresholdRatio: !!js Number(process.env.QQBOT_COMPRESSION)
-        headroomTokens: 2048
-        maxTokens: !!js Math.min(4096, Math.floor(Number(process.env.QQBOT_CONTEXT) / 4))
-        retainRatio: !!js Math.min(0.16, Number(process.env.QQBOT_COMPRESSION) / 2)
+    - { id: web, name: '@deepseek-ai/dsh-web' }
+    - id: web-search
+      name: '@deepseek-ai/dsh-web-search-deepseek'
+      config: { apiKeyEnv: DEEPSEEK_API_KEY, model: deepseek-flash }
+    - { id: web-fetch, name: '@deepseek-ai/dsh-web-fetch-http' }
+    - { id: web-tools, name: '@deepseek-ai/dsh-tool-web' }
+    - { id: tool-timeout, name: '@deepseek-ai/dsh-tool-call-timeout-policy' }
     - { id: fs, name: '@deepseek-ai/dsh-fs-local' }
     - { id: fs-policy, name: '@deepseek-ai/dsh-fs-observation-policy' }
     - { id: fs-tools, name: '@deepseek-ai/dsh-tool-fs' }

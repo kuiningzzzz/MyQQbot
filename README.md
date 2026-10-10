@@ -44,7 +44,6 @@ src/
       config.py
       client.py
       plugin.py
-    web_search/         # Tavily / SearXNG联网搜索
     catalog.py          # 唯一的功能组合入口
     manager.py          # 通用 Feature 注册、开关和消息调度
   master/               # 始终启用的主人认证基础设施（不属于 Feature）
@@ -71,14 +70,13 @@ src/
 - `data/jm/tasks/`：JM 任务目录。每个任务都有独立的下载缓存和生成 PDF。
 - `data/pixiv/tasks/`：Pixiv 任务目录。每个任务都有独立的图片缓存。
 - `data/pixiv/config.json`：Pixiv refresh token 配置，由管理 WebUI 写入。
-- `data/ai/config.yaml`：统一模型、账号身份和记忆系统配置。
+- `data/ai/config.yaml`：账号身份、功能开关和本地记忆配置；模型密钥仅从环境读取。
 - `data/ai/workspace/AGENT.md`：唯一人设，由WebUI编辑。
 - `data/ai/workspace/memory/raw/`：原始QQ事件及原文，滚动保留30天。
 - `data/ai/workspace/memory/user/QQ号/`：PERSON、PREFERENCE、RECENTNESS和额外memory文件。
 - `data/ai/workspace/memory/common/GLOSSARY.md`：通用知识。
 - `data/ai/.vector_cache/`：本地模型与Chroma索引。
 - `data/ai/.state/`：上下文、整合进度及调度状态。
-- `data/web_search/config.json`：联网搜索设置。
 
 旧版 `data/summary/` 和 `data/news/` 保留原样，不自动导入新记忆。
 
@@ -88,6 +86,7 @@ Docker 部署时，`docker-compose.yml` 会把项目目录下的 `./data` 挂载
 
 ```bash
 pip install -r requirements.txt
+# 复制 .env.example 为 .env，并填写 DEEPSEEK_API_KEY
 # Node.js >=24
 cd dsh && npm ci && cd ..
 python -m src.main
@@ -156,8 +155,8 @@ AI模块采用官方dsh内核、单一人格、跨群聊与私聊的共享对话
 在管理WebUI的“AI服务”中配置：
 
 - 机器人QQ号、网名（也是文本唤醒词）、账号身份说明和人设正文。两个对话都知道机器人自身账号，整理任务不会为其建立画像。
-- DeepSeek API地址和Key，默认主模型 `deepseek-v4-flash`，图片模型 `deepseek-v4-flash-vision-exp`。
-- 总上下文上限默认1M Token，达到配置阈值时由dsh原生压缩，原文仍可在30天档案中读取。
+- 模型固定为 `deepseek-flash`，密钥放 `.env` 的 `DEEPSEEK_API_KEY`，管理界面只显示配置状态。
+- 上下文、输出与压缩由dsh/DeepSeek默认策略管理，原文仍可在30天档案中读取；联网使用dsh原生DeepSeek搜索。
 - dsh聊天与独立记忆整理会话、每100条消息自动整理、原文30天保留、本地向量检索。
 
 聊天、记忆、主人服务器权限、文件/OCR、合并转发、部署和自动数据迁移详见 [AI服务架构与运行说明](docs/AI服务架构与运行说明.md)。本次升级移除Attention、主/子Agent、每日任务及ai-sandbox；新镜像直接运行官方dsh。升级执行 `docker compose up -d --build --remove-orphans`，首次启动自动迁移旧data。需要主人控制宿主服务器时，使用文档中的原生systemd部署。

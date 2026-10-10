@@ -1,13 +1,14 @@
 """Exercise the installed official runtime against a local Messages API, never QQ/cloud."""
 import asyncio
 import json
+import os
 import shutil
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from src.feature.ai.feature import AiFeature
 from src.feature.ai.journal import Journal
@@ -202,17 +203,73 @@ class StateTests(unittest.IsolatedAsyncioTestCase):
         from src.feature.ai.admin import AiAdmin
         app = FastAPI()
         AiAdmin(self.f).register_routes(app)
-        self.f.config.save({'api_key': 'do-not-expose'})
+        environment = patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'do-not-expose'})
+        environment.start()
+        self.addCleanup(environment.stop)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
             response = await client.get('/api/ai/config')
             self.assertNotIn('do-not-expose', response.text)
             self.assertEqual(response.json()['memory_batch_size'], 100)
             self.assertEqual(response.json()['raw_retention_days'], 30)
             self.assertIn('SKILL.md', response.json()['memory_skill_path'])
+            self.assertEqual(response.json()['model'], 'deepseek-flash')
+            self.assertNotIn('max_tokens', response.json())
+            self.assertNotIn('api_url', response.json())
+            rejected = await client.post('/api/ai/config', json={'model': 'other', 'api_key': 'bad'})
+            self.assertEqual(rejected.status_code, 400)
+            self.assertEqual((await client.get('/api/ai/search')).status_code, 404)
             result = await client.post('/memory/integrate', json={'mode': 'queue'})
             self.assertEqual(result.json()['processed'], 0)
             retired = await client.post('/memory/integrate', json={'mode': 'full', 'date': '2026-10-09'})
             self.assertEqual(retired.status_code, 400)
+
+    async def test_config_upgrade_uses_environment_only_and_removes_retired_fields(self):
+        from src.feature.ai.config import Config
+        atomic_write(self.f.config.path, 'api_key: obsolete-secret\nmodel: other\nmax_tokens: 1\ncontext_token_limit: 2\nnickname: 保留名字\n')
+        with patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'environment-secret', 'AI_MODEL': 'other', 'AI_MAX_TOKENS': '1'}):
+            config = Config(self.f.workspace.data_root)
+            settings = config.load()
+            self.assertEqual(settings.api_key, 'environment-secret')
+            self.assertEqual(settings.model, 'deepseek-flash')
+            self.assertEqual(settings.vision_model, 'deepseek-flash')
+            self.assertEqual(settings.nickname, '保留名字')
+            saved = config.path.read_text('utf-8')
+            self.assertNotIn('secret', saved)
+            self.assertNotIn('max_tokens', saved)
+            with self.assertRaises(ValueError):
+                config.save({'dsh_timeout_seconds': 1})
+
+    async def test_admin_memory_create_edit_conflict_delete_and_structured_list(self):
+        import httpx
+        from fastapi import FastAPI
+        from src.feature.ai.admin import AiAdmin
+        app = FastAPI()
+        AiAdmin(self.f).register_routes(app)
+        await self.record('nickname')
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            created = await client.post('/api/ai/file/create', json={'qq': '123', 'category': 'EVENT', 'title': '摄影项目'})
+            self.assertEqual(created.status_code, 200, created.text)
+            data = created.json()
+            path = data['path']
+            self.assertEqual(path, 'user/123/memory/摄影项目.md')
+            duplicate = await client.post('/api/ai/file/create', json={'qq': '123', 'category': 'EVENT', 'title': '摄影项目'})
+            self.assertEqual(duplicate.status_code, 409)
+            for qq, title in [('999', '自身'), ('123', '../越界')]:
+                rejected = await client.post('/api/ai/file/create', json={'qq': qq, 'category': 'EVENT', 'title': title})
+                self.assertEqual(rejected.status_code, 409)
+            listing = (await client.get('/api/ai/files')).json()
+            item = next(item for item in listing['items'] if item['path'] == path)
+            self.assertEqual(item['nickname'], '甲')
+            self.assertEqual(item['category'], 'EVENT')
+            self.f.workspace.write_memory(path, 'Agent已更新')
+            save = await client.post('/api/ai/file', json={'path': path, 'content': '旧编辑', 'expected_hash': data['hash']})
+            self.assertEqual(save.status_code, 409)
+            deleted = await client.post('/api/ai/file/delete', json={'path': path, 'expected_hash': data['hash']})
+            self.assertEqual(deleted.status_code, 409)
+            current = (await client.get('/api/ai/file', params={'path': path})).json()
+            deleted = await client.post('/api/ai/file/delete', json={'path': path, 'expected_hash': current['hash']})
+            self.assertEqual(deleted.status_code, 200)
+            self.assertFalse(self.f.workspace.memory_path(path).exists())
 
 
 @unittest.skipUnless(shutil.which('node') and Path('dsh/node_modules/@deepseek-ai/dsh/lib/bin.js').exists(), 'run npm ci in dsh to enable real-kernel integration tests')
@@ -224,7 +281,10 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         self.requests = []
         self.model_started = asyncio.Event()
         self.server = await asyncio.start_server(self.serve, '127.0.0.1', 0)
-        self.f.config.save({'api_key': 'local-test-key', 'dsh_api_url': 'http://127.0.0.1:' + str(self.server.sockets[0].getsockname()[1])})
+        base = 'http://127.0.0.1:' + str(self.server.sockets[0].getsockname()[1])
+        environment = patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'local-test-key', 'AI_DSH_API_URL': base, 'DEEPSEEK_SEARCH_BASE_URL': base + '/v1'})
+        environment.start()
+        self.addCleanup(environment.stop)
 
     async def asyncTearDown(self):
         await StateTests.asyncTearDown(self)
@@ -248,6 +308,11 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
                 response = response(request)
             if asyncio.iscoroutine(response):
                 response = await response
+            if request.get('stream') is not True:
+                data = json.dumps(response).encode()
+                writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: ' + str(len(data)).encode() + b'\r\n\r\n' + data)
+                await writer.drain()
+                return
             blocks = response if isinstance(response, list) else [{'type': 'text', 'text': response}]
             events = [{'type': 'message_start', 'message': {'id': 'msg-test', 'type': 'message', 'role': 'assistant', 'model': 'test', 'content': [], 'usage': {'input_tokens': 100, 'output_tokens': 0}}}]
             for index, block in enumerate(blocks):
@@ -334,17 +399,32 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('group:34', history)
 
     async def test_official_automatic_compaction(self):
-        self.f.config.save({'model': 'local-test-model', 'context_token_limit': 131072,
-            'max_tokens': 65536, 'context_compress_threshold': 0.2})
-        self.responses = ['older background detail ' * 6000]
-        first = await self.native()
-        self.assertEqual(first['finish_reason'], 'completed', first.get('error'))
-        self.responses = [lambda request: 'Retained checkpoint of the older background.' if 'acting as a compaction engine' in json.dumps(request['messages'][-1]) else 'New reply.'] * 8
+        # Exercise the upstream defaults rather than reintroducing app budgets.
+        self.responses = [lambda request: 'Retained checkpoint of the older background.' if 'acting as a compaction engine' in json.dumps(request['messages'][-1]) else 'older background detail ' * 30000] * 30
+        for _ in range(12):
+            first = await self.native()
+            self.assertEqual(first['finish_reason'], 'completed', first.get('error'))
+            if any('acting as a compaction engine' in json.dumps(request['messages'][-1]) for request in self.requests):
+                break
+        self.responses = ['New reply.'] * 8
         result = await self.native(prompt='Continue the conversation.')
         self.assertEqual(result['finish_reason'], 'completed', result.get('error'))
         self.assertEqual(result['final_response'], 'New reply.')
         self.assertTrue(any('acting as a compaction engine' in json.dumps(request['messages'][-1]) for request in self.requests))
         self.assertIn('Retained checkpoint', json.dumps(self.requests[-1]['messages']))
+
+    async def test_native_deepseek_web_search_and_fetch_guards(self):
+        self.responses = [self.tool('web_search', queries=['QQ bot architecture']),
+            {'content': [{'type': 'web_search_tool_result', 'content': [
+                {'type': 'web_search_result', 'url': 'https://example.org/source', 'title': 'Official source'}]}]}, 'done']
+        result = await self.native()
+        self.assertEqual(result['finish_reason'], 'completed', result.get('error'))
+        search_request = next(r for r in self.requests if r.get('tools', [{}])[0].get('type') == 'web_search_20250305')
+        self.assertEqual(search_request['model'], 'deepseek-flash')
+        self.assertIn('Official source', json.dumps(self.requests[-1]['messages']))
+        self.responses = [self.tool('web_fetch', url='http://127.0.0.1/private'), 'done']
+        await self.native()
+        self.assertIn('non-public', json.dumps(self.requests[-1]['messages']).lower())
 
     async def test_native_cancellation_revokes_callback_and_expired_logs_are_deleted(self):
         async def slow(_):

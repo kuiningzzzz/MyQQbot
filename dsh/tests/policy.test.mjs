@@ -33,6 +33,8 @@ test('maintenance writes only staged memory, cannot send or execute', () => {
   assert.match(denial(maintenance,'write',{file_path:path.join(work,'memory/user/123/PERSON.md')},work), /PERMISSION_DENIED/);
   assert.match(denial(maintenance,'write',{file_path:'memory/user/999/PERSON.md'},work), /PERMISSION_DENIED/);
   assert.match(denial(maintenance,'send_message',{},work), /PERMISSION_DENIED/);
+  assert.match(denial(maintenance,'web_search',{},work), /PERMISSION_DENIED/);
+  assert.match(denial(maintenance,'web_fetch',{},work), /PERMISSION_DENIED/);
   assert.match(denial(maintenance,'bash',{},work), /OWNER_REQUIRED/);
   assert.equal(denial(maintenance,'search_memory',{},work), undefined);
 });

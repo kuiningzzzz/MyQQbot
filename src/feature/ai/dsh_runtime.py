@@ -81,12 +81,9 @@ class DshRuntime:
             temporary = self.home / 'tmp'
             temporary.mkdir(parents=True, exist_ok=True)
             env = {**os.environ, "DSH_HOME": str(self.home), "DSH_TELEMETRY_DISABLED": "1", "QQBOT_DSH_TOKEN": self.token,
-                "TMPDIR": str(temporary), "TMP": str(temporary), "TEMP": str(temporary), "QQBOT_REASONING": 'off' if settings.thinking_mode == 'disabled' else settings.reasoning_effort,
+                "TMPDIR": str(temporary), "TMP": str(temporary), "TEMP": str(temporary),
                 "QQBOT_CALLBACK": callback, "QQBOT_WORKSPACE": str(self.feature.workspace.root), "DEEPSEEK_API_KEY": settings.api_key,
-                "QQBOT_MODEL": settings.model, "QQBOT_MAX_TOKENS": str(settings.max_tokens),
-                "DEEPSEEK_BASE_URL": settings.dsh_api_url or settings.api_url.removesuffix("/v1") + "/anthropic", "QQBOT_CONTEXT": str(settings.context_token_limit),
-                "QQBOT_THINKING": "disabled" if settings.thinking_mode == "disabled" else "enabled",
-                "QQBOT_COMPRESSION": str(settings.context_compress_threshold)}
+                "DEEPSEEK_BASE_URL": settings.dsh_api_url or settings.api_url.removesuffix("/v1") + "/anthropic"}
             self.process = await asyncio.create_subprocess_exec(node, str(cli), "--profile", "qqbot", "--patch", str(self.code / "profile.yml"), cwd=self.feature.workspace.root, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             self.diagnostic_task = asyncio.create_task(self._diagnostics())
             try:
@@ -119,14 +116,13 @@ class DshRuntime:
                 raise RuntimeError(result.get("error", "dsh操作失败"))
             return result.get("result", {})
 
-    async def run(self, kind, prompt, *, task_id, handler, current, owner=False, qq="", cwd=None, system="", scene_dir="", expires_at=None, max_steps=None):
+    async def run(self, kind, prompt, *, task_id, handler, current, owner=False, qq="", cwd=None, system="", scene_dir="", expires_at=None):
         async with self.turn_lock:
             if not current():
                 return {"cancelled": True}
             await self.start()
             self.active[task_id] = {"handler": handler, "current": current}
             try:
-                settings = self.feature.config.load()
                 # Any native read can consult the oldest retained raw record.
                 # Bound the entire session (including compaction/tool output)
                 # by that record's remaining lifetime, not by log file mtime.
@@ -136,7 +132,7 @@ class DshRuntime:
                     deadline = min(deadline, oldest + 30 * 86400)
                 return await self.request("/run", {"kind": kind, "task_id": task_id, "owner": owner, "qq": qq,
                     "prompt": prompt, "system": system, "self_ids": sorted(self.feature.identity.ids), "scene_dir": scene_dir, "cwd": str(cwd or self.feature.workspace.root),
-                    "model": settings.model, "max_tokens": settings.max_tokens, "max_steps": max_steps or settings.tool_round_limit, "expires_at": deadline * 1000}, timeout=settings.dsh_timeout_seconds)
+                    "expires_at": deadline * 1000}, timeout=None)
             except BaseException:
                 if self.url:
                     try:

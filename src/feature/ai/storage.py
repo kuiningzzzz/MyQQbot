@@ -109,6 +109,14 @@ class Workspace:
                 self.write_memory(relative, f"# {name}\n", digest(""))
         (self.memory_root / f"user/{qq}/memory").mkdir(exist_ok=True)
 
+    def delete_memory(self, relative: str, expected_hash: str) -> None:
+        with FileLock(str(self.data_root / '.state/memory.lock')):
+            path = self.memory_path(relative)
+            previous = path.read_text('utf-8') if path.exists() else ''
+            if digest(previous) != expected_hash:
+                raise ValueError('文件已被更新，请重新读取后删除')
+            path.unlink(missing_ok=True)
+
     @staticmethod
     def format_raw(record: dict, timezone: str) -> str:
         now = datetime.fromisoformat(record["timestamp"]).astimezone(ZoneInfo(timezone))

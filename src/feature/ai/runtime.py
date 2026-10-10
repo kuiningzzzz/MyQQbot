@@ -72,7 +72,7 @@ class MemoryRuntime:
                     return await f.query_memory(**args)
                 result = await f.dsh.run('memory', prompt, task_id=uuid.uuid4().hex, handler=handler,
                     current=lambda: self.enabled and f.enabled and f.config.load().memory_enabled, cwd=transaction.root, system=system,
-                    expires_at=rows[0]['timestamp'] + 30 * 86400, max_steps=128)
+                    expires_at=rows[0]['timestamp'] + 30 * 86400)
                 if result.get('cancelled') or result.get('finish_reason') != 'completed':
                     raise RuntimeError('dsh整理未完成：' + str(result.get('error') or result.get('finish_reason')))
                 output = result.get('final_response', '').strip()

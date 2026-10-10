@@ -27,7 +27,6 @@ const definitions = {
   download_attachment: ['先发简短确认后下载附件到当前会话files目录', {attachment_id: {type: 'string', required: true}, path: {type: 'string'}}],
   send_file: ['发送当前会话工作目录内的文件，等待回执', {path: {type: 'string', required: true}, name: {type: 'string'}}],
   search_memory: ['本地向量与文本检索，无额外Agent；也可直接原生grep/read记忆文件', {query: {type: 'string', required: true}, target_qq: {type: 'string'}, scope: {type: 'string'}}],
-  web_search: ['查询互联网资料', {query: {type: 'string', required: true}}],
 };
 
 export async function apply(ctx) {
@@ -43,14 +42,6 @@ export async function apply(ctx) {
   let generations = fs.existsSync(manifest) ? JSON.parse(fs.readFileSync(manifest, 'utf8')) : {};
   const currentTask = agent => tasks.get(agent?.id);
   ctx.tools.guard(exec => denial(currentTask(exec.agent), exec.name, exec.arguments, workspace));
-  ctx.on('agent/pre-step', async ({agent}, next) => {
-    const task = currentTask(agent);
-    if (task && ++task.steps > task.max_steps) {
-      agent.cancel({kind: 'user'});
-      throw new Error('达到本轮工具/请求轮数上限');
-    }
-    return next();
-  });
   async function callback(task, toolName, args, signal) {
     const response = await fetch(process.env.QQBOT_CALLBACK, {method: 'POST', headers: {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}, body: JSON.stringify({task_id: task.task_id, name: toolName, arguments: args}), signal});
     const result = await response.json();
@@ -103,7 +94,7 @@ export async function apply(ctx) {
     let handle;
     try {
       if (!['chat', 'memory'].includes(data.kind)) throw new Error('未知对话');
-      handle = await getHandle(data.kind, {...data, options: {provider: 'deepseek-official', model: data.model, maxTokens: data.max_tokens}});
+      handle = await getHandle(data.kind, {...data, options: {provider: 'deepseek-official', model: 'deepseek-flash'}});
       const agent = handle.agent;
       // Memory stages change each batch; native tools consult session.cwd.
       if (agent.session.header.cwd !== data.cwd) throw new Error('对话工作目录不能改变');
@@ -112,7 +103,7 @@ export async function apply(ctx) {
       retained[generation.id] = generation.expires;
       writeJSON(retentionFile, retained);
       writeJSON(manifest, generations);
-      const task = {...data, steps: 0, cancelled: false};
+      const task = {...data, cancelled: false};
       tasks.set(agent.id, task);
       const before = agent.session.snapshotEvents().length;
       agent.followup({id: randomUUID(), role: 'user', source: {kind: 'user'}, content: text(data.prompt)});

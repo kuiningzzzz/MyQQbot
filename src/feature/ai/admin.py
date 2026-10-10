@@ -49,6 +49,17 @@ class MemoryFileRequest(BaseModel):
     expected_hash: str
 
 
+class MemoryDeleteRequest(BaseModel):
+    path: str
+    expected_hash: str
+
+
+class MemoryCreateRequest(BaseModel):
+    qq: str = ''
+    category: str
+    title: str = Field(default='', max_length=100)
+
+
 class AiAdmin:
     def __init__(self, feature):
         self.feature = feature
@@ -90,13 +101,34 @@ class AiAdmin:
 
         @app.get("/api/ai/files")
         async def list_files():
-            return {"files": f.workspace.files()}
+            labels = {'PERSON': '身份与关系', 'PREFERENCE': '偏好与习惯', 'RECENTNESS': '近期状态', 'GLOSSARY': '公共知识'}
+            nicknames = {}
+            for scene in f.context.snapshot().values():
+                for record in scene.get('recent_messages', []):
+                    if not record.get('is_self'):
+                        nicknames[record['qq']] = record.get('nickname') or record['qq']
+            items = []
+            for path in f.workspace.files():
+                parts = path.split('/')
+                qq = parts[1] if parts[0] == 'user' else ''
+                if qq in f.identity.ids:
+                    continue
+                category = 'EVENT' if len(parts) == 4 else Path(path).stem
+                file = f.workspace.memory_path(path)
+                try:
+                    info = file.stat()
+                except FileNotFoundError:
+                    continue  # Agent may delete a file while the list is read.
+                items.append({'path': path, 'qq': qq, 'nickname': nicknames.get(qq, qq), 'category': category,
+                    'title': Path(path).stem if category == 'EVENT' else labels.get(category, category),
+                    'updated_at': info.st_mtime, 'size': info.st_size})
+            return {'files': [item['path'] for item in items], 'items': items}
 
         @app.get("/api/ai/file")
         async def read_file(path: str):
             try:
                 text = await asyncio.to_thread(f.workspace.read_memory, path)
-                return {"path": path, "content": text, "hash": digest(text)}
+                return {"path": path, "content": text, "hash": digest(text), "exists": f.workspace.memory_path(path).exists()}
             except ValueError as exc:
                 raise HTTPException(400, str(exc)) from exc
 
@@ -111,22 +143,46 @@ class AiAdmin:
             except ValueError as exc:
                 raise HTTPException(409, str(exc)) from exc
 
+        @app.post('/api/ai/file/create')
+        async def create_file(data: MemoryCreateRequest):
+            labels = {'PERSON': '身份与关系', 'PREFERENCE': '偏好与习惯', 'RECENTNESS': '近期状态', 'GLOSSARY': '公共知识'}
+            try:
+                if data.category == 'GLOSSARY':
+                    path = 'common/GLOSSARY.md'
+                else:
+                    if not data.qq.isascii() or not data.qq.isdigit() or data.qq in f.identity.ids:
+                        raise ValueError('请填写有效的用户QQ号，不能使用机器人账号')
+                    if data.category == 'EVENT':
+                        if not data.title.strip() or data.title.strip() in {'.', '..'} or '/' in data.title or '\\' in data.title:
+                            raise ValueError('请填写不含路径分隔符的主题名称')
+                        path = f'user/{data.qq}/memory/{data.title.strip()}.md'
+                    elif data.category in {'PERSON', 'PREFERENCE', 'RECENTNESS'}:
+                        path = f'user/{data.qq}/{data.category}.md'
+                    else:
+                        raise ValueError('记忆分类无效')
+                target = f.workspace.memory_path(path)
+                if target.exists():
+                    raise ValueError('该记忆文件已存在，请从列表打开')
+                text = '# ' + (data.title.strip() if data.category == 'EVENT' else labels[data.category]) + '\n\n'
+                await asyncio.to_thread(f.workspace.write_memory, path, text, digest(''))
+                f.workspace.save_state('index', {'dirty': True})
+                return {'path': path, 'content': text, 'hash': digest(text)}
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+
+        @app.post('/api/ai/file/delete')
+        async def delete_file(data: MemoryDeleteRequest):
+            try:
+                await asyncio.to_thread(f.workspace.delete_memory, data.path, data.expected_hash)
+                f.workspace.save_state('index', {'dirty': True})
+                return {'success': True}
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from exc
+
         @app.post("/api/ai/reindex")
         async def reindex():
             f.workspace.save_state("index", {"dirty": True})
             return {"success": await asyncio.to_thread(f.index.sync), "error": f.index.last_error}
-
-        @app.get("/api/ai/search")
-        async def search_config():
-            return f.search_config.status
-
-        @app.post("/api/ai/search")
-        async def save_search(data: dict = Body(...)):
-            try:
-                f.search_config.save(**data)
-            except (ValueError, TypeError) as exc:
-                raise HTTPException(400, str(exc)) from exc
-            return f.search_config.status
 
         @app.post("/memory/record")
         async def record(data: RecordRequest):

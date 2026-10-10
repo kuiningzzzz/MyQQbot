@@ -10,7 +10,6 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from src.feature.atom import Feature, MessageContext
-from src.feature.web_search import WebSearchConfig, WebSearchService
 
 from .identity import Identity
 from .migrate import migrate
@@ -51,8 +50,6 @@ class AiFeature(Feature):
         self.dsh = DshRuntime(self)
         self.runtime = MemoryRuntime(self)
         self.install_memory_skill()
-        self.search_config = WebSearchConfig(root.parent / "web_search/config.json")
-        self.search = WebSearchService(self.search_config)
         self.engine = ChatEngine(self)
         self.enabled = True
         self._record_lock = asyncio.Lock()

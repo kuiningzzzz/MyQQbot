@@ -1,21 +1,25 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
+from dotenv import load_dotenv
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .storage import atomic_write
+
+load_dotenv(Path(__file__).resolve().parents[3] / '.env', override=False)
+CONNECTION_FIELDS = {'api_url', 'dsh_api_url', 'api_key', 'model', 'vision_model'}
 
 
 class Settings(BaseModel):
     api_url: str = "https://api.deepseek.com"
     dsh_api_url: str = ""
     api_key: str = ""
-    model: str = "deepseek-v4-flash"
-    vision_model: str = "deepseek-v4-flash-vision-exp"
+    model: Literal['deepseek-flash'] = 'deepseek-flash'
+    vision_model: Literal['deepseek-flash'] = 'deepseek-flash'
     bot_qq: str = ""
     nickname: str = "奎大宁"
     account_description: str = "这是机器人自己的 QQ 账号，发言仅作对话背景，不是用户事实。"
@@ -23,26 +27,16 @@ class Settings(BaseModel):
     summary_enabled: bool = True
     memory_enabled: bool = True
     memory_auto_learn: bool = True
-    thinking_mode: str = "disabled"
-    reasoning_effort: str = "high"
-    max_tokens: int = Field(default=8192, ge=256, le=131072)
-    context_token_limit: int = Field(default=1_000_000, ge=4096, le=1_000_000)
-    context_compress_threshold: float = Field(default=0.8, ge=0.1, le=0.9)
     raw_retention_days: int = Field(default=30, ge=30, le=30)
     memory_batch_size: int = Field(default=100, ge=100, le=100)
-    dsh_timeout_seconds: int = Field(default=300, ge=30, le=1800)
     vector_index_enabled: bool = True
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     timezone: str = "Asia/Shanghai"
-    timeout_seconds: int = Field(default=60, ge=10, le=300)
-    tool_round_limit: int = Field(default=32, ge=1, le=128)
     workspace_enabled: bool = True
     ocr_enabled: bool = True
 
     @model_validator(mode="after")
     def budget_valid(self):
-        if self.max_tokens >= self.context_token_limit * 0.8:
-            raise ValueError("最大生成Token必须小于上下文上限的80%")
         if not self.nickname.strip():
             raise ValueError("机器人网名不能为空")
         return self
@@ -52,20 +46,6 @@ class Settings(BaseModel):
     def qq_valid(cls, value: str) -> str:
         if value and (not value.isascii() or not value.isdigit()):
             raise ValueError("机器人 QQ 号必须是数字")
-        return value
-
-    @field_validator("thinking_mode")
-    @classmethod
-    def thinking_valid(cls, value: str) -> str:
-        if value not in {"inherit", "enabled", "disabled"}:
-            raise ValueError("思考模式无效")
-        return value
-
-    @field_validator("reasoning_effort")
-    @classmethod
-    def effort_valid(cls, value: str) -> str:
-        if value not in {"high", "max"}:
-            raise ValueError("思考强度无效")
         return value
 
     @field_validator("timezone")
@@ -93,39 +73,47 @@ class Settings(BaseModel):
 
 
 class Config:
+    editable = set(Settings.model_fields) - CONNECTION_FIELDS - {'raw_retention_days', 'memory_batch_size'}
+
     def __init__(self, root: Path):
         self.root = root
         self.path = root / "config.yaml"
-        if not self.path.exists():
-            # Only carry over connection credentials, never old memory or characters.
-            legacy = root.parent / "summary/config.json"
-            data = json.loads(legacy.read_text("utf-8")) if legacy.exists() else {}
-            self.save({key: data[key] for key in ("api_url", "api_key") if key in data})
+        # Remove retired limits and YAML credentials on upgrade. Only the
+        # process environment can configure model connections from now on.
+        self._persist(self._preferences())
+
+    def _preferences(self):
+        import yaml
+        data = yaml.safe_load(self.path.read_text('utf-8')) if self.path.exists() else {}
+        return {key: value for key, value in (data or {}).items() if key in self.editable}
+
+    def _persist(self, data):
+        import yaml
+        settings = Settings.model_validate(data)
+        atomic_write(self.path, yaml.safe_dump({key: getattr(settings, key) for key in sorted(self.editable)}, allow_unicode=True, sort_keys=False))
+        return settings
 
     def load(self) -> Settings:
-        import yaml
-        data = yaml.safe_load(self.path.read_text("utf-8")) or {}
-        for name in Settings.model_fields:
+        data = self._preferences()
+        for name in self.editable:
             value = os.getenv("AI_" + name.upper())
-            if value is None and name in {"context_compress_threshold", "vector_index_enabled", "timezone"}:
+            if value is None and name in {"vector_index_enabled", "timezone"}:
                 value = os.getenv(name.upper())
             if value is not None:
                 data[name] = value
-        data['raw_retention_days'] = 30
-        data['memory_batch_size'] = 100
+        data.update(api_key=os.getenv('DEEPSEEK_API_KEY') or os.getenv('AI_API_KEY') or '',
+            api_url=os.getenv('AI_API_URL') or 'https://api.deepseek.com',
+            dsh_api_url=os.getenv('AI_DSH_API_URL') or os.getenv('DEEPSEEK_BASE_URL') or '')
         return Settings.model_validate(data)
 
     def save(self, changes: dict) -> Settings:
-        import yaml
-        current = yaml.safe_load(self.path.read_text("utf-8")) if self.path.exists() else {}
-        data = {**(current or {}), **changes}
-        if changes.get("api_key") is None:
-            data["api_key"] = (current or {}).get("api_key", "")
-        value = Settings.model_validate(data)
-        atomic_write(self.path, yaml.safe_dump(value.model_dump(), allow_unicode=True, sort_keys=False))
-        return value
+        unknown = set(changes) - self.editable
+        if unknown:
+            raise ValueError('以下设置已由环境或dsh管理，不能在管理界面修改：' + '、'.join(sorted(unknown)))
+        return self._persist({**self._preferences(), **changes})
 
     def public(self) -> dict:
-        data = self.load().model_dump()
-        data["api_key_configured"] = bool(data.pop("api_key"))
+        settings = self.load()
+        data = {key: getattr(settings, key) for key in self.editable}
+        data.update(model='deepseek-flash', api_key_configured=bool(settings.api_key), raw_retention_days=30, memory_batch_size=100, search_provider='DeepSeek 原生搜索')
         return data

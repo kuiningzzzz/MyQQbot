@@ -18,6 +18,12 @@ services:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped
     environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - AI_API_KEY=${AI_API_KEY:-}
+      - AI_API_URL=${AI_API_URL:-https://api.deepseek.com}
+      - AI_DSH_API_URL=${AI_DSH_API_URL:-}
+      - DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-}
+      - DEEPSEEK_SEARCH_BASE_URL=${DEEPSEEK_SEARCH_BASE_URL:-https://api.deepseek.com/anthropic/v1}
       - TZ=Asia/Shanghai
       # huggingface.co 在大陆网络不可达；统一走镜像，embedding 模型预下载缓存于 data/ai/.vector_cache。
       - HF_ENDPOINT=https://hf-mirror.com
