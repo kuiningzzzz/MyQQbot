@@ -38,6 +38,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --progress-bar off -r requirements.txt
 
+# Install login browser at build time; runtime requests never run apt or download executables.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+RUN python -m playwright install --with-deps chromium
+
 # 复制项目文件
 COPY . .
 

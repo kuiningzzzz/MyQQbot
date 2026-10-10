@@ -11,7 +11,7 @@ def create_plugin() -> FeaturePlugin:
         static_resources=(
             StaticResource(
                 route=feature.public_route,
-                directory=feature.root_dir,
+                directory=feature.tasks_dir,
                 name="pixiv-files",
             ),
         ),

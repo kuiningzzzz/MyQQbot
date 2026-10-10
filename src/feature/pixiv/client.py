@@ -1,8 +1,10 @@
 from dataclasses import dataclass
 import os
+import threading
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from src.feature.atom.diagnostics import safe_error
 
 
 class PixivDownloadError(RuntimeError):
@@ -11,6 +13,17 @@ class PixivDownloadError(RuntimeError):
 
 class PixivAuthenticationRequired(PixivDownloadError):
     """Raised when a work cannot be fetched without a Pixiv login."""
+
+
+class PixivTokenInvalid(PixivAuthenticationRequired):
+    """The refresh credential is rejected, so a browser re-login may help."""
+
+
+def is_auth_error(error) -> bool:
+    detail = str(error).lower()
+    return any(word in detail for word in ('invalid_grant', 'invalid refresh', 'invalid_refresh',
+        'invalid access token', 'oauth process', 'access token expired', 'access_token expired',
+        'authentication required', 'http 401'))
 
 
 @dataclass(frozen=True)
@@ -38,12 +51,39 @@ class PixivClient:
         )
         self._api: Any = None
         self.request_timeout = request_timeout
+        self.on_token_refresh = None
+        self._auth_lock = threading.RLock()
 
     def set_refresh_token(self, refresh_token: str | None) -> None:
-        self.refresh_token = refresh_token.strip() if refresh_token else None
-        self._api = None
+        with self._auth_lock:
+            self.refresh_token = refresh_token.strip() if refresh_token else None
+            self._api = None
 
     def download_work(self, illust_id: str, output_dir: Path, *, max_images: int | None = None, illust=None) -> PixivWork:
+        # An expired access token needs a refresh, not an account/password login.
+        cached = self._api is not None
+        try:
+            return self._download_work(illust_id, output_dir, max_images=max_images, illust=illust)
+        except PixivTokenInvalid:
+            raise
+        except Exception as error:
+            if not is_auth_error(error):
+                if isinstance(error, PixivDownloadError):
+                    raise
+                raise PixivDownloadError(safe_error(error, (self.refresh_token, self.proxy_url))) from None
+            if not cached or not self.refresh_token:
+                raise PixivTokenInvalid('Pixiv 授权已失效，需要重新登录。') from None
+        self._api = None
+        try:
+            return self._download_work(illust_id, output_dir, max_images=max_images)
+        except PixivTokenInvalid:
+            raise
+        except Exception as error:
+            if is_auth_error(error):
+                raise PixivTokenInvalid('Pixiv 重新认证后仍拒绝授权，需要重新登录。') from None
+            raise PixivDownloadError(safe_error(error, (self.refresh_token, self.proxy_url))) from None
+
+    def _download_work(self, illust_id, output_dir, *, max_images=None, illust=None):
         api = self._get_api()
         illust = illust if illust is not None else self._get_illust(api, illust_id)
         image_urls = self._original_image_urls(illust)
@@ -75,6 +115,8 @@ class PixivClient:
         response = api.illust_detail(illust_id)
         error = getattr(response, "error", None)
         if error:
+            if is_auth_error(error):
+                raise PixivAuthenticationRequired('Pixiv OAuth process: 授权已过期。')
             message = self._error_message(error)
             if not self.refresh_token:
                 raise PixivAuthenticationRequired(
@@ -93,8 +135,10 @@ class PixivClient:
         return illust
 
     def _get_api(self):
-        if self._api is not None:
-            return self._api
+        with self._auth_lock:
+            if self._api is not None:
+                return self._api
+            previous = self.refresh_token
 
         try:
             from pixivpy3 import AppPixivAPI
@@ -113,9 +157,25 @@ class PixivClient:
             }
         api = AppPixivAPI(**request_options)
         api.requests.trust_env = False
-        if self.refresh_token:
-            api.auth(refresh_token=self.refresh_token)
-        self._api = api
+        if previous:
+            try:
+                api.auth(refresh_token=previous)
+            except Exception as error:
+                if is_auth_error(error):
+                    raise PixivTokenInvalid('Pixiv refresh token 已失效，需要重新登录。') from None
+                raise PixivDownloadError(safe_error(error, (previous, self.proxy_url))) from None
+            refreshed = getattr(api, 'refresh_token', None)
+        else:
+            refreshed = None
+        with self._auth_lock:
+            # An in-flight request must not overwrite a newer admin credential.
+            if self.refresh_token == previous:
+                if isinstance(refreshed, str) and refreshed and refreshed != previous:
+                    if self.on_token_refresh:
+                        self.on_token_refresh(refreshed)
+                    else:
+                        self.refresh_token = refreshed
+                self._api = api
         return api
 
     @staticmethod

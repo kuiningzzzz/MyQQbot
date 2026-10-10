@@ -275,6 +275,9 @@ class AdminDiagnosticTests(unittest.IsolatedAsyncioTestCase):
             for kind in ('jm', 'pixiv'):
                 self.assertEqual((await client.post(f'/api/{kind}/test')).status_code, 401)
                 self.assertEqual((await client.get(f'/api/{kind}/test')).status_code, 401)
+            for method, route in [('get', '/api/pixiv/account'), ('post', '/api/pixiv/account'),
+                                  ('post', '/api/pixiv/account/login'), ('delete', '/api/pixiv/account')]:
+                self.assertEqual((await getattr(client, method)(route)).status_code, 401)
         self.assertFalse(self.payloads)
 
     async def test_combined_panel_javascript_parses(self):

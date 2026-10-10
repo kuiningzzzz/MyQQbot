@@ -16,6 +16,7 @@ from src.feature.atom import (
 )
 from src.feature.pixiv.client import (
     PixivAuthenticationRequired,
+    PixivTokenInvalid,
     PixivClient,
     PixivDownloadError,
     PixivWork,
@@ -23,6 +24,8 @@ from src.feature.pixiv.client import (
 from src.feature.pixiv.config import PixivConfig
 from src.feature.atom.diagnostics import DiagnosticRunner
 from src.feature.pixiv.diagnostics import CHECKS
+from src.feature.pixiv.auth import PixivAuth
+from src.feature.atom.diagnostics import safe_error
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +65,35 @@ class PixivFeature(Feature):
             os.getenv("PIXIV_CLEANUP_DELAY_SECONDS", "300")
         )
         self.config = PixivConfig(config_path or self.root_dir / "config.json")
-        self.client = client or PixivClient(self.config.load_refresh_token())
+        self.client = client or PixivClient(self.config.load_refresh_token(), request_timeout=30)
+        self.client.on_token_refresh = self.save_refresh_token
+        self.auth = PixivAuth(self.config, self.client, self.save_refresh_token)
         self._next_sequence = 1
         self.queue = SerialTaskQueue(self.process_task)
         self.diagnostics = DiagnosticRunner('src.feature.pixiv.diagnostics', CHECKS)
 
     async def stop(self):
+        await self.auth.stop()
         await self.diagnostics.stop()
+
+    async def download_with_recovery(self, task):
+        try:
+            return await asyncio.to_thread(self.client.download_work, task.illust_id, task.image_dir)
+        except PixivAuthenticationRequired as error:
+            # No credential: first authenticated request can also start login.
+            if not isinstance(error, PixivTokenInvalid) and self.client.refresh_token:
+                raise
+            try:
+                configured = bool(self.config.load_credentials())
+            except ValueError:
+                configured = False
+            if not configured:
+                raise
+            await task.ctx.bot.reply(task.ctx, 'Pixiv 认证需要更新，正在尝试自动登录，成功后继续下载。')
+            if not await self.auth.recover():
+                raise PixivAuthenticationRequired('自动登录未成功或处于冷却期，请主人在 admin 查看登录状态。') from None
+            # Retry only the download, never QQ sends (avoids duplicate forwards).
+            return await asyncio.to_thread(self.client.download_work, task.illust_id, task.image_dir)
 
     async def handle(self, ctx: MessageContext) -> bool:
         if ctx.msg == "/pixiv status":
@@ -118,24 +143,20 @@ class PixivFeature(Feature):
                 )
                 task.announced_start = True
 
-            work = await asyncio.to_thread(
-                self.client.download_work,
-                task.illust_id,
-                task.image_dir,
-            )
+            work = await self.download_with_recovery(task)
             await self.send_work(task, work)
             self.schedule_task_cleanup(task)
         except PixivAuthenticationRequired as exc:
-            logger.warning("访问 Pixiv %s 需要认证: %s", task.illust_id, exc)
+            logger.warning("访问 Pixiv %s 需要认证: %s", task.illust_id, safe_error(exc, (self.client.refresh_token, self.client.proxy_url)))
             await task.ctx.bot.reply(
                 task.ctx,
-                "该作品不存在、不可见或需要登录访问。若要获取 R18 作品，请配置 "
-                "管理 WebUI 中的 Pixiv refresh token。",
+                'Pixiv 认证未就绪，请主人在管理 WebUI 查看自动登录状态，或手动配置 refresh token。',
             )
             self.schedule_task_cleanup(task)
         except PixivDownloadError as exc:
-            logger.error("下载 Pixiv %s 失败: %s", task.illust_id, exc)
-            await task.ctx.bot.reply(task.ctx, f"Pixiv {task.illust_id} 获取失败：{exc}")
+            detail = safe_error(exc, (self.client.refresh_token, self.client.proxy_url))
+            logger.error("下载 Pixiv %s 失败: %s", task.illust_id, detail)
+            await task.ctx.bot.reply(task.ctx, f"Pixiv {task.illust_id} 获取失败：{detail}")
             self.schedule_task_cleanup(task)
         except Exception:
             logger.exception("处理 Pixiv %s 失败", task.illust_id)
@@ -149,7 +170,7 @@ class PixivFeature(Feature):
         image_refs = [
             task.ctx.bot.resolve_public_file_reference(
                 image_path,
-                self.root_dir,
+                self.tasks_dir,
                 self.public_route,
             )
             for image_path in work.image_paths

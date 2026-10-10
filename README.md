@@ -70,6 +70,7 @@ src/
 - `data/jm/tasks/`：JM 任务目录。每个任务都有独立的下载缓存和生成 PDF。
 - `data/pixiv/tasks/`：Pixiv 任务目录。每个任务都有独立的图片缓存。
 - `data/pixiv/config.json`：Pixiv refresh token 配置，由管理 WebUI 写入。
+- `data/pixiv/config.account` / `config.key`：加密保存的 Pixiv 账号密码、可选 TOTP 密钥及本地加密密钥。备份时一同保管；拥有服务器文件权限的人仍可解密。这些文件与 token 配置均不通过图片文件路由提供。
 - `data/ai/config.yaml`：账号身份、功能开关和本地记忆配置；模型密钥仅从环境读取。
 - `data/ai/workspace/AGENT.md`：唯一人设，由WebUI编辑。
 - `data/ai/workspace/memory/raw/`：原始QQ事件及原文，滚动保留30天。
@@ -108,6 +109,12 @@ python -m src.main
 Help 的详细设置支持编辑、保存，以及一键恢复并保存代码中的默认帮助文本。
 
 JM 和 Pixiv 的详细设置都提供“一键测试可用性”：Pixiv 使用当前保存的 refresh token 重新认证，检查作品详情和首张原图；JM 检查首章首图下载/还原及单页 PDF 导出。结果分阶段显示成功、失败、耗时和排查建议。无需先开启模块，不发送 QQ 消息，每个模块同时只运行一项测试，180 秒超时自动终止并清理样本。页面刷新后可继续查看当前测试和当前进程的最近一次结果。
+
+Pixiv 还支持在 admin 保存邮箱/账号、密码和可选 TOTP 密钥，保存后通过 [gppt](https://github.com/eggplants/get-pixivpy-token) 启动无头浏览器获取并保存 refresh token；也保留手动 token 配置。不要尝试不确定的密码变体。验证码、邮箱验证、账号风控或站点变更可能阻止全自动登录，需要本地人工登录后配置 token。接口只回传账号及状态，不回传密码、TOTP 或 token；请通过 HTTPS 或本机回环访问管理端。
+
+`/pixiv` 认证失败时先刷新现有授权；refresh token 确认无效后才用已保存账号重新登录，更新配置并重新初始化客户端，原下载任务重试一次。网络错误、作品不可见及 QQ 发送失败不会启动重登，也不会重发已经发送的消息。自动浏览器登录最多每 10 分钟一次，同一时间只有一个登录进程，180 秒超时后终止进程树；可在 admin 主动重新登录。清除账号停止自动登录并保留 token，清除 token 会保留账号。可用性自检只诊断，不修改授权或触发重登。
+
+Docker 部署需要**重新构建镜像**以安装新依赖与 Chromium。原生部署在安装 requirements.txt 后执行 `python -m playwright install --with-deps chromium`（Windows 使用 `python -m playwright install chromium`）。登录不会在运行时安装浏览器或系统软件；沿用 `PIXIV_PROXY`，默认 Docker 代理的 `socks5h` 会为 Chromium 转为 `socks5`。
 
 测试作品 ID 可留空：Pixiv 自动选择日榜普通图片作品，JM 使用样本 `438696`。单个作品下架或受限不代表整个功能不可用，可改用已知有效 ID 再测。测试使用点击时已保存的配置，修改 token 后需重新测试；测试通过不覆盖 QQ/NapCat 上传链路。实现复用 [PixivPy 的认证与下载接口](https://github.com/upbit/pixivpy) 和 [jmcomic 的 PDF 导出 Feature](https://jmcomic.readthedocs.io/zh-cn/latest/tutorial/13_export_and_feature/)，不下载整部漫画作为探针。
 

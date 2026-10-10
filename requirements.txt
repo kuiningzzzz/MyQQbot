@@ -4,6 +4,8 @@ websockets==12.0
 jmcomic>=2.6.19
 img2pdf>=0.5.1
 pixivpy3>=3.7.5
+gppt==5.1.0
+cryptography>=44,<48
 requests[socks]>=2.31.0
 httpx>=0.27,<1
 pydantic>=2.6,<3
