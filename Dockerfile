@@ -7,6 +7,9 @@ COPY dsh/package*.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
 FROM python:3.11-slim
+# 服务器位于大陆网络：debian 官方源极慢（曾出现 30+ 分钟卡在依赖安装），统一切换到清华镜像。
+# 注意：下面的 playwright install --with-deps 内部同样会调用 apt，因此换源必须在它之前完成。
+RUN sed -i 's|http://deb.debian.org/debian|https://mirrors.tuna.tsinghua.edu.cn/debian|; s|http://security.debian.org/debian-security|https://mirrors.tuna.tsinghua.edu.cn/debian-security|' /etc/apt/sources.list.d/debian.sources
 COPY --from=dsh-runtime /usr/local/bin/node /usr/local/bin/node
 RUN apt-get update && apt-get install -y --no-install-recommends bash git ripgrep libstdc++6 fonts-noto-cjk tesseract-ocr tesseract-ocr-eng tesseract-ocr-chi-sim tesseract-ocr-chi-tra poppler-utils && rm -rf /var/lib/apt/lists/*
 COPY --from=dsh-runtime /build/node_modules /app/dsh/node_modules
@@ -40,6 +43,9 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # Install login browser at build time; runtime requests never run apt or download executables.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+# 大陆网络下官方 CDN 实测仅约 24KB/s（Chromium 约 195MB，需 2 小时以上），改用 npmmirror 镜像
+# （实测约 12MB/s）。如需回到官方源，删除本行即可。
+ENV PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
 RUN python -m playwright install --with-deps chromium
 
 # 复制项目文件
