@@ -20,6 +20,7 @@
     - { id: agent, name: '@deepseek-ai/dsh-agent' }
     - { id: subagents, name: '@deepseek-ai/dsh-subagent' }
     - { id: spawn, name: '@deepseek-ai/dsh-subagent-spawn-in-process' }
+    - { id: fork, name: '@deepseek-ai/dsh-subagent-fork-in-process' }
     - id: loop
       name: '@deepseek-ai/dsh-agent-loop'
       config: { agents: [] }

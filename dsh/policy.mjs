@@ -31,7 +31,7 @@ export function denial(task, name, args, workspace) {
   if (task.role === 'worker' && ['send_message', 'send_forward_message'].includes(name)) return 'PERMISSION_DENIED: 子任务结果由主对话交付，文件使用send_file';
   if (task.owner) return;
   const fileTools = new Set(['read', 'write', 'edit', 'glob', 'grep']);
-  const qqTools = new Set(['send_message', 'send_forward_message', 'recall_message', 'inspect_message', 'list_attachments', 'download_attachment', 'send_file', 'web_search', 'web_fetch', 'search_memory']);
+  const qqTools = new Set(['send_message', 'send_forward_message', 'recall_message', 'inspect_message', 'list_attachments', 'download_attachment', 'send_file', 'web_search', 'web_fetch', 'search_memory', 'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'integrate_memory']);
   if (name === 'skill' || name === 'search_memory') return;
   if (qqTools.has(name)) {
     if (task.kind !== 'chat') return 'PERMISSION_DENIED: 记忆整理对话不能使用QQ或网络工具';

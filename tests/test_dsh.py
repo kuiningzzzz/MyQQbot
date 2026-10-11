@@ -452,6 +452,186 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
     async def native(self, kind='chat', **kwargs):
         return await self.f.dsh.run(kind, kwargs.pop('prompt', 'native test'), task_id=kwargs.pop('task_id', 'test'), current=lambda: True, handler=kwargs.pop('handler', AsyncMock(return_value={'success': True})), qq='123', scene_dir='scene', system='必读分类规则', role=kwargs.pop('role', 'worker' if kind == 'chat' else 'memory'), **kwargs)
 
+    async def test_scheduled_native_fork_inherits_history_without_blocking_and_deletes_logs(self):
+        self.responses = ['父对话已完成标记']
+        await self.native(prompt='PARENT_COMPLETED_7931', role='main')
+        began, release = asyncio.Event(), asyncio.Event()
+        target = self.f.workspace.root / 'files/scene/scheduled.txt'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        calls = []
+        count = 0
+        async def respond(request):
+            nonlocal count
+            names = {t['name'] for t in request.get('tools', [])}
+            if 'write' not in names:
+                return '主对话继续响应'
+            count += 1
+            calls.append(request)
+            self.assertNotIn('spawn_task', names)
+            self.assertIn('send_message', names)
+            self.assertIn('schedule_create', names)
+            if count == 1:
+                began.set()
+                await release.wait()
+                return self.tool('write', file_path=str(target), content='文件效果持久保留')
+            if count == 2:
+                return self.tool('send_message', message='定时消息')
+            return '分支完成'
+        self.dispatcher = respond
+        handler = AsyncMock(return_value={'success': True})
+        branch = asyncio.create_task(self.native(prompt='[定时任务]\nCURRENT_SCHEDULE_1973', role='scheduled', task_id='scheduled-test', handler=handler))
+        try:
+            await asyncio.wait_for(began.wait(), 20)
+            files = list((self.f.dsh.home / 'sessions').glob('*/*'))
+            branch_dirs = [p for p in files if not p.name.startswith(('chat-', 'memory-'))]
+            self.assertEqual(len(branch_dirs), 1)
+            main = await asyncio.wait_for(self.native(prompt='LATER_MAIN_3927', role='main', task_id='next'), 10)
+            self.assertEqual(main['finish_reason'], 'completed')
+            release.set()
+            result = await asyncio.wait_for(branch, 20)
+            self.assertEqual(result['finish_reason'], 'completed')
+            all_text = model_instructions(calls[-1])
+            self.assertIn('PARENT_COMPLETED_7931', all_text)
+            self.assertIn('CURRENT_SCHEDULE_1973', all_text)
+            self.assertNotIn('LATER_MAIN_3927', all_text)
+            self.assertEqual(target.read_text('utf-8'), '文件效果持久保留')
+            handler.assert_awaited_once_with('send_message', {'message': '定时消息'})
+            self.assertTrue(all(not p.exists() for p in branch_dirs))
+            self.assertEqual(json.loads((self.f.dsh.home / 'qqbot-branches.json').read_text('utf-8')), {})
+            await self.f.dsh.stop()
+            self.assertTrue(all(not p.exists() for p in branch_dirs))
+        finally:
+            release.set()
+            if not branch.done():
+                branch.cancel()
+            await asyncio.gather(branch, return_exceptions=True)
+
+    async def test_scheduled_fork_cancellation_deletes_branch(self):
+        began, release = asyncio.Event(), asyncio.Event()
+        async def respond(request):
+            began.set()
+            await release.wait()
+            return '迟到的结果'
+        self.dispatcher = respond
+        branch = asyncio.create_task(self.native(prompt='[定时任务]\n可取消任务', role='scheduled', task_id='scheduled-cancel'))
+        try:
+            await asyncio.wait_for(began.wait(), 20)
+            await asyncio.wait_for(self.f.dsh.cancel('scheduled-cancel'), 10)
+            result = await asyncio.wait_for(branch, 10)
+            self.assertTrue(result.get('cancelled'))
+            self.assertEqual(list((self.f.dsh.home / 'sessions').glob('*/*')), list((self.f.dsh.home / 'sessions').glob('*/chat-*')))
+        finally:
+            release.set()
+            if not branch.done():
+                branch.cancel()
+            await asyncio.gather(branch, return_exceptions=True)
+
+    async def test_scheduled_integrates_pending_memory_without_blocking_main(self):
+        from src.feature.timing.feature import TimingFeature
+        master = SimpleNamespace(is_master=lambda qq: False)
+        timing = TimingFeature(self.f, master, Path(self.temp.name) / 'timing.sqlite3')
+        self.f.timing = timing
+        await self.f.record('group', '12', '123', '甲', '我住在苏州', message_id='schedule-memory')
+        began, release = asyncio.Event(), asyncio.Event()
+        counts = {'scheduled': 0, 'memory': 0}
+        async def respond(request):
+            instructions = model_instructions(request)
+            state = host_state(instructions)
+            if state['agent_role'] == 'main':
+                return '主对话仍然可用'
+            role = state['agent_role']
+            counts[role] += 1
+            if role == 'scheduled':
+                if counts[role] == 1:
+                    return self.tool('integrate_memory', batches=1)
+                return '整理完成'
+            self.assertEqual(role, 'memory')
+            prompt = next(b['text'] for m in reversed(request['messages']) if m['role'] == 'user' for b in m['content'] if b['type'] == 'text' and 'batch_file' in b['text'])
+            batch = json.loads(prompt)['batch']
+            if counts[role] == 1:
+                began.set()
+                await release.wait()
+                return self.tool('write', file_path=str(Path(state['editable_memory_directory']) / 'user/123/PERSON.md'), content='- 居住在苏州\n')
+            return json.dumps({'completed': True, 'batch': batch})
+        self.dispatcher = respond
+        bot = SimpleNamespace(reply=AsyncMock(), master_service=master)
+        ctx = MessageContext(bot=bot, websocket=None, event={'message': []}, msg='整理新增记忆', raw_msg='整理新增记忆', message_type='group', user_id=456, group_id=12)
+        job = {'id': 'memory-maintenance', 'run_id': 'integration', 'scheduled_at': time.time(), 'prompt': '整理新增记忆', 'owner_grant': False, 'delivery': 'silent'}
+        branch = asyncio.create_task(self.f.engine.run_scheduled(ctx, job, lambda: True))
+        try:
+            await asyncio.wait_for(began.wait(), 20)
+            await asyncio.wait_for(self.f.engine._turn(ctx, 'group:12', True), 10)
+            release.set()
+            result = await asyncio.wait_for(branch, 20)
+            self.assertEqual(result['finish_reason'], 'completed')
+            self.assertEqual(self.f.journal.pending_count(), 0)
+            self.assertIn('苏州', self.f.workspace.read_memory('user/123/PERSON.md'))
+            self.assertEqual(counts, {'scheduled': 2, 'memory': 2})
+        finally:
+            release.set()
+            if not branch.done():
+                branch.cancel()
+            await asyncio.gather(branch, return_exceptions=True)
+
+    async def test_cancelling_schedule_also_cancels_memory_transaction(self):
+        await self.f.record('group','12','123','甲','我的资料',message_id='cancel-memory')
+        began, release = asyncio.Event(), asyncio.Event()
+        async def respond(request):
+            state = host_state(model_instructions(request))
+            if state['agent_role'] == 'scheduled':
+                return self.tool('integrate_memory', batches=1)
+            began.set()
+            await release.wait()
+            return '不能提交'
+        self.dispatcher = respond
+        bot = SimpleNamespace(reply=AsyncMock(),master_service=SimpleNamespace(is_master=lambda qq:False))
+        ctx=MessageContext(bot=bot,websocket=None,event={'message':[]},msg='整理',message_type='group',user_id=456,group_id=12)
+        job={'id':'cancel-integration','run_id':'cancel-integration','scheduled_at':time.time(),'prompt':'整理记忆','owner_grant':False,'delivery':'silent'}
+        branch=asyncio.create_task(self.f.engine.run_scheduled(ctx,job,lambda:True))
+        try:
+            await asyncio.wait_for(began.wait(),20)
+            branch.cancel()
+            await asyncio.wait_for(asyncio.gather(branch,return_exceptions=True),10)
+            async with asyncio.timeout(5):
+                while self.f.runtime.lock.locked():
+                    await asyncio.sleep(.05)
+            self.assertEqual(self.f.journal.pending_count(),1)
+            self.assertFalse((self.f.workspace.root/'tmp/memory-stage').exists())
+        finally:
+            release.set()
+            if not branch.done():
+                branch.cancel()
+            await asyncio.gather(branch,return_exceptions=True)
+
+    async def test_crashed_scheduled_branch_is_removed_on_next_kernel_start(self):
+        began, release = asyncio.Event(), asyncio.Event()
+        async def respond(request):
+            if 'write' not in {t['name'] for t in request.get('tools',[])}:
+                return '重启后聊天恢复'
+            began.set()
+            await release.wait()
+            return '已中断'
+        self.dispatcher=respond
+        await self.native(prompt='已保存的父对话历史',role='main')
+        branch=asyncio.create_task(self.native(prompt='[定时任务]\n异常退出清理',role='scheduled',task_id='crash-fork'))
+        try:
+            await asyncio.wait_for(began.wait(),20)
+            orphan=list((self.f.dsh.home/'sessions').glob('*/*'))
+            orphan=[p for p in orphan if not p.name.startswith(('chat-','memory-'))]
+            self.assertEqual(len(orphan),1)
+            self.f.dsh.process.kill()
+            await self.f.dsh.process.wait()
+            await asyncio.wait_for(asyncio.gather(branch,return_exceptions=True),10)
+            self.assertTrue(orphan[0].exists())
+            result=await self.native(prompt='重启',role='main')
+            self.assertEqual(result['finish_reason'],'completed')
+            self.assertFalse(orphan[0].exists())
+        finally:
+            release.set()
+            if not branch.done():
+                branch.cancel()
+            await asyncio.gather(branch,return_exceptions=True)
+
     async def test_spawn_runs_in_background_and_delivers_files_to_original_scene(self):
         began, release = asyncio.Event(), asyncio.Event()
         counts = {'main': 0, 'worker': 0}

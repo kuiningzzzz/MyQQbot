@@ -40,11 +40,14 @@ class MemoryRuntime:
             self.last_error = str(exc)
             logger.exception('记忆整理失败，保留队列，稍后重试')
 
-    async def full(self, date=None):
+    async def full(self, date=None, current=None):
         if date:
             raise ValueError('每日整理已移除；请整理当前消息队列')
         f = self.feature
+        allowed = lambda: self.enabled and f.enabled and f.config.load().memory_enabled and (current is None or current())
         async with self.lock:
+            if not allowed():
+                raise PermissionError('记忆整理已取消或关闭')
             rows = f.journal.rows(pending=True, limit=100)
             if not rows:
                 return {'success': True, 'processed': 0, 'updated_files': []}
@@ -73,7 +76,7 @@ class MemoryRuntime:
                         raise PermissionError('整理任务只能调用记忆检索')
                     return await f.query_memory(**args)
                 result = await f.dsh.run('memory', prompt, task_id=uuid.uuid4().hex, handler=handler,
-                    current=lambda: self.enabled and f.enabled and f.config.load().memory_enabled, cwd=transaction.root, system=system,
+                    current=allowed, cwd=transaction.root, system=system,
                     expires_at=rows[0]['timestamp'] + 30 * 86400)
                 if result.get('cancelled') or result.get('finish_reason') != 'completed':
                     raise RuntimeError('dsh整理未完成：' + str(result.get('error') or result.get('finish_reason')))
@@ -81,7 +84,7 @@ class MemoryRuntime:
                 if output.startswith('```'):
                     output = '\n'.join(output.splitlines()[1:-1])
                 done = json.loads(output)
-                if not self.enabled or not f.enabled or not f.config.load().memory_enabled or result.get('cancelled') or result.get('finish_reason') != 'completed' or done.get('completed') is not True or done.get('batch') != batch:
+                if not allowed() or result.get('cancelled') or result.get('finish_reason') != 'completed' or done.get('completed') is not True or done.get('batch') != batch:
                     raise RuntimeError('整理未完整完成，暂存修改不发布，队列保留')
                 for file in (transaction.root / 'memory/user').glob('*'):
                     if file.name in f.identity.ids:

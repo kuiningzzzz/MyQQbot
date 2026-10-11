@@ -26,6 +26,7 @@ class DshRuntime:
         self.active = {}
         self.lock = asyncio.Lock()
         self.turn_lock = asyncio.Lock()
+        self.kind_locks = {'chat': asyncio.Lock(), 'memory': asyncio.Lock()}
         self.stderr = []
         self.diagnostic_task = None
         self.last_error = ""
@@ -34,7 +35,7 @@ class DshRuntime:
 
     async def _callback(self, reader, writer):
         try:
-            async with asyncio.timeout(150):
+            async with asyncio.timeout(150) as budget:
                 line = await reader.readline()
                 headers = {}
                 while True:
@@ -49,6 +50,8 @@ class DshRuntime:
                 if not 0 < size <= 2 * 1024 * 1024 or not line.startswith(b"POST /tool "):
                     raise ValueError("工具桥接请求无效")
                 payload = json.loads(await reader.readexactly(size))
+                if payload.get('name') == 'integrate_memory':
+                    budget.reschedule(None)
                 task = self.active.get(payload.get("task_id"))
                 # Completion is idempotent, including after a host-side revoke.
                 if task is None and payload.get('name') != '__finish':
@@ -146,12 +149,17 @@ class DshRuntime:
                 raise RuntimeError(result.get("error", "dsh操作失败"))
             return result.get("result", {})
 
-    async def run(self, kind, prompt, *, task_id, handler, current, owner=False, qq="", cwd=None, system="", scene_dir="", expires_at=None, role=None, worker_system='', spawn=None, delivery=False):
-        async with self.turn_lock:
+    async def run(self, kind, prompt, *, task_id, handler, current, owner=False, qq="", cwd=None, system="", scene_dir="", expires_at=None, role=None, worker_system='', spawn=None, delivery=False, revoke=None):
+        # Root conversations are ordered independently; native forks never
+        # hold a root turn lock while doing their potentially long work.
+        gate = asyncio.Lock() if role == 'scheduled' else self.kind_locks[kind]
+        async with gate:
             if not current():
                 return {"cancelled": True}
-            await self.start()
-            self.active[task_id] = {"handler": handler, "current": current, 'spawn': spawn}
+            async with self.turn_lock:
+                await self.start()
+                self.active[task_id] = {"handler": handler, "current": current, 'spawn': spawn, 'revoke': revoke}
+            request_task = monitor = None
             try:
                 # Any native read can consult the oldest retained raw record.
                 # Bound the entire session (including compaction/tool output)
@@ -160,28 +168,48 @@ class DshRuntime:
                 deadline = expires_at or time.time() + 30 * 86400
                 if oldest is not None:
                     deadline = min(deadline, oldest + 30 * 86400)
-                return await self.request("/run", {"kind": kind, "role": role or ('main' if kind == 'chat' else 'memory'), 'worker_system': worker_system,
+                request_task = asyncio.create_task(self.request('/scheduled' if role == 'scheduled' else '/run', {"kind": kind, "role": role or ('main' if kind == 'chat' else 'memory'), 'worker_system': worker_system,
                     'delivery': delivery, "task_id": task_id, "owner": owner, "qq": qq,
                     "prompt": prompt, "system": system, "self_ids": sorted(self.feature.identity.ids), "scene_dir": scene_dir, "cwd": str(cwd or self.feature.workspace.root),
-                    "expires_at": deadline * 1000}, timeout=None)
-            except BaseException:
+                    "expires_at": deadline * 1000}, timeout=None))
+                async def watch():
+                    while not request_task.done():
+                        if not current():
+                            request_task.cancel()
+                            return
+                        await asyncio.sleep(.25)
+                monitor = asyncio.create_task(watch())
+                return await request_task
+            except BaseException as exc:
+                if revoke:
+                    revoke()
                 if self.url:
                     try:
                         await asyncio.shield(self.request("/cancel", {"task_id": task_id}))
                     except Exception:
                         pass
+                if isinstance(exc, asyncio.CancelledError) and not current() and not asyncio.current_task().cancelling():
+                    return {'cancelled': True}
                 raise
             finally:
+                if monitor:
+                    monitor.cancel()
+                    await asyncio.gather(monitor, return_exceptions=True)
                 self.active.pop(task_id, None)
 
     async def cancel(self, task_id):
         task = self.active.pop(task_id, None)
+        if task and task.get('revoke'):
+            task['revoke']()
         if task and task.get('finish'):
             await task['finish']({'task_id': task_id, 'state': 'cancelled', 'output': ''})
         if self.url:
             await self.request("/cancel", {"task_id": task_id})
 
     async def stop(self):
+        for task in self.active.values():
+            if task.get('revoke'):
+                task['revoke']()
         children = [task for task in self.active.values() if task.get('finish')]
         self.active.clear()
         for task in children:

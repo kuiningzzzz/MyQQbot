@@ -1,0 +1,47 @@
+<template data-feature-panel="timing">
+  <div class="feature-extra timing-panel">
+    <style>
+      .timing-panel {padding:20px!important;line-height:1.7}
+      .timing-panel p {margin:8px 0 18px}
+      .timing-panel .timing-grid {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 20px;margin:16px 0}
+      .timing-panel label {display:flex;flex-direction:column;gap:6px;font-weight:500}
+      .timing-panel input,.timing-panel select,.timing-panel textarea {box-sizing:border-box;width:100%;padding:9px 12px;border:1px solid #cbd5e1;border-radius:8px;font:inherit;background:var(--panel,#fff);color:inherit}
+      .timing-panel textarea {min-height:140px;margin:6px 0 12px;resize:vertical}
+      .timing-panel .timing-card {padding:16px 18px;border:1px solid #cbd5e1;border-radius:12px;margin:14px 0;overflow-wrap:anywhere}
+      .timing-panel .timing-card pre {white-space:pre-wrap;font:inherit;margin:10px 0}
+      .timing-panel .timing-actions {display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0}
+      .timing-panel .timing-check {display:flex;flex-direction:row;align-items:center;font-weight:400}
+      .timing-panel .timing-check input {width:auto}
+      .timing-panel .timing-meta {font-size:.9em;opacity:.8}
+      .timing-panel .timing-error {color:#be123c}
+      @media(max-width:650px){.timing-panel .timing-grid{grid-template-columns:1fr}.timing-panel{padding:12px!important}}
+    </style>
+    <h3>北京时间定时任务</h3>
+    <p>统一管理所有群聊与私聊的固定消息、AI任务。循环时间已过自动安排下一次；月末不存在的日期跳过，2月29日跳到下个闰年。固定消息无需开启 AI。</p>
+    <div class="timing-actions"><button type="button" class="timing-new">新增任务</button><button type="button" class="secondary timing-refresh">刷新列表</button></div>
+    <div class="timing-grid">
+      <label>筛选类型<select class="timing-filter"><option value="">全部类型</option><option value="fixed">固定消息</option><option value="ai">AI任务</option></select></label>
+      <label>查找会话、ID或内容<input class="timing-search" placeholder="例如 group:123456"></label>
+    </div>
+    <div class="timing-status" role="status"></div>
+    <form class="timing-form" hidden>
+      <h3 class="timing-form-title">新增任务</h3>
+      <div class="timing-grid">
+        <label>任务类型<select name="kind"><option value="fixed">固定消息</option><option value="ai">AI任务</option></select></label>
+        <label>会话类型<select name="scene_type"><option value="group">群聊</option><option value="private">私聊</option></select></label>
+        <label>群号 / 私聊QQ号<input name="scene_id" required pattern="[1-9][0-9]{0,19}" inputmode="numeric"></label>
+        <label>机器人QQ（可选，多账号时指定）<input name="bot_qq" pattern="[1-9][0-9]{0,19}" inputmode="numeric"></label>
+        <label>循环<select name="flag"><option value="-d">每天</option><option value="-w">每周</option><option value="-m">每月</option><option value="-y">每年</option><option value="-o">仅一次</option></select></label>
+        <label>北京时间<input name="time" required><small class="timing-format"></small></label>
+        <label>请求者QQ（可选，普通权限默认0）<input name="requester" pattern="[0-9]{1,20}" inputmode="numeric"></label>
+        <label>AI发送方式<select name="delivery"><option value="auto">按提示词决定：播报发送，维护可静默</option><option value="message">完成后向本会话发送结果</option><option value="silent">静默执行，禁止向QQ发送</option></select></label>
+      </div>
+      <label class="timing-check"><input name="enabled" type="checkbox" checked>启用任务</label>
+      <label class="timing-check"><input name="owner_grant" type="checkbox">允许主人越界操作（请求者须为当前绑定的主人QQ）</label>
+      <p class="timing-meta">AI任务每次从主对话 fork，独立执行后删除分支日志。历史中的主人身份不会继承。普通群友修改任务会按修改者重新计算权限。</p>
+      <label>消息内容 / AI提示词<textarea name="content" required placeholder="固定消息可用 [CQ:at,qq=123456] 艾特；AI可填写：整理新增记忆，不需要发送消息。"></textarea></label>
+      <div class="timing-actions"><button type="submit" class="timing-save">保存任务</button><button type="button" class="secondary timing-cancel">取消编辑</button><span class="timing-form-status" role="status"></span></div>
+    </form>
+    <div class="timing-list"></div>
+  </div>
+</template>

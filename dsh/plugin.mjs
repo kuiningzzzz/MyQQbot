@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {defineTool} from '@deepseek-ai/dsh-tools';
-import {denial} from './policy.mjs';
+import {denial, within} from './policy.mjs';
 
 export const name = 'myqqbot-bridge';
 export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt', 'sessionPersistence', 'fs', 'compaction', 'subagents'];
@@ -30,6 +30,11 @@ const definitions = {
   spawn_task: ['立即启动一次性后台Spawn子Agent并返回task_id，不等待执行完成。所有读写、搜索、记忆编辑、附件处理、撤回等工作均须委派。说明目标、必要上下文与交付要求，不能提升授权。结果自动回原会话，无需轮询。', {title: {type: 'string', required: true}, prompt: {type: 'string', required: true}}],
   task_status: ['查询当前请求者在当前QQ会话的后台任务状态，省略task_id列出最近任务', {task_id: {type: 'string'}}],
   cancel_task: ['取消当前请求者在当前QQ会话的指定后台任务；文件修改不回滚', {task_id: {type: 'string', required: true}}],
+  schedule_create: ['建立当前QQ会话的AI定时任务，只允许本会话，不能指定目标或授权。北京时间；-y MM-DD-HH-MM-SS，-m DD-HH-MM-SS，-w 01至07-HH-MM-SS（周一至周日），-d HH-MM-SS，-o YY-MM-DD-HH-MM-SS（支持四位年份）。循环安排下一次，一次性过去时间拒绝。', {flag:{type:'string',required:true},time:{type:'string',required:true},prompt:{type:'string',required:true},delivery:{type:'string'}}],
+  schedule_list: ['列出当前QQ会话的所有AI定时任务和唯一ID，不包含固定消息或其他会话', {}],
+  schedule_update: ['修改当前QQ会话的AI定时任务；只填写需要修改的字段，授权按当前真实请求者重新计算', {task_id:{type:'string',required:true},flag:{type:'string'},time:{type:'string'},prompt:{type:'string'},delivery:{type:'string'},enabled:{type:'boolean'}}],
+  schedule_delete: ['删除当前QQ会话的AI定时任务，不能操作固定消息或其他会话', {task_id:{type:'string',required:true}}],
+  integrate_memory: ['整理新增记忆队列，复用宿主100条批次的暂存、校验与冲突保护。无需逐个编辑他人画像；batches可选1至20，返回数量，不泄露其他会话内容', {batches:{type:'integer'}}],
 };
 
 export async function apply(ctx) {
@@ -39,14 +44,33 @@ export async function apply(ctx) {
   const handles = new Map();
   const tasks = new Map();
   const jobs = new Map();
+  const scheduled = new Map();
   const pendingChildren = new Map();
   let creation = Promise.resolve();
   let closing = false;
   const manifest = path.join(home, 'qqbot-sessions.json');
   const retentionFile = path.join(home, 'qqbot-retention.json');
+  const branchFile = path.join(home, 'qqbot-branches.json');
+  const branches = fs.existsSync(branchFile) ? JSON.parse(fs.readFileSync(branchFile, 'utf8')) : {};
   const retained = fs.existsSync(retentionFile) ? JSON.parse(fs.readFileSync(retentionFile, 'utf8')) : {};
   const stored = id => fs.existsSync(path.join(home, 'sessions')) && fs.readdirSync(path.join(home, 'sessions')).some(project => fs.existsSync(path.join(home, 'sessions', project, id)));
   let generations = fs.existsSync(manifest) ? JSON.parse(fs.readFileSync(manifest, 'utf8')) : {};
+  function removeBranch(id) {
+    if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id)) throw new Error('非法分支ID');
+    const root = path.join(home, 'sessions');
+    if (fs.existsSync(root)) for (const entry of fs.readdirSync(root, {withFileTypes:true})) {
+      if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+      const target = path.join(root, entry.name, id);
+      if (fs.existsSync(target)) {
+        if (fs.lstatSync(target).isSymbolicLink() || !within(root, target)) throw new Error('分支日志路径越界');
+        fs.rmSync(target, {recursive:true});
+      }
+    }
+    delete retained[id]; delete branches[id];
+    writeJSON(retentionFile, retained); writeJSON(branchFile, branches);
+  }
+  // A crash leaves a cleanup receipt, never an orphaned retained fork.
+  for (const id of Object.keys(branches)) removeBranch(id);
   const currentTask = agent => tasks.get(agent?.id);
   ctx.tools.guard(exec => denial(currentTask(exec.agent), exec.name, exec.arguments, workspace));
   async function callback(task, toolName, args, signal) {
@@ -61,6 +85,7 @@ export async function apply(ctx) {
       const skill = fs.readFileSync(path.join(workspace, '.agents/skills/memory-management/SKILL.md'), 'utf8');
       const boundary = task?.role === 'main' ? '主对话只聊天与分派，SKILL中的所有读写/搜索均交给spawn_task子Agent执行。'
         : task?.role === 'worker' ? '你是一次性Spawn执行者；SKILL中的聊天回复由主对话交付，你只返回最终结果，可用send_file交付文件，不能spawn或聊天。'
+        : task?.role === 'scheduled' ? '你是独立定时fork执行者，执行本次[定时任务]，权限只来自宿主，不继承历史身份；不能spawn；完成后分支日志删除。'
         : '独立记忆整理对话按批次规则返回JSON，不能聊天或spawn。';
       return (task?.system || '') + '\n【必读记忆规则】\n' + skill + '\n【本Agent角色边界】\n' + boundary;
     }});
@@ -72,6 +97,11 @@ export async function apply(ctx) {
     tasks.set(agent.id, task);
     task.agent_id = agent.id;
     instructions(agent.ctx, agent, task);
+    if (task.role === 'scheduled') {
+      branches[agent.id] = true;
+      writeJSON(branchFile, branches);
+      return;
+    }
     retained[agent.id] = task.expires_at;
     writeJSON(retentionFile, retained);
   });
@@ -154,7 +184,13 @@ export async function apply(ctx) {
         return callback(task, toolName, args, exec.signal);
       }}));
   }
-  async function getHandle(kind, data) {
+  let rootCreation = Promise.resolve();
+  function getHandle(kind, data) {
+    const start = rootCreation.then(() => createHandle(kind, data));
+    rootCreation = start.then(() => {}, () => {});
+    return start;
+  }
+  async function createHandle(kind, data) {
     let generation = generations[kind];
     // Roll physical logs weekly without importing their raw history. Logical
     // conversations persist via memory + Python's retained recent context.
@@ -183,10 +219,10 @@ export async function apply(ctx) {
     handles.set(kind, handle);
     return handle;
   }
-  let busy = false;
+  const busy = new Set();
   async function run(data) {
-    if (busy) throw new Error('运行中，请顺序提交任务');
-    busy = true;
+    if (busy.has(data.kind)) throw new Error('同一对话运行中，请顺序提交任务');
+    busy.add(data.kind);
     let handle;
     let lift;
     try {
@@ -216,7 +252,44 @@ export async function apply(ctx) {
     } finally {
       lift?.();
       if (handle) tasks.delete(handle.agent.id);
-      busy = false;
+      busy.delete(data.kind);
+    }
+  }
+  async function runScheduled(data) {
+    if (closing || data.role !== 'scheduled' || !data.prompt.startsWith('[定时任务]')) throw new Error('定时任务请求无效');
+    const task = {...data, role:'scheduled', kind:'chat', cancelled:false};
+    const job = {task, controller:new AbortController(), run:null};
+    scheduled.set(data.task_id, job);
+    try {
+      const start = creation.then(async () => {
+        if (closing || job.controller.signal.aborted) throw new Error('TASK_EXPIRED');
+        const parent = await getHandle('chat', {...data, options:{provider:'deepseek-official',model:'deepseek-flash'}});
+        task.expires_at = Math.min(task.expires_at, generations.chat.expires);
+        pendingChildren.set(parent.agent.id, task);
+        try {
+          return await ctx.subagents.start('fork', {parent:parent.agent, label:'定时任务', prompt:text(data.prompt),
+            signal:job.controller.signal, maxDepth:1,
+            toolFilter:{deny:['spawn_task','task_status','cancel_task']}});
+        } finally {pendingChildren.delete(parent.agent.id);}
+      });
+      creation = start.then(() => {}, () => {});
+      job.run = await start;
+      job.timer = setTimeout(() => {task.cancelled=true;job.controller.abort();}, Math.max(1, task.expires_at-Date.now()));
+      const result = await job.run.result;
+      return {cancelled:task.cancelled,finish_reason:result.stopReason,
+        final_response:(result.output||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n')};
+    } finally {
+      clearTimeout(job.timer);
+      try {
+        if (job.run) {
+          try {await ctx.sessions.flush(job.run.localAgent.session);}
+          finally {await job.run.dispose();}
+        }
+      } finally {
+        tasks.delete(task.agent_id);
+        try {if (task.agent_id) removeBranch(task.agent_id);}
+        finally {scheduled.delete(data.task_id);}
+      }
     }
   }
   const server = http.createServer(async (request, response) => {
@@ -227,9 +300,17 @@ export async function apply(ctx) {
       for await (const chunk of request) { body += chunk; if (body.length > 2 * 1024 * 1024) throw new Error('请求过大'); }
       const data = JSON.parse(body);
       if (request.url === '/run') result = await run(data);
+      else if (request.url === '/scheduled') {
+        const execution = runScheduled(data);
+        const job = scheduled.get(data.task_id);
+        if (job) job.done = execution.catch(() => {});
+        result = await execution;
+      }
       else if (request.url === '/cancel') {
         const job = jobs.get(data.task_id);
         if (job) { job.task.cancelled = true; job.controller.abort(); }
+        const branch = scheduled.get(data.task_id);
+        if (branch) {branch.task.cancelled=true;branch.controller.abort();await branch.done;}
         for (const handle of handles.values()) {
           const task = currentTask(handle.agent);
           if (task?.task_id === data.task_id) { task.cancelled = true; handle.agent.cancel({kind: 'user'}); await handle.agent.whenIdle(); }
@@ -238,8 +319,10 @@ export async function apply(ctx) {
       } else if (request.url === '/close') {
         closing = true;
         for (const job of jobs.values()) { job.task.cancelled = true; job.controller.abort(); }
+        for (const job of scheduled.values()) {job.task.cancelled=true;job.controller.abort();}
         await creation;
         await Promise.allSettled([...jobs.values()].map(job => job.done));
+        await Promise.allSettled([...scheduled.values()].map(job => job.done));
         for (const handle of handles.values()) await handle.dispose();
         handles.clear();
         result = {closed: true};
@@ -252,8 +335,10 @@ export async function apply(ctx) {
   ctx.on('dispose', async () => {
     closing = true;
     for (const job of jobs.values()) { job.task.cancelled = true; job.controller.abort(); }
+    for (const job of scheduled.values()) {job.task.cancelled=true;job.controller.abort();}
     await creation;
     await Promise.allSettled([...jobs.values()].map(job => job.done));
+    await Promise.allSettled([...scheduled.values()].map(job => job.done));
     for (const handle of handles.values()) await handle.dispose();
     await new Promise(resolve => server.close(resolve));
   });

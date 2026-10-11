@@ -154,15 +154,17 @@ class QQBot:
             self._responses.pop(echo, None)
 
     async def _observe_outgoing(self, scene_type, scene_id, message, ws, message_id=None):
+        if isinstance(message, list):
+            message = ''.join(str(s.get('data', {}).get('text', '')) if s.get('type') == 'text' else '@' + str(s.get('data', {}).get('qq', '')) if s.get('type') == 'at' else '[' + s.get('type', '消息') + ']' for s in message)
         await self.feature_manager.observe_system({"kind": "outgoing", "scene_type": scene_type, "scene_id": str(scene_id), "content": message, "self_id": self._self_ids.get(ws), "message_id": message_id})
 
-    async def reply(self, ctx: MessageContext, message: str):
+    async def reply(self, ctx: MessageContext, message: str | list[dict[str, Any]]):
         if ctx.message_type == "group":
             await self.send_group_msg(ctx.group_id, message, ctx.websocket)
         else:
             await self.send_private_msg(ctx.user_id, message, ctx.websocket)
 
-    async def send_private_msg(self, user_id: int | None, message: str, ws: WebSocket):
+    async def send_private_msg(self, user_id: int | None, message: str | list[dict[str, Any]], ws: WebSocket):
         payload = {
             "action": "send_private_msg",
             "params": {
@@ -174,7 +176,7 @@ class QQBot:
         result = await self.call_action(payload["action"], payload["params"], ws)
         await self._observe_outgoing("private", user_id, message, ws, result.get("message_id"))
 
-    async def send_group_msg(self, group_id: int | None, message: str, ws: WebSocket):
+    async def send_group_msg(self, group_id: int | None, message: str | list[dict[str, Any]], ws: WebSocket):
         payload = {
             "action": "send_group_msg",
             "params": {

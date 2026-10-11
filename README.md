@@ -31,6 +31,7 @@ src/
       client.py
       feature.py
       plugin.py
+    timing/             # 固定消息与AI定时任务、场景内管理及admin面板
     ai/                 # 单一人格、跨场景上下文与文件记忆系统
       feature.py        # QQ消息、附件、撤回与断线采集
       engine.py         # 全局聊天队列、真实请求授权与QQ工具
@@ -72,6 +73,7 @@ src/
 - `data/pixiv/config.json`：Pixiv refresh token 配置，由管理 WebUI 写入。
 - `data/pixiv/config.account` / `config.key`：加密保存的 Pixiv 账号密码、可选 TOTP 密钥及本地加密密钥。备份时一同保管；拥有服务器文件权限的人仍可解密。这些文件与 token 配置均不通过图片文件路由提供。
 - `data/ai/config.yaml`：账号身份、功能开关和本地记忆配置；模型密钥仅从环境读取。
+- `data/timing/tasks.sqlite3`：北京时间定时任务、下次触发时间及执行回执，自动创建并持久保存。
 - `data/ai/workspace/AGENT.md`：唯一人设，由WebUI编辑。
 - `data/ai/workspace/memory/raw/`：原始QQ事件及原文，滚动保留30天。
 - `data/ai/workspace/memory/user/QQ号/`：PERSON、PREFERENCE、RECENTNESS和额外memory文件。
@@ -162,6 +164,8 @@ QQ 账号向机器人发送页面给出的完整指令：
 ### AI 服务
 
 AI模块采用官方dsh内核、单一人格、跨群聊与私聊的共享主对话，以及独立记忆整理对话。主 Agent 只处理聊天与分派，所有执行工作交给原生 Spawn 子 Agent 在后台完成；结果和文件回到发起任务的 QQ 会话，新聊天不会打断任务。原始 [memory_structure.md](memory_structure.md) 仅保留为历史设计参考；现行机制见下方运行说明。
+
+定时任务支持北京时间年/月/周/日/一次性固定消息及AI工作，群聊/私聊均可通过 `/timing-task`、`/timing-task-AI` 创建、list查看和del删除。AI每次在原生fork分支中独立执行、结束后删除分支，支持自然语言管理本会话AI任务；admin可管理所有任务。详见[定时任务使用说明](docs/定时任务使用说明.md)。
 
 在管理WebUI的“AI服务”中配置：
 

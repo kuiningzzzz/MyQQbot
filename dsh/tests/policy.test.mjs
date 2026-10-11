@@ -35,6 +35,16 @@ test('owner status belongs only to current task and expired tasks never run', ()
   assert.match(denial(null,'read',{},work), /TASK_EXPIRED/);
   assert.match(check('read', '../secret'), /OWNER_REQUIRED/);
 });
+test('scheduled forks can execute and deliver, but do not inherit owner or spawn authority', () => {
+  for (const name of ['send_message','send_file','web_search','schedule_create','schedule_list','schedule_update','schedule_delete','integrate_memory']) {
+    assert.equal(check(name, '.', {role:'scheduled'}), undefined);
+    assert.match(check(name, '.', {kind:'memory',role:'memory'}), /PERMISSION_DENIED/);
+    if (name === 'send_message') assert.equal(check(name, '.', {role:'main',owner:true}), undefined);
+    else assert.match(check(name, '.', {role:'main',owner:true}), /DELEGATION_REQUIRED/);
+  }
+  assert.match(check('bash','.',{role:'scheduled'}), /OWNER_REQUIRED/);
+  assert.match(check('spawn_task','.',{role:'scheduled',owner:true}), /PERMISSION_DENIED/);
+});
 test('maintenance writes only staged memory, cannot send or execute', () => {
   const maintenance = {...task,kind:'memory',cwd:path.join(work,'tmp/memory-stage')};
   assert.equal(denial(maintenance,'write',{file_path:'memory/user/123/PERSON.md'},work), undefined);
