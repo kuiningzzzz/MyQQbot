@@ -452,6 +452,43 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
     async def native(self, kind='chat', **kwargs):
         return await self.f.dsh.run(kind, kwargs.pop('prompt', 'native test'), task_id=kwargs.pop('task_id', 'test'), current=lambda: True, handler=kwargs.pop('handler', AsyncMock(return_value={'success': True})), qq='123', scene_dir='scene', system='必读分类规则', role=kwargs.pop('role', 'worker' if kind == 'chat' else 'memory'), **kwargs)
 
+    async def test_native_schedule_tools_manage_fixed_messages(self):
+        from src.feature.timing.feature import TimingFeature
+        master = SimpleNamespace(is_master=lambda qq: qq == 123)
+        timing = TimingFeature(self.f, master, Path(self.temp.name) / 'timing.sqlite3')
+        ctx = MessageContext(bot=SimpleNamespace(master_service=master), websocket=None,
+            event={'self_id':999}, msg='每天提醒我', message_type='group', user_id=456, group_id=12)
+        results = []
+        async def handler(name, args):
+            result = await timing.tool(ctx, name, args)
+            self.assertTrue(result['success'], result)
+            results.append((name, result))
+            return result
+        def respond(request):
+            tools = {t['name']:t for t in request['tools']}
+            create = tools['schedule_create']['input_schema']
+            self.assertIn('kind', create['properties'])
+            self.assertIn('content', create['properties'])
+            self.assertNotIn('prompt', create.get('required', []))
+            self.assertIn('content', tools['schedule_update']['input_schema']['properties'])
+            self.assertIn('kind', tools['schedule_list']['input_schema']['properties'])
+            if not results:
+                return self.tool('schedule_create', kind='fixed', flag='-d', time='08-00-00', content='带钥匙 [CQ:at,qq=789]')
+            identifier = results[0][1]['task']['id']
+            if len(results) == 1:
+                return self.tool('schedule_update', task_id=identifier, content='带钥匙\n[CQ:at,qq=789] 新正文')
+            if len(results) == 2:
+                return self.tool('schedule_list', kind='fixed')
+            if len(results) == 3:
+                return self.tool('schedule_delete', task_id=identifier)
+            return '固定消息已创建、修改、查询和删除'
+        self.dispatcher = respond
+        result = await self.native(handler=handler)
+        self.assertEqual(result['finish_reason'], 'completed')
+        self.assertEqual([name for name, _ in results], ['schedule_create','schedule_update','schedule_list','schedule_delete'])
+        self.assertEqual(results[2][1]['tasks'][0]['content'], '带钥匙\n[CQ:at,qq=789] 新正文')
+        self.assertEqual(timing.store.list(), [])
+
     async def test_scheduled_native_fork_inherits_history_without_blocking_and_deletes_logs(self):
         self.responses = ['父对话已完成标记']
         await self.native(prompt='PARENT_COMPLETED_7931', role='main')

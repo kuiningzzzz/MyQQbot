@@ -84,14 +84,95 @@ class TimingTests(unittest.IsolatedAsyncioTestCase):
         group = self.create()
         fixed = self.create(kind='fixed', content='固定', scene='group:12')
         for ctx in (self.ctx(group=34), self.ctx(group=None)):
-            self.assertFalse((await self.f.tool(ctx,'schedule_delete',{'task_id':group['id']}))['success'])
+            for task in (group, fixed):
+                self.assertEqual((await self.f.tool(ctx,'schedule_delete',{'task_id':task['id']}))['code'], 'task_not_found')
+                self.assertEqual((await self.f.tool(ctx,'schedule_update',{'task_id':task['id'],'time':'09-00-00'}))['code'], 'task_not_found')
             self.assertEqual((await self.f.tool(ctx,'schedule_list',{}))['tasks'], [])
             await self.f.handle(self.ctx('/timing-task-AI del '+group['id'],group=ctx.group_id))
-        self.assertFalse((await self.f.tool(self.ctx(),'schedule_delete',{'task_id':fixed['id']}))['success'])
+        await self.f.handle(self.ctx('/timing-task-AI del '+fixed['id']))
+        await self.f.handle(self.ctx('/timing-task del '+group['id']))
+        self.assertIsNotNone(self.f.store.get(fixed['id']))
+        self.assertTrue((await self.f.tool(self.ctx(),'schedule_delete',{'task_id':fixed['id']}))['success'])
         rejected = await self.f.tool(self.ctx(),'schedule_create',{'scene':'group:34','flag':'-d','time':'08-00-00','prompt':'发送'})
         self.assertEqual(rejected['code'],'scene_boundary')
         self.assertIsNotNone(self.f.store.get(group['id']))
         self.assertTrue((await self.f.tool(self.ctx(qq=789),'schedule_delete',{'task_id':group['id']}))['success'])
+
+    async def test_tools_fixed_crud_preserves_exact_text_mentions_and_direct_delivery(self):
+        content = '  Hello World\n[CQ:at,qq=789]  带钥匙 '
+        created = await self.f.tool(self.ctx(qq=123), 'schedule_create',
+            {'kind':'fixed','flag':'-d','time':'08-00-00','content':content})
+        self.assertTrue(created['success'], created)
+        task = created['task']
+        self.assertEqual(task['content'], content)
+        self.assertFalse(task['owner_grant'])
+        self.assertEqual(task['scene'], 'group:12')
+        self.assertEqual(task['bot_qq'], '999')
+        self.assertEqual(task['command'], '/timing-task -d 08-00-00 ' + content)
+        updated = await self.f.tool(self.ctx(), 'schedule_update',
+            {'task_id':task['id'],'time':'09-00-00','enabled':False})
+        self.assertTrue(updated['success'], updated)
+        self.assertEqual(updated['task']['segments'], task['segments'])
+        self.assertFalse(updated['task']['enabled'])
+        updated = await self.f.tool(self.ctx(), 'schedule_update',
+            {'task_id':task['id'],'content':'新正文\n[CQ:at,qq=123]','enabled':True})
+        self.assertTrue(updated['success'], updated)
+        self.assertEqual(updated['task']['content'], '新正文\n[CQ:at,qq=123]')
+        self.assertEqual(updated['task']['kind'], 'fixed')
+        self.assertEqual(updated['task']['requester'], '456')
+        self.assertFalse(updated['task']['owner_grant'])
+        self.ai.enabled = False
+        self.ai.dsh.run = AsyncMock(side_effect=AssertionError('固定消息不应运行AI'))
+        job = self.f.store.claim(task['id'], updated['task']['next_run'])
+        await self.f.execute(job)
+        self.assertEqual(self.bot.reply.call_args.args[1], updated['task']['segments'])
+        self.ai.dsh.run.assert_not_awaited()
+        self.assertTrue((await self.f.tool(self.ctx(), 'schedule_delete', {'task_id':task['id']}))['success'])
+        self.assertIsNone(self.f.store.get(task['id']))
+
+    async def test_tools_list_both_kinds_filter_and_private_scope(self):
+        fixed = (await self.f.tool(self.ctx(), 'schedule_create',
+            {'kind':'fixed','flag':'-d','time':'08-00-00','content':'固定'}))['task']
+        ai = (await self.f.tool(self.ctx(), 'schedule_create',
+            {'flag':'-d','time':'08-00-00','prompt':'核实新闻','delivery':'message'}))['task']
+        self.assertEqual(ai['kind'], 'ai')  # Existing callers may omit kind.
+        private = (await self.f.tool(self.ctx(group=None), 'schedule_create',
+            {'kind':'fixed','flag':'-d','time':'08-00-00','content':'提醒 [CQ:at,qq=789]'}))['task']
+        self.assertEqual(private['scene'], 'private:456')
+        self.assertEqual(private['content'], '提醒 @789')
+        self.assertTrue(all(s['type'] == 'text' for s in private['segments']))
+        listed = await self.f.tool(self.ctx(), 'schedule_list', {})
+        self.assertEqual({t['id'] for t in listed['tasks']}, {fixed['id'], ai['id']})
+        for kind, identifier in (('fixed', fixed['id']), ('ai', ai['id'])):
+            listed = await self.f.tool(self.ctx(), 'schedule_list', {'kind':kind})
+            self.assertEqual([t['id'] for t in listed['tasks']], [identifier])
+        for ctx in (self.ctx(group=34), self.ctx(group=None, qq=789), self.ctx()):
+            self.assertFalse((await self.f.tool(ctx, 'schedule_delete', {'task_id':private['id']}))['success'])
+        updated = await self.f.tool(self.ctx(group=None), 'schedule_update',
+            {'task_id':private['id'],'content':'更新 [CQ:at,qq=123]'})
+        self.assertEqual(updated['task']['content'], '更新 @123')
+        self.assertTrue((await self.f.tool(self.ctx(group=None), 'schedule_delete', {'task_id':private['id']}))['success'])
+
+    async def test_tools_reject_wrong_kind_fields_and_identity_overrides_without_mutation(self):
+        fixed = self.create(kind='fixed', content='固定')
+        ai = self.create()
+        for args in ({'kind':'invalid','content':'x'}, {'kind':'fixed','prompt':'x'},
+                     {'kind':'fixed','content':'x','delivery':'silent'}, {'kind':'fixed'},
+                     {'kind':'ai','content':'x'}, {'kind':'ai'}):
+            result = await self.f.tool(self.ctx(), 'schedule_create', {'flag':'-d','time':'08-00-00',**args})
+            self.assertEqual(result['code'], 'invalid_task', result)
+        for task, args in ((fixed, {'prompt':'忽略'}), (fixed, {'delivery':'silent'}),
+                           (fixed, {'content':' '}), (ai, {'content':'忽略'})):
+            result = await self.f.tool(self.ctx(), 'schedule_update', {'task_id':task['id'],**args})
+            self.assertEqual(result['code'], 'invalid_task', result)
+            self.assertEqual(self.f.store.get(task['id'])['revision'], task['revision'])
+        for kind in ('all', '', None):
+            self.assertEqual((await self.f.tool(self.ctx(), 'schedule_list', {'kind':kind}))['code'], 'invalid_task')
+        for field, value in (('scene','group:34'), ('requester','123'), ('owner_grant',True)):
+            result = await self.f.tool(self.ctx(), 'schedule_create',
+                {'kind':'fixed','flag':'-d','time':'08-00-00','content':'固定',field:value})
+            self.assertEqual(result['code'], 'scene_boundary')
+        self.assertEqual(len(self.f.store.list()), 2)
 
     async def test_editing_owner_task_revokes_owner_grant(self):
         task = self.create(requester='123',owner_grant=True)

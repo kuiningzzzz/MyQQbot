@@ -25,7 +25,8 @@ USAGE = '''北京时间定时任务（群聊和私聊均可）：
 保留内容中的空格、换行、群聊@；循环时间已过自动安排下一次。
 每月不存在的日期跳过该月；2月29日按年循环跳到下个闰年。
 任何群友可管理本会话任务；不可查看、修改或创建其他会话任务。
-自然语言仅管理本会话的AI任务，由主对话spawn执行者调用schedule工具。
+自然语言可管理本会话的固定消息和AI任务，由主对话spawn执行者调用schedule工具。
+确定的文本使用/timing-task；需要执行时动态获取或AI生成的内容使用/timing-task-AI。
 服务离线后恢复只执行一次到期任务，不补发全部错过的周期；结果未知不自动重试。'''
 
 
@@ -58,7 +59,7 @@ def normalize_segments(segments, private=False):
 
 
 def text_segments(value, private=False):
-    """Admin accepts explicit at markup; ordinary text stays literal (no CQ injection)."""
+    """Admin and tools accept explicit at markup; other CQ markup stays literal."""
     if not isinstance(value, str):
         raise ValueError('消息内容须为文字')
     parts, position = [], 0
@@ -129,7 +130,7 @@ class TimingFeature(Feature):
 
     def agent_usage(self, owner=False):
         return {'help': USAGE, 'tools': ['schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete'],
-                'boundary': '工具只管理当前QQ会话AI任务，不接受目标会话；其他群和私聊隔离。主对话须spawn执行者调用。'}
+                'boundary': '工具可管理当前QQ会话固定消息和AI任务，不接受目标会话；其他群和私聊隔离。主对话须spawn执行者调用。'}
 
     @staticmethod
     def scene(ctx):
@@ -231,24 +232,38 @@ class TimingFeature(Feature):
         if not self.enabled:
             return {'success': False, 'code': 'feature_disabled'}
         scene = self.scene(ctx)
-        permitted = {'schedule_list': set(), 'schedule_delete': {'task_id'}, 'schedule_create': {'flag', 'time', 'prompt', 'delivery'}, 'schedule_update': {'task_id', 'flag', 'time', 'prompt', 'delivery', 'enabled'}}
+        permitted = {'schedule_list': {'kind'}, 'schedule_delete': {'task_id'},
+                     'schedule_create': {'kind', 'flag', 'time', 'content', 'prompt', 'delivery'},
+                     'schedule_update': {'task_id', 'flag', 'time', 'content', 'prompt', 'delivery', 'enabled'}}
         if name not in permitted or set(args) - permitted[name]:
-            return {'success': False, 'code': 'scene_boundary', 'error': '仅管理本会话AI任务，不能指定会话、身份或授权'}
+            return {'success': False, 'code': 'scene_boundary', 'error': '仅管理本会话固定消息和AI任务，不能指定会话、身份或授权'}
         try:
             if name == 'schedule_list':
-                return {'success': True, 'tasks': [self.describe(t) for t in self.store.list(scene=scene, kind='ai')]}
+                kind = args.get('kind')
+                if 'kind' in args and kind not in ('fixed', 'ai'):
+                    raise ValueError('任务类型须为fixed或ai；省略kind列出两类任务')
+                return {'success': True, 'tasks': [self.describe(t) for t in self.store.list(scene=scene, kind=kind)]}
             previous = None
             if name != 'schedule_create':
-                previous = self.store.get(args.get('task_id'), scene=scene, kind='ai')
+                previous = self.store.get(args.get('task_id'), scene=scene)
                 if not previous:
                     return {'success': False, 'code': 'task_not_found'}
             if name == 'schedule_delete':
-                self.store.delete(previous['id'], scene=scene, kind='ai', expected=previous['revision'])
+                self.store.delete(previous['id'], scene=scene, kind=previous['kind'], expected=previous['revision'])
                 self.wake.set()
                 return {'success': True}
-            data = {k: v for k, v in (previous or {}).items() if k in {'flag', 'time', 'prompt', 'delivery', 'enabled', 'bot_qq'}}
+            kind = previous['kind'] if previous else args.get('kind', 'ai')
+            if kind not in ('fixed', 'ai'):
+                raise ValueError('任务类型须为fixed或ai')
+            if kind == 'fixed' and ('prompt' in args or 'delivery' in args):
+                raise ValueError('固定消息使用content正文，不接受AI prompt或delivery；到时直接发送原文')
+            if kind == 'ai' and 'content' in args:
+                raise ValueError('AI任务使用prompt提示词，不接受固定消息content')
+            data = {k: v for k, v in (previous or {}).items() if k in {'flag', 'time', 'segments', 'prompt', 'delivery', 'enabled', 'bot_qq'}}
+            if 'content' in args:
+                data.pop('segments', None)
             data.update({k: v for k, v in args.items() if k != 'task_id'})
-            data.update(kind='ai', scene=scene, requester=str(ctx.user_id), owner_grant=self.master.is_master(ctx.user_id), bot_qq=str(ctx.event.get('self_id') or data.get('bot_qq') or ''))
+            data.update(kind=kind, scene=scene, requester=str(ctx.user_id), owner_grant=kind == 'ai' and self.master.is_master(ctx.user_id), bot_qq=str(ctx.event.get('self_id') or data.get('bot_qq') or ''))
             saved = self.save(data, previous['id'] if previous else None, previous['revision'] if previous else None)
             return {'success': True, 'task': saved}
         except (ValueError, KeyError) as exc:

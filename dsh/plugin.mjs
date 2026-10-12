@@ -30,10 +30,10 @@ const definitions = {
   spawn_task: ['立即启动一次性后台Spawn子Agent并返回task_id，不等待执行完成。所有读写、搜索、记忆编辑、附件处理、撤回等工作均须委派。说明目标、必要上下文与交付要求，不能提升授权。结果自动回原会话，无需轮询。', {title: {type: 'string', required: true}, prompt: {type: 'string', required: true}}],
   task_status: ['查询当前请求者在当前QQ会话的后台任务状态，省略task_id列出最近任务', {task_id: {type: 'string'}}],
   cancel_task: ['取消当前请求者在当前QQ会话的指定后台任务；文件修改不回滚', {task_id: {type: 'string', required: true}}],
-  schedule_create: ['建立当前QQ会话的AI定时任务，只允许本会话，不能指定目标或授权。北京时间；-y MM-DD-HH-MM-SS，-m DD-HH-MM-SS，-w 01至07-HH-MM-SS（周一至周日），-d HH-MM-SS，-o YY-MM-DD-HH-MM-SS（支持四位年份）。循环安排下一次，一次性过去时间拒绝。', {flag:{type:'string',required:true},time:{type:'string',required:true},prompt:{type:'string',required:true},delivery:{type:'string'}}],
-  schedule_list: ['列出当前QQ会话的所有AI定时任务和唯一ID，不包含固定消息或其他会话', {}],
-  schedule_update: ['修改当前QQ会话的AI定时任务；只填写需要修改的字段，授权按当前真实请求者重新计算', {task_id:{type:'string',required:true},flag:{type:'string'},time:{type:'string'},prompt:{type:'string'},delivery:{type:'string'},enabled:{type:'boolean'}}],
-  schedule_delete: ['删除当前QQ会话的AI定时任务，不能操作固定消息或其他会话', {task_id:{type:'string',required:true}}],
+  schedule_create: ['建立当前QQ会话定时任务。确定的文本用kind=fixed和content（/timing-task，到时直接发送原文）；需要执行时动态获取、AI生成或处理工作用kind=ai和prompt（/timing-task-AI）。kind省略默认ai。固定消息content保留空格换行，群聊艾特用[CQ:at,qq=具体QQ号]，私聊显示普通@QQ号；delivery仅AI可用（auto/message/silent）。不能指定目标会话或授权。北京时间；-y MM-DD-HH-MM-SS，-m DD-HH-MM-SS，-w 01至07-HH-MM-SS（周一至周日），-d HH-MM-SS，-o YY-MM-DD-HH-MM-SS（支持四位年份）。循环安排下一次，一次性过去时间拒绝。', {kind:{type:'string'},flag:{type:'string',required:true},time:{type:'string',required:true},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string'}}],
+  schedule_list: ['列出当前QQ会话定时任务、类型、内容、唯一ID和下次时间；省略kind列出固定消息和AI两类，可传fixed或ai筛选。不能查看其他会话', {kind:{type:'string'}}],
+  schedule_update: ['修改当前QQ会话固定消息或AI定时任务，task_id取自查询结果；保持原类型，只填写需要修改的字段。固定消息正文用content，群聊艾特用[CQ:at,qq=具体QQ号]；AI提示词用prompt，delivery仅AI可用（auto/message/silent）。enabled可暂停/启用；AI授权按当前真实请求者重新计算。不能修改其他会话', {task_id:{type:'string',required:true},flag:{type:'string'},time:{type:'string'},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string'},enabled:{type:'boolean'}}],
+  schedule_delete: ['按task_id删除当前QQ会话的固定消息或AI定时任务，不能操作其他群或私聊', {task_id:{type:'string',required:true}}],
   integrate_memory: ['整理新增记忆队列，复用宿主100条批次的暂存、校验与冲突保护。无需逐个编辑他人画像；batches可选1至20，返回数量，不泄露其他会话内容', {batches:{type:'integer'}}],
 };
 
