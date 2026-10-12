@@ -27,7 +27,7 @@ const definitions = {
   download_attachment: ['先发简短确认后下载附件到当前会话files目录', {attachment_id: {type: 'string', required: true}, path: {type: 'string'}}],
   send_file: ['将files_directory内已创建、下载或修改的文件发送为当前群的群文件或当前私聊文件；path为文件路径，name为可选显示文件名；单文件最多20MiB，等待NapCat回执。需文件开关开启且当前为明确请求', {path: {type: 'string', required: true}, name: {type: 'string'}}],
   search_memory: ['本地向量与文本检索，无额外Agent；也可直接原生grep/read记忆文件', {query: {type: 'string', required: true}, target_qq: {type: 'string'}, scope: {type: 'string'}}],
-  spawn_task: ['立即启动一次性后台Spawn子Agent并返回task_id，不等待执行完成。所有读写、搜索、记忆编辑、附件处理、撤回等工作均须委派。说明目标、必要上下文与交付要求，不能提升授权。结果自动回原会话，无需轮询。', {title: {type: 'string', required: true}, prompt: {type: 'string', required: true}}],
+  spawn_task: ['立即启动一次性后台Spawn子Agent并返回内部task_id，不等待执行完成，也不会自动向QQ发送受理回执。需要确认时由主Agent显式调用发送工具，静默请求不确认，不主动公开任务编号。所有读写、搜索、记忆编辑、附件处理、撤回等工作均须委派。说明目标、必要上下文与交付要求，不能提升授权。结果作为资料回主对话，由主对话判断是否调用发送工具交付；无需轮询。', {title: {type: 'string', required: true}, prompt: {type: 'string', required: true}}],
   task_status: ['查询当前请求者在当前QQ会话的后台任务状态，省略task_id列出最近任务', {task_id: {type: 'string'}}],
   cancel_task: ['取消当前请求者在当前QQ会话的指定后台任务；文件修改不回滚', {task_id: {type: 'string', required: true}}],
   schedule_create: ['建立当前QQ会话定时任务。确定的文本用kind=fixed和content（/timing-task，到时直接发送原文）；需要执行时动态获取、AI生成或处理工作用kind=ai和prompt（/timing-task-AI）。kind省略默认ai。固定消息content保留空格换行，群聊艾特用[CQ:at,qq=具体QQ号]，私聊显示普通@QQ号；delivery仅AI可用（auto/message/silent）。不能指定目标会话或授权。北京时间；-y MM-DD-HH-MM-SS，-m DD-HH-MM-SS，-w 01至07-HH-MM-SS（周一至周日），-d HH-MM-SS，-o YY-MM-DD-HH-MM-SS（支持四位年份）。循环安排下一次，一次性过去时间拒绝。', {kind:{type:'string'},flag:{type:'string',required:true},time:{type:'string',required:true},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string'}}],
@@ -170,7 +170,7 @@ export async function apply(ctx) {
       job.state = 'running';
       job.timer = setTimeout(() => { task.cancelled = true; job.controller.abort(); }, Math.max(1, task.expires_at - Date.now()));
       job.done = job.run.result.then(result => settle(job, result), error => settle(job, {stopReason: 'error', output: text(error.message)}));
-      return {success: true, task_id: id, state: 'running', mode: 'spawn-one-shot', delivery: '完成后自动回原QQ会话报告'};
+      return {success: true, task_id: id, state: 'running', mode: 'spawn-one-shot', delivery: '完成后作为资料回主对话，按上下文显式调用发送工具交付；允许静默，无自动受理回执'};
     } catch (error) {
       await settle(job, {stopReason: 'error', output: text(error.message)});
       throw error;

@@ -311,6 +311,8 @@ class TimingFeature(Feature):
                 result = await self.ai.engine.run_scheduled(ctx, job, lambda: self.valid(job))
                 status = 'cancelled' if result.get('cancelled') else 'completed' if result.get('finish_reason') == 'completed' else 'failed'
                 detail = result.get('final_response') or result.get('error') or result.get('finish_reason', '')
+                if result.get('delivery_error'):
+                    status, detail = 'failed', '交付失败（delivery_missing）：任务要求发送结果，但没有QQ发送工具返回成功回执；未发送最终文本兜底。'
                 if result.get('delivery_unknown'):
                     status = 'unknown'
         except asyncio.CancelledError:

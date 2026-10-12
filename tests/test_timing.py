@@ -18,6 +18,7 @@ from src.feature.timing.schedule import BJT, PAST, next_run, parse_time, display
 from src.feature.timing.storage import TaskStore, Conflict
 from src.feature.timing.feature import TimingFeature, split_command, body_text
 from src.feature.timing.admin import TimingAdmin
+from src.onebot_error import OneBotError
 
 
 class CalendarTests(unittest.TestCase):
@@ -399,6 +400,58 @@ class TimingTests(unittest.IsolatedAsyncioTestCase):
         handler=captured['handler']
         r=await handler('integrate_memory',{'batches':1})
         self.assertEqual(r['code'],'cancelled')
+
+    async def test_scheduled_message_requires_successful_explicit_delivery(self):
+        internal = '（这是内部执行记录，不应被发送。）'
+        for mode, status in (('none','failed'), ('empty','failed'), ('denied','failed'),
+                             ('unknown','unknown'), ('text','completed'), ('forward','completed'),
+                             ('file','completed'), ('auto','completed'), ('silent','completed')):
+            with self.subTest(mode=mode):
+                self.bot.reply.reset_mock()
+                self.bot.call_action.reset_mock()
+                self.bot.reply.side_effect = None
+                self.bot.call_action.return_value = {'message_id':'forward-1'}
+                self.ai.workfiles.send = AsyncMock(return_value={'success':True,'message_id':'file-1'})
+                async def run(kind, prompt, **kwargs):
+                    if mode == 'denied':
+                        self.bot.reply.side_effect = OneBotError('send_group_msg', {'message':'权限不足'})
+                    elif mode == 'unknown':
+                        self.bot.reply.side_effect = TimeoutError()
+                    if mode in ('denied','unknown','text'):
+                        await kwargs['handler']('send_message', {'message':'明确的交付内容'})
+                    elif mode == 'forward':
+                        await kwargs['handler']('send_forward_message', {'messages':['明确交付的聊天记录']})
+                    elif mode == 'file':
+                        await kwargs['handler']('send_file', {'path':'result.md'})
+                    elif mode == 'silent':
+                        for name, args in (('send_message', {'message':internal}),
+                                           ('send_forward_message', {'messages':[internal]}),
+                                           ('send_file', {'path':'result.md'})):
+                            result = await kwargs['handler'](name, args)
+                            self.assertEqual(result['code'], 'silent_task')
+                    return {'finish_reason':'completed','final_response':'' if mode == 'empty' else internal}
+                self.ai.dsh.run = run
+                task = self.create(delivery=mode if mode in ('auto','silent') else 'message')
+                job = self.f.store.claim(task['id'], task['next_run'])
+                await self.f.execute(job)
+                last_run = next(t for t in self.f.store.list() if t['id']==task['id'])['last_run']
+                self.assertEqual(last_run['status'], status, last_run)
+                if status == 'failed':
+                    self.assertIn('delivery_missing', last_run['result'])
+                expected_text_attempts = 1 if mode in ('text','denied','unknown') else 0
+                self.assertEqual(self.bot.reply.await_count, expected_text_attempts)
+                if expected_text_attempts:
+                    self.assertEqual(self.bot.reply.await_args.args[1], '明确的交付内容')
+                self.assertEqual(self.bot.call_action.await_count, int(mode=='forward'))
+                self.assertEqual(self.ai.workfiles.send.await_count, int(mode=='file'))
+                if mode == 'unknown':
+                    self.assertNotIn('delivery_missing', last_run['result'])
+                app = FastAPI()
+                TimingAdmin(self.f).register_routes(app)
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+                    listed = (await client.get('/api/timing/tasks')).json()['tasks']
+                    saved = next(t for t in listed if t['id']==task['id'])
+                    self.assertEqual(saved['last_run']['status'], status)
 
     async def test_admin_auth_protects_all_timing_routes(self):
         from src.admin import create_admin_app

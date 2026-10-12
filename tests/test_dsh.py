@@ -695,7 +695,10 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn('pwsh', tools)
             if counts[role] == 1:
                 return self.tool('spawn_task', title='制作Docker手册', prompt='生成详细说明并发送文件')
-            return {2: '任务已启动，稍后发给你。', 3: '可以继续聊天。'}.get(counts[role], '手册已完成并发送。')
+            messages = {2:'任务已启动，稍后发给你。', 4:'可以继续聊天。', 6:'手册已完成并发送。'}
+            if counts[role] in messages:
+                return self.tool('send_message', message=messages[counts[role]])
+            return '内部执行记录，不应发送到QQ。'
         self.dispatcher = respond
         bot = SimpleNamespace(reply=AsyncMock(), master_service=SimpleNamespace(is_master=lambda qq: qq == 123))
         self.f.workfiles.send = AsyncMock(return_value={'success': True, 'message_id': 'file-1'})
@@ -717,6 +720,8 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(target.read_text('utf-8'), '# Docker 使用说明')
             self.assertEqual(self.f.workfiles.send.await_args.args[0].group_id, 12)
             self.assertEqual([call.args[0].group_id for call in bot.reply.await_args_list], [12, 34, 12])
+            self.assertEqual([call.args[1] for call in bot.reply.await_args_list],
+                ['任务已启动，稍后发给你。','可以继续聊天。','手册已完成并发送。'])
             self.assertFalse(feeds[0].exists())
             # Background results are data; their delivery turn cannot spawn.
             self.assertNotIn('spawn_task', {t['name'] for t in self.requests[-1]['tools']})
@@ -738,6 +743,37 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['finish_reason'], 'completed')
         self.assertFalse(outside.exists())
         self.assertNotIn('write', {t['name'] for t in self.requests[0]['tools']})
+
+    async def test_native_spawn_and_background_delivery_do_not_leak_final_text(self):
+        began, release = asyncio.Event(), asyncio.Event()
+        main_steps = 0
+        async def respond(request):
+            nonlocal main_steps
+            if 'write' in {t['name'] for t in request.get('tools', [])}:
+                began.set()
+                await release.wait()
+                return '内部结果：检查完毕，按要求不向QQ发言。'
+            main_steps += 1
+            if main_steps == 1:
+                return self.tool('spawn_task', title='静默检查', prompt='检查后返回结果，不发文件或消息')
+            return '（主人要求静默，本轮不再发言。）'
+        self.dispatcher = respond
+        bot = SimpleNamespace(reply=AsyncMock(), master_service=SimpleNamespace(is_master=lambda qq: qq == 123))
+        ctx = MessageContext(bot=bot, websocket=None, event={}, msg='安静地检查一下',
+                             message_type='group', user_id=123, group_id=12)
+        try:
+            await asyncio.wait_for(self.f.engine._turn(ctx, 'group:12', True), 20)
+            await asyncio.wait_for(began.wait(), 10)
+            bot.reply.assert_not_awaited()
+            release.set()
+            async with asyncio.timeout(20):
+                while self.f.engine.background or self.f.engine.tasks:
+                    await asyncio.sleep(.05)
+            self.assertEqual(main_steps, 3)  # Spawn, initial final, result delivery final.
+            bot.reply.assert_not_awaited()
+            self.assertFalse(list((self.f.workspace.root / 'tmp').glob('worker-*.json')))
+        finally:
+            release.set()
 
     async def test_spawn_cancellation_is_scoped_and_disable_stops_native_writes(self):
         for mode in ('cancel', 'disable'):
@@ -787,8 +823,9 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         began, release = asyncio.Event(), asyncio.Event()
         dispatched = False
         worker_requests = 0
+        failure_delivery = None
         async def respond(request):
-            nonlocal dispatched, worker_requests
+            nonlocal dispatched, worker_requests, failure_delivery
             if 'write' in {t['name'] for t in request.get('tools', [])}:
                 worker_requests += 1
                 began.set()
@@ -797,24 +834,34 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             if not dispatched:
                 dispatched = True
                 return self.tool('spawn_task', title='进程中断测试', prompt='执行一次后台工作')
-            return '任务状态已说明。'
+            if failure_delivery is None:
+                block = request['messages'][-1]['content'][-1]
+                if block.get('type') == 'text':
+                    data = json.loads(block['text'])
+                    if 'background_result' in data:
+                        failure_delivery = data
+                        return self.tool('send_message', message='后台任务执行失败，未重复执行。')
+            return '（内部状态已处理，不额外发送。）'
         self.dispatcher = respond
         bot = SimpleNamespace(reply=AsyncMock())
         ctx = MessageContext(bot=bot, event={}, websocket=None, msg='后台任务', message_type='group', user_id=123, group_id=12)
         try:
             await self.f.engine._turn(ctx, 'group:12', True)
             await asyncio.wait_for(began.wait(), 10)
+            bot.reply.assert_not_awaited()
             process = self.f.dsh.process
             process.kill()
             await process.wait()
             async with asyncio.timeout(20):
-                while self.f.engine.background or self.f.engine.tasks or bot.reply.await_count < 2:
+                while self.f.engine.background or self.f.engine.tasks:
                     await asyncio.sleep(.05)
             self.assertEqual(worker_requests, 1)
-            last = json.loads(self.requests[-1]['messages'][-1]['content'][-1]['text'])
-            self.assertEqual(last['background_result']['state'], 'failed')
-            self.assertIn('进程意外退出', last['background_result']['output'])
+            self.assertIsNotNone(failure_delivery)
+            self.assertEqual(failure_delivery['background_result']['state'], 'failed')
+            self.assertIn('进程意外退出', failure_delivery['background_result']['output'])
+            bot.reply.assert_awaited_once()
             self.assertEqual(bot.reply.await_args.args[0].group_id, 12)
+            self.assertEqual(bot.reply.await_args.args[1], '后台任务执行失败，未重复执行。')
             self.assertEqual(list((self.f.workspace.root / 'tmp').glob('worker-*.json')), [])
         finally:
             release.set()
