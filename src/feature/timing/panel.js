@@ -6,7 +6,7 @@ featureAdminControls.timing = async row => {
   const hint = () => {
     const lunar=fields.flag.value.endsWith('-cn'),flag=fields.flag.value.replace(/-cn$/,'');
     const note=lunar?(flag==='-y'?'；农历月日：01至12月、01至30日，普通月份每年一次':flag==='-m'?'；农历01至30日，含闰月，不存在的日期跳过':flag==='-o'?'；填写农历年月日，年份1900至2100':'；每周/每天与公历相同'):'';
-    q('.timing-format').textContent=formats[flag]+note;
+    q('.timing-format').textContent=formats[flag]+note+'；用 - 分隔，月、日、星期、时分秒无需补零；年份可用一至两位或四位';
     q('.timing-time-label').textContent=lunar?'农历日期 / 北京时间':'公历日期 / 北京时间';
     fields.time.placeholder=formats[flag].split('，')[0];
     fields.delivery.disabled=fields.kind.value!=='ai';fields.owner_grant.disabled=fields.kind.value!=='ai';

@@ -30,17 +30,18 @@ def parse_time(flag, value):
     if flag not in FORMATS or not isinstance(value, str):
         raise ValueError('循环选项须为 -y / -m / -w / -d / -o；农历加-cn后缀，如-y-cn')
     counts = {'-y': 5, '-m': 4, '-w': 4, '-d': 3, '-o': 6}
-    if not re.fullmatch(r'(?:\d{2}|\d{4})(?:-\d{2})+', value) or len(value.split('-')) != counts[flag]:
-        raise ValueError('时间格式：' + FORMATS[flag])
     pieces = value.split('-')
-    if any(len(p) != 2 for p in pieces[1:]) or (len(pieces[0]) != 2 and flag != '-o'):
-        raise ValueError('时间格式：' + FORMATS[flag])
+    if len(pieces) != counts[flag] or any(
+        not re.fullmatch(r'(?:[0-9]{1,2}|[0-9]{4})' if flag == '-o' and index == 0 else r'[0-9]{1,2}', part)
+        for index, part in enumerate(pieces)
+    ):
+        raise ValueError('时间格式：' + FORMATS[flag] + '；用-分隔，月、日、星期、时分秒无需补零')
     numbers = list(map(int, pieces))
     hour, minute, second = numbers[-3:]
     if not (0 <= hour < 24 and 0 <= minute < 60 and 0 <= second < 60):
         raise ValueError('时分秒超出范围')
     if flag == '-o':
-        if len(pieces[0]) == 2:
+        if len(pieces[0]) <= 2:
             numbers[0] += 2000
         if lunar:
             lunar_datetime(*numbers[:3], hour=hour, minute=minute, second=second)

@@ -39,9 +39,37 @@ class CalendarTests(unittest.TestCase):
         for text in ('26-10-11-09-59-59', '2026-10-11-10-00-00'):
             with self.assertRaisesRegex(ValueError, PAST):
                 next_run('-o', text, now)
-        for flag, text in [('-o', '26-02-29-00-00-00'), ('-w', '08-00-00-00'), ('-m', '00-00-00-00'), ('-d', '24-00-00'), ('-y', '04-31-00-00-00'), ('-d', '8-00-00')]:
+        for flag, text in [('-o', '26-02-29-00-00-00'), ('-w', '08-00-00-00'), ('-m', '00-00-00-00'), ('-d', '24-00-00'), ('-y', '04-31-00-00-00')]:
             with self.assertRaises(ValueError):
                 next_run(flag, text, now)
+
+    def test_unpadded_and_mixed_width_fields_match_padded_in_both_calendars(self):
+        now = datetime(2026, 10, 12, 10, tzinfo=BJT)
+        for flag, short, padded in [('-y','2-3-8-0-1','02-03-08-00-01'),
+                                   ('-m','3-8-0-1','03-08-00-01'),
+                                   ('-w','1-08-0-01','01-08-00-01'),
+                                   ('-d','8-0-1','08-00-01'),
+                                   ('-o','27-2-3-8-0-1','27-02-03-08-00-01'),
+                                   ('-o','2027-02-3-8-00-1','2027-02-03-08-00-01')]:
+            for suffix in ('', '-cn'):
+                with self.subTest(flag=flag+suffix, value=short):
+                    self.assertEqual(parse_time(flag+suffix, short), parse_time(flag+suffix, padded))
+                    self.assertEqual(next_run(flag+suffix, short, now), next_run(flag+suffix, padded, now))
+        self.assertEqual(parse_time('-o', '7-2-3-8-0-0')[0], 2007)
+        self.assertEqual(parse_time('-o', '0-2-3-8-0-0')[0], 2000)
+
+    def test_unpadded_fields_still_reject_malformed_and_out_of_range_dates(self):
+        for flag, value in [('-y','4-31-0-0-0'), ('-m','0-8-0-0'), ('-w','8-8-0-0'),
+                            ('-d','24-0-0'), ('-d','8-60-0'), ('-d','8-0-60'),
+                            ('-d','8--0'), ('-d','8-0-'), ('-d','8-0'), ('-d','8-0-0-0'),
+                            ('-d','8:0:0'), ('-d','8-0-0x'), ('-d','8- 0-0'),
+                            ('-d','008-0-0'), ('-o','027-2-3-8-0-0'), ('-o','2027-2-29-0-0-0'),
+                            ('-y-cn','1-31-0-0-0'), ('-m-cn','31-8-0-0'),
+                            ('-o-cn','2026-2-30-0-0-0')]:
+            with self.subTest(flag=flag, value=value), self.assertRaises(ValueError):
+                parse_time(flag, value)
+        with self.assertRaisesRegex(ValueError, PAST):
+            next_run('-o', '20-1-1-0-0-0', datetime(2026, 10, 12, tzinfo=BJT))
 
     def test_lunar_annual_and_once_match_calendar_and_cross_lunar_new_year(self):
         # Fixed solar/lunar fixtures from Hong Kong Observatory 2025-2027 tables:
@@ -113,6 +141,32 @@ class TimingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(task['owner_grant'])
         await self.f.handle(self.ctx('/timing-task-AI -d 09-00-00 Write Docker Guide with Spaces\nSecond Line'))
         self.assertEqual(self.f.store.list(kind='ai')[0]['prompt'], 'Write Docker Guide with Spaces\nSecond Line')
+
+    async def test_unpadded_time_through_commands_tools_and_admin(self):
+        await self.f.handle(self.ctx('/timing-task -y-cn 2-3-8-0-0 生日快乐 Hello World'))
+        fixed = self.f.store.list(kind='fixed')[0]
+        self.assertEqual(parse_time(fixed['flag'], fixed['time']), [2,3,8,0,0])
+        self.assertEqual(body_text(fixed['segments']), '生日快乐 Hello World')
+        await self.f.handle(self.ctx('/timing-task-AI -d 8-0-0 播报新闻'))
+        self.assertEqual(self.f.store.list(kind='ai')[0]['time'], '8-0-0')
+        created = await self.f.tool(self.ctx(), 'schedule_create',
+            {'kind':'fixed','flag':'-w','time':'1-8-0-0','content':'周一提醒'})
+        self.assertTrue(created['success'], created)
+        updated = await self.f.tool(self.ctx(), 'schedule_update',
+            {'task_id':created['task']['id'],'time':'2-9-0-1'})
+        self.assertTrue(updated['success'], updated)
+        app = FastAPI()
+        TimingAdmin(self.f).register_routes(app)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            response = await client.post('/api/timing/tasks', json={
+                'kind':'fixed','scene':'group:12','flag':'-o-cn','time':'2099-1-1-8-0-0','content':'春节快乐'})
+            self.assertEqual(response.status_code, 200, response.text)
+            task = response.json()
+            self.assertEqual(task['next_run_lunar_text'], '2099年正月初一 08:00:00')
+            response = await client.put('/api/timing/tasks/'+task['id'], json={
+                'revision':task['revision'],'time':'2099-1-2-9-0-0'})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['next_run_lunar_text'], '2099年正月初二 09:00:00')
 
     async def test_scene_and_kind_boundaries_in_commands_and_tools(self):
         group = self.create()

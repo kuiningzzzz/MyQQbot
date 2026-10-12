@@ -37,7 +37,7 @@ const definitions = {
   integrate_memory: ['整理新增记忆队列，复用宿主100条批次的暂存、校验与冲突保护。无需逐个编辑他人画像；batches可选1至20，返回数量，不泄露其他会话内容', {batches:{type:'integer'}}],
 };
 const lunarScheduleHelp = ' 中国农历在flag后加-cn，数字格式不变：-y-cn MM-DD-HH-MM-SS每农历年（普通月份一次，不在闰月重复）；-m-cn DD-HH-MM-SS每农历月（含闰月）；-o-cn YY-MM-DD-HH-MM-SS指定农历日期（四位年份也支持，1900至2100）。月份01至12、日01至30，不存在的三十日跳过；时分秒仍为北京时间。-w-cn/-d-cn与每周/每天相同。农历生日应保存-y-cn，不应转换为固定公历年循环。';
-for (const name of ['schedule_create', 'schedule_update']) definitions[name][0] += lunarScheduleHelp;
+for (const name of ['schedule_create', 'schedule_update']) definitions[name][0] += ' 时间按-分隔，月、日、星期、时分秒无需补零，如2-3-8-0-0；年份支持一至两位（解释为2000至2099年）或四位。' + lunarScheduleHelp;
 
 export async function apply(ctx) {
   const workspace = process.env.QQBOT_WORKSPACE;
