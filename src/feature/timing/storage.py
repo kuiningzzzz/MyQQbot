@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime
 from contextlib import contextmanager
 
-from .schedule import next_run, parse_time, BJT
+from .schedule import next_run, parse_time, base_flag, BJT
 
 
 class Conflict(ValueError):
@@ -89,7 +89,7 @@ class TaskStore:
                 due = next_run(data['flag'], data['time'], datetime.fromtimestamp(now, BJT))
             except ValueError:
                 old = json.loads(previous['data']) if previous else {}
-                if data['flag'] != '-o' or enabled or old.get('flag') != data['flag'] or old.get('time') != data['time']:
+                if base_flag(data['flag']) != '-o' or enabled or old.get('flag') != data['flag'] or old.get('time') != data['time']:
                     raise
                 due = previous['next_run']
             # Keep timestamp on pause/unpause or content-only edits. A past
@@ -122,8 +122,9 @@ class TaskStore:
             item = self.decode(row)
             run = uuid.uuid4().hex
             db.execute('INSERT INTO runs(id,task_id,scheduled,started,status) VALUES (?,?,?,?,?)', (run, identifier, row['next_run'], now, 'running'))
-            due = None if item['flag'] == '-o' else next_run(item['flag'], item['time'], datetime.fromtimestamp(now, BJT))
-            db.execute('UPDATE tasks SET next_run=?,enabled=? WHERE id=?', (due, int(item['flag'] != '-o'), identifier))
+            once = base_flag(item['flag']) == '-o'
+            due = None if once else next_run(item['flag'], item['time'], datetime.fromtimestamp(now, BJT))
+            db.execute('UPDATE tasks SET next_run=?,enabled=? WHERE id=?', (due, int(not once), identifier))
             return {**item, 'run_id': run, 'scheduled_at': row['next_run']}
 
     def due(self, now):

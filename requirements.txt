@@ -12,6 +12,7 @@ pydantic>=2.6,<3
 PyYAML>=6,<7
 filelock>=3.13,<4
 tzdata>=2024.1
+lunar_python==1.4.8
 chromadb>=1.0,<2
 sentence-transformers>=3.0,<6
 pypdf>=5,<7

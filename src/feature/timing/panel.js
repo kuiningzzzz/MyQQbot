@@ -3,7 +3,14 @@ featureAdminControls.timing = async row => {
   let tasks = [], editing = null;
   const fields = form.elements;
   const formats = {'-y':'MM-DD-HH-MM-SS，如 10-01-00-00-00','-m':'DD-HH-MM-SS，如 01-08-00-00','-w':'01至07-HH-MM-SS，01周一，07周日','-d':'HH-MM-SS，如 08-00-00','-o':'YY-MM-DD-HH-MM-SS，也支持四位年份'};
-  const hint = () => {q('.timing-format').textContent = formats[fields.flag.value]; fields.time.placeholder = formats[fields.flag.value].split('，')[0]; fields.delivery.disabled = fields.kind.value !== 'ai'; fields.owner_grant.disabled = fields.kind.value !== 'ai';};
+  const hint = () => {
+    const lunar=fields.flag.value.endsWith('-cn'),flag=fields.flag.value.replace(/-cn$/,'');
+    const note=lunar?(flag==='-y'?'；农历月日：01至12月、01至30日，普通月份每年一次':flag==='-m'?'；农历01至30日，含闰月，不存在的日期跳过':flag==='-o'?'；填写农历年月日，年份1900至2100':'；每周/每天与公历相同'):'';
+    q('.timing-format').textContent=formats[flag]+note;
+    q('.timing-time-label').textContent=lunar?'农历日期 / 北京时间':'公历日期 / 北京时间';
+    fields.time.placeholder=formats[flag].split('，')[0];
+    fields.delivery.disabled=fields.kind.value!=='ai';fields.owner_grant.disabled=fields.kind.value!=='ai';
+  };
   fields.flag.addEventListener('change',hint); fields.kind.addEventListener('change',hint); hint();
   async function request(url, options={}) {
     const r = await fetch(url,options); const data = await r.json();
@@ -26,12 +33,13 @@ featureAdminControls.timing = async row => {
   const element = (tag,text,cls) => {const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;};
   function render() {
     list.replaceChildren(); const filter=q('.timing-filter').value, search=q('.timing-search').value.toLowerCase();
-    const selected=tasks.filter(t=>(!filter||t.kind===filter)&&[t.scene,t.id,t.content].join(' ').toLowerCase().includes(search));
+    const selected=tasks.filter(t=>(!filter||t.kind===filter)&&[t.scene,t.id,t.content,t.flag,t.calendar==='lunar'?'农历':'公历'].join(' ').toLowerCase().includes(search));
     list.append(element('p',`显示 ${selected.length} / ${tasks.length} 个任务`,'timing-meta'));
     for(const t of selected) {
       const card=element('div',undefined,'timing-card');
-      card.append(element('strong',`${t.kind==='ai'?'AI任务':'固定消息'} · ${t.scene} · ${t.enabled?'启用':'暂停 / 已完成'}`));
+      card.append(element('strong',`${t.kind==='ai'?'AI任务':'固定消息'} · ${t.calendar==='lunar'?'农历':'公历'} · ${t.scene} · ${t.enabled?'启用':'暂停 / 已完成'}`));
       card.append(element('div',`ID：${t.id} · 下次：${t.next_run_text}（北京时间）`,'timing-meta'));
+      if(t.calendar==='lunar')card.append(element('div',`对应农历：${t.next_run_lunar_text}（北京时间）`,'timing-meta'));
       if(t.kind==='ai')card.append(element('div',`执行身份 QQ ${t.requester} · ${t.owner_grant?'主人授权':'普通权限'} · ${t.delivery==='silent'?'静默执行':t.delivery==='message'?'发送结果':'按提示词决定发送'}`,'timing-meta'));
       card.append(element('pre',t.command));
       if(t.last_run) {

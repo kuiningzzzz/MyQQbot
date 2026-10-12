@@ -3,7 +3,7 @@ import json
 import tempfile
 import time
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -14,7 +14,7 @@ from fastapi import FastAPI
 
 from src.feature.atom import MessageContext
 from src.feature.ai.feature import AiFeature
-from src.feature.timing.schedule import BJT, PAST, next_run
+from src.feature.timing.schedule import BJT, PAST, next_run, parse_time, display_lunar_time
 from src.feature.timing.storage import TaskStore, Conflict
 from src.feature.timing.feature import TimingFeature, split_command, body_text
 from src.feature.timing.admin import TimingAdmin
@@ -42,6 +42,40 @@ class CalendarTests(unittest.TestCase):
         for flag, text in [('-o', '26-02-29-00-00-00'), ('-w', '08-00-00-00'), ('-m', '00-00-00-00'), ('-d', '24-00-00'), ('-y', '04-31-00-00-00'), ('-d', '8-00-00')]:
             with self.assertRaises(ValueError):
                 next_run(flag, text, now)
+
+    def test_lunar_annual_and_once_match_calendar_and_cross_lunar_new_year(self):
+        # Fixed solar/lunar fixtures from Hong Kong Observatory 2025-2027 tables:
+        # https://www.hko.gov.hk/tc/gts/time/calendar/pdf/files/2026.pdf
+        self.assert_next('-y-cn', '01-01-00-00-01', '2026-01-01T10:00:00', '2026-02-17 00:00:01')
+        self.assert_next('-y-cn', '01-01-00-00-00', '2026-02-17T00:00:00', '2027-02-06 00:00:00')
+        self.assert_next('-y-cn', '12-01-08-00-00', '2026-01-01T00:00:00', '2026-01-19 08:00:00')
+        self.assert_next('-y-cn', '08-15-00-00-00', '2026-09-01T00:00:00', '2026-09-25 00:00:00')
+        self.assert_next('-o-cn', '26-01-01-08-02-03', '2026-01-01T00:00:00', '2026-02-17 08:02:03')
+        self.assert_next('-o-cn', '2027-01-01-00-00-00', '2026-10-12T00:00:00', '2027-02-06 00:00:00')
+
+    def test_lunar_leap_month_and_missing_thirtieth(self):
+        self.assert_next('-m-cn', '01-08-00-00', '2025-06-25T08:00:00', '2025-07-25 08:00:00')
+        self.assert_next('-m-cn', '01-08-00-00', '2025-07-25T08:00:00', '2025-08-23 08:00:00')
+        # Annual June 1 does not fire twice in 2025's leap June.
+        self.assert_next('-y-cn', '06-01-08-00-00', '2025-06-25T08:00:00', '2026-07-14 08:00:00')
+        self.assert_next('-m-cn', '30-08-00-00', '2025-07-24T08:00:00', '2025-09-21 08:00:00')
+        self.assert_next('-y-cn', '02-30-08-00-00', '2025-01-01T00:00:00', '2027-04-06 08:00:00')
+
+    def test_lunar_validation_and_week_day_compatibility(self):
+        now = datetime(2026, 10, 12, tzinfo=BJT)
+        for flag, value in [('-o-cn','2026-02-30-00-00-00'), ('-o-cn','1899-01-01-00-00-00'),
+                            ('-o-cn','2101-01-01-00-00-00'), ('-y-cn','13-01-00-00-00'),
+                            ('-y-cn','01-31-00-00-00'), ('-m-cn','31-00-00-00'),
+                            ('-o-cn','2026-00-01-00-00-00'), ('-y-cn-cn','01-01-00-00-00')]:
+            with self.subTest(flag=flag, value=value), self.assertRaises(ValueError):
+                parse_time(flag, value)
+        with self.assertRaisesRegex(ValueError, PAST):
+            next_run('-o-cn', '26-01-01-00-00-00', now)
+        for flag, value in [('-w','01-08-00-00'), ('-d','08-00-00')]:
+            self.assertEqual(next_run(flag, value, now), next_run(flag+'-cn', value, now))
+        utc = now.astimezone(timezone.utc)
+        self.assertEqual(next_run('-y-cn', '01-01-08-00-00', now), next_run('-y-cn', '01-01-08-00-00', utc))
+        self.assertEqual(display_lunar_time(next_run('-o-cn','2027-01-01-08-00-00',now)), '2027年正月初一 08:00:00')
 
 
 class TimingTests(unittest.IsolatedAsyncioTestCase):
@@ -181,6 +215,49 @@ class TimingTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(updated['task']['owner_grant'])
         self.assertEqual(updated['task']['requester'],'456')
 
+    async def test_lunar_commands_tools_and_list_display(self):
+        await self.f.handle(self.ctx('/timing-task -y-cn 08-15-00-00-00 农历生日 Hello World'))
+        task = self.f.store.list()[0]
+        self.assertEqual(task['flag'], '-y-cn')
+        self.assertEqual(body_text(task['segments']), '农历生日 Hello World')
+        self.assertIn('对应农历', self.bot.reply.call_args.args[1])
+        await self.f.handle(self.ctx('/timing-task list'))
+        self.assertIn('对应农历', json.dumps(self.bot.call_action.call_args.args[1], ensure_ascii=False))
+        await self.f.handle(self.ctx('/timing-task-AI -m-cn 01-08-00-00 初一祝福'))
+        self.assertEqual(self.f.store.list(kind='ai')[0]['flag'], '-m-cn')
+        created = await self.f.tool(self.ctx(group=None), 'schedule_create',
+            {'kind':'fixed','flag':'-o-cn','time':'2099-01-01-00-00-00','content':'新春 [CQ:at,qq=789]'})
+        self.assertTrue(created['success'], created)
+        self.assertEqual(created['task']['calendar'], 'lunar')
+        self.assertIn('正月初一', created['task']['next_run_lunar_text'])
+        updated = await self.f.tool(self.ctx(), 'schedule_update',
+            {'task_id':task['id'],'flag':'-y','time':'08-15-00-00-00'})
+        self.assertEqual(updated['task']['calendar'], 'solar')
+        self.assertEqual(updated['task']['next_run_lunar_text'], '')
+        restored = await self.f.tool(self.ctx(), 'schedule_update', {'task_id':task['id'],'flag':'-y-cn'})
+        self.assertEqual(restored['task']['calendar'], 'lunar')
+
+    async def test_admin_lunar_create_edit_and_validation(self):
+        app = FastAPI()
+        TimingAdmin(self.f).register_routes(app)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            response = await client.post('/api/timing/tasks', json={
+                'kind':'fixed','scene':'group:12','flag':'-y-cn','time':'08-15-00-00-00','content':'生日快乐'})
+            self.assertEqual(response.status_code, 200, response.text)
+            task = response.json()
+            self.assertEqual(task['calendar'], 'lunar')
+            self.assertIn('八月十五', task['next_run_lunar_text'])
+            response = await client.put('/api/timing/tasks/'+task['id'], json={
+                'revision':task['revision'],'flag':'-m-cn','time':'01-08-00-00'})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()['content'], '生日快乐')
+            listed = (await client.get('/api/timing/tasks')).json()['tasks'][0]
+            self.assertEqual(listed['flag'], '-m-cn')
+            self.assertIn('初一', listed['next_run_lunar_text'])
+            response = await client.post('/api/timing/tasks', json={
+                'kind':'ai','scene':'group:12','flag':'-o-cn','time':'2026-02-30-00-00-00','prompt':'新闻'})
+            self.assertEqual(response.status_code, 400)
+
     async def test_forward_lists_paginate_99_nodes(self):
         for n in range(101):
             self.create(prompt='Task '+str(n))
@@ -283,16 +360,19 @@ class TimingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await getattr(client, method)(path)).status_code,401)
 
     async def test_completed_once_stays_disabled_and_cannot_reenable_in_past(self):
-        task = self.create(flag='-o',time='2099-01-01-00-00-00')
-        claimed = self.f.store.claim(task['id'],task['next_run'])
-        self.assertFalse(self.f.store.get(task['id'])['enabled'])
-        self.assertIsNone(self.f.store.claim(task['id'],task['next_run']+1))
-        current = self.f.store.get(task['id'])
-        data = {k:v for k,v in current.items() if k not in {'id','revision','next_run','created','updated'}}
-        saved = self.f.store.save(data,identifier=task['id'],expected=1,now=task['next_run']+1)
-        self.assertFalse(saved['enabled'])
-        with self.assertRaisesRegex(ValueError,PAST):
-            self.f.store.save({**data,'enabled':True},identifier=task['id'],expected=2,now=task['next_run']+2)
+        for flag in ('-o', '-o-cn'):
+            with self.subTest(flag=flag):
+                task = self.create(flag=flag,time='2099-01-01-00-00-00')
+                claimed = self.f.store.claim(task['id'],task['next_run'])
+                self.f.store.finish(claimed['run_id'], 'completed')
+                self.assertFalse(self.f.store.get(task['id'])['enabled'])
+                self.assertIsNone(self.f.store.claim(task['id'],task['next_run']+1))
+                current = self.f.store.get(task['id'])
+                data = {k:v for k,v in current.items() if k not in {'id','revision','next_run','created','updated'}}
+                saved = self.f.store.save(data,identifier=task['id'],expected=1,now=task['next_run']+1)
+                self.assertFalse(saved['enabled'])
+                with self.assertRaisesRegex(ValueError,PAST):
+                    self.f.store.save({**data,'enabled':True},identifier=task['id'],expected=2,now=task['next_run']+2)
 
     async def test_ai_capacity_does_not_starve_fixed_reminders(self):
         began = asyncio.Event()

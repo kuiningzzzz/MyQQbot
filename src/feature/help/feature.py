@@ -15,7 +15,7 @@ DEFAULT_PUBLIC_HELP_MESSAGES = [
     "/pixiv 作品ID - 获取对应 Pixiv 图片或图片集\n/pixiv status - 查看 Pixiv 当前处理队列",
     "/short 10至200 - AI 总结当前群聊仍保留的最近消息\n@机器人或提到机器人网名 - 唤醒AI聊天，60秒内可连续交谈",
     "/hello - 回复 hello",
-    "/timing-task 选项 时间 文本 - 北京时间定时消息，保留空格和群聊艾特\n/timing-task-AI 选项 时间 提示词 - 定时AI任务\n选项：-y每年 MM-DD-HH-MM-SS；-m每月 DD-HH-MM-SS；-w每周 01至07-HH-MM-SS；-d每天 HH-MM-SS；-o一次 YY-MM-DD-HH-MM-SS（也支持四位年份）\n两类指令均支持 list 查看、del ID 删除，只管理当前群聊或私聊；循环时间已过安排下一次。",
+    "/timing-task 选项 时间 文本 - 北京时间定时消息，保留空格和群聊艾特\n/timing-task-AI 选项 时间 提示词 - 定时AI任务\n选项：-y每年 MM-DD-HH-MM-SS；-m每月 DD-HH-MM-SS；-w每周 01至07-HH-MM-SS；-d每天 HH-MM-SS；-o一次 YY-MM-DD-HH-MM-SS（也支持四位年份）\n中国农历给选项加-cn，如-y-cn 08-15-00-00-00表示每年农历八月十五零点；-m-cn每农历月（含闰月），-o-cn指定农历日期。时分秒仍为北京时间；年循环只用普通月份，没有三十的月份跳过。\n两类指令均支持 list 查看、del ID 删除，只管理当前群聊或私聊；循环时间已过安排下一次。",
 ]
 
 DEFAULT_MASTER_HELP_MESSAGES = [*DEFAULT_PUBLIC_HELP_MESSAGES, "AI账号、人设与记忆文件请在管理WebUI的AI服务中配置。"]

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from src.feature.atom import Feature, MessageContext
 from src.onebot_error import OneBotError
-from .schedule import display_time
+from .schedule import display_time, display_lunar_time
 from .storage import TaskStore
 
 logger = logging.getLogger(__name__)
@@ -19,6 +19,9 @@ USAGE = '''北京时间定时任务（群聊和私聊均可）：
 /timing-task -w 01至07-HH-MM-SS 文本：每周，01周一、07周日
 /timing-task -d HH-MM-SS 文本：每天
 /timing-task -o YY-MM-DD-HH-MM-SS 文本：仅一次，也支持四位年份
+中国农历给选项加-cn：-y-cn 每农历年，-m-cn 每农历月，-o-cn 农历指定日；时间数字格式不变。
+-w-cn/-d-cn 与每周/每天相同，时分秒始终北京时间。农历支持1900至2100年。
+农历年循环只用普通月份，不在闰月重复提醒；农历月循环包含闰月，没有三十的月份跳过。
 将 /timing-task 换成 /timing-task-AI，后方内容即AI提示词。
 /timing-task list 或 /timing-task-AI list：聊天记录形式列出任务和ID
 /timing-task del ID 或 /timing-task-AI del ID：删除对应任务
@@ -93,7 +96,7 @@ def split_command(ctx):
     control = re.fullmatch(r'\s*(list|del(?:\s+[a-f0-9]{32})?)\s*', rest, re.I)
     if control and all(s.get('type') == 'text' for s in segments):
         return kind, control[1].lower().split(), []
-    header = re.match(r'\s+(-[ymwdo])\s+(\S+)\s', rest)
+    header = re.match(r'\s+(-[ymwdo](?:-cn)?)\s+(\S+)\s', rest)
     if not header:
         raise ValueError(USAGE)
     consume = match.end() + header.end()
@@ -184,7 +187,10 @@ class TimingFeature(Feature):
     def describe(task):
         command = '/timing-task-AI' if task['kind'] == 'ai' else '/timing-task'
         content = task['prompt'] if task['kind'] == 'ai' else body_text(task['segments'])
-        return {**task, 'content': content, 'command': f"{command} {task['flag']} {task['time']} {content}", 'next_run_text': display_time(task['next_run'])}
+        lunar = task['flag'].endswith('-cn')
+        return {**task, 'content': content, 'command': f"{command} {task['flag']} {task['time']} {content}",
+                'calendar': 'lunar' if lunar else 'solar', 'next_run_text': display_time(task['next_run']),
+                'next_run_lunar_text': display_lunar_time(task['next_run']) if lunar else ''}
 
     async def handle(self, ctx):
         if not (ctx.raw_msg or ctx.msg).lstrip().lower().startswith('/timing-task'):
@@ -203,8 +209,9 @@ class TimingFeature(Feature):
                     nodes = []
                     for item in items[offset:offset + 99]:
                         data = self.describe(item)
+                        lunar_info = f"\n对应农历：{data['next_run_lunar_text']}" if data['calendar'] == 'lunar' else ''
                         nodes.append({'type': 'node', 'data': {'name': '定时任务', 'uin': str(ctx.event.get('self_id') or 0),
-                            'content': [{'type': 'text', 'data': {'text': f"ID：{data['id']}\n{'启用' if data['enabled'] else '暂停/已完成'} · 北京时间 {data['next_run_text']}\n{data['command']}"}}]}})
+                            'content': [{'type': 'text', 'data': {'text': f"ID：{data['id']}\n{'启用' if data['enabled'] else '暂停/已完成'} · 北京时间 {data['next_run_text']}{lunar_info}\n{data['command']}"}}]}})
                     action = 'send_group_forward_msg' if ctx.message_type == 'group' else 'send_private_forward_msg'
                     target = {'group_id': ctx.group_id} if ctx.message_type == 'group' else {'user_id': ctx.user_id}
                     await ctx.bot.call_action(action, {**target, 'messages': nodes}, ctx.websocket)
@@ -219,7 +226,8 @@ class TimingFeature(Feature):
                 data = {'kind': kind, 'scene': scene, 'flag': args[0], 'time': args[1], 'requester': str(ctx.user_id), 'owner_grant': owner, 'bot_qq': str(ctx.event.get('self_id') or '')}
                 data.update({'segments': body} if kind == 'fixed' else {'prompt': body_text(body)})
                 item = self.save(data)
-                await ctx.bot.reply(ctx, f"已创建{'AI' if kind == 'ai' else '固定消息'}定时任务。\nID：{item['id']}\n下次：北京时间 {item['next_run_text']}")
+                lunar_info = f"\n对应农历：{item['next_run_lunar_text']}" if item['calendar'] == 'lunar' else ''
+                await ctx.bot.reply(ctx, f"已创建{'AI' if kind == 'ai' else '固定消息'}定时任务。\nID：{item['id']}\n下次：北京时间 {item['next_run_text']}{lunar_info}")
         except (ValueError, KeyError) as exc:
             await ctx.bot.reply(ctx, str(exc))
         except TimeoutError:

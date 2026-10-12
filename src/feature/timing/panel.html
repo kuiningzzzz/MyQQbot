@@ -17,7 +17,7 @@
       @media(max-width:650px){.timing-panel .timing-grid{grid-template-columns:1fr}.timing-panel{padding:12px!important}}
     </style>
     <h3>北京时间定时任务</h3>
-    <p>统一管理所有群聊与私聊的固定消息、AI任务。循环时间已过自动安排下一次；月末不存在的日期跳过，2月29日跳到下个闰年。固定消息无需开启 AI。</p>
+    <p>统一管理所有群聊与私聊的固定消息、AI任务，支持公历与中国农历。时分秒统一北京时间，循环时间已过自动安排下一次。公历不存在的日期跳过；农历年循环只用普通月份，月循环包含闰月，没有三十的月份跳过。固定消息无需开启 AI。</p>
     <div class="timing-actions"><button type="button" class="timing-new">新增任务</button><button type="button" class="secondary timing-refresh">刷新列表</button></div>
     <div class="timing-grid">
       <label>筛选类型<select class="timing-filter"><option value="">全部类型</option><option value="fixed">固定消息</option><option value="ai">AI任务</option></select></label>
@@ -31,8 +31,8 @@
         <label>会话类型<select name="scene_type"><option value="group">群聊</option><option value="private">私聊</option></select></label>
         <label>群号 / 私聊QQ号<input name="scene_id" required pattern="[1-9][0-9]{0,19}" inputmode="numeric"></label>
         <label>机器人QQ（可选，多账号时指定）<input name="bot_qq" pattern="[1-9][0-9]{0,19}" inputmode="numeric"></label>
-        <label>循环<select name="flag"><option value="-d">每天</option><option value="-w">每周</option><option value="-m">每月</option><option value="-y">每年</option><option value="-o">仅一次</option></select></label>
-        <label>北京时间<input name="time" required><small class="timing-format"></small></label>
+        <label>历法与循环<select name="flag"><optgroup label="公历"><option value="-d">每天</option><option value="-w">每周</option><option value="-m">每公历月</option><option value="-y">每公历年</option><option value="-o">公历日期，仅一次</option></optgroup><optgroup label="中国农历（-cn）"><option value="-y-cn">每农历年（如农历生日）</option><option value="-m-cn">每农历月（含闰月）</option><option value="-o-cn">农历日期，仅一次</option><option value="-w-cn">每周（与公历相同）</option><option value="-d-cn">每天（与公历相同）</option></optgroup></select></label>
+        <label><span class="timing-time-label">公历日期 / 北京时间</span><input name="time" required><small class="timing-format"></small></label>
         <label>请求者QQ（可选，普通权限默认0）<input name="requester" pattern="[0-9]{1,20}" inputmode="numeric"></label>
         <label>AI发送方式<select name="delivery"><option value="auto">按提示词决定：播报发送，维护可静默</option><option value="message">完成后向本会话发送结果</option><option value="silent">静默执行，禁止向QQ发送</option></select></label>
       </div>
