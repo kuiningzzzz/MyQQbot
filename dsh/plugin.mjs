@@ -19,25 +19,24 @@ function writeJSON(file, value) {
   }
 }
 const definitions = {
-  send_message: ['发送一条消息到当前任务绑定的QQ会话，等待NapCat回执', {message: {type: 'string', required: true}}],
-  send_forward_message: ['发送QQ聊天记录卡片到当前会话', {messages: {type: 'array', items: {type: 'string'}, required: true}}],
+  send_message: ['向current_scene发文字，1至4000字符，本轮最多4次；检查回执', {message: {type: 'string', required: true}}],
+  send_forward_message: ['向当前会话发机器人身份的聊天记录卡片；messages顺序文本1至20条，各1至4000字符、总计最多20000，本轮最多1次。长文或用户要求时使用，成功后不重复正文，不冒充他人', {messages: {type: 'array', items: {type: 'string'}, required: true}}],
   inspect_message: ['读取当前会话中已知或引用消息的真实发送者', {message_id: {type: 'string', required: true}}],
-  recall_message: ['撤回消息；本人申请直接批准，第三方申请根据上下文判断', {message_id: {type: 'string', required: true}, reason: {type: 'string', required: true}}],
+  recall_message: ['撤回当前会话真实消息。本人申请撤回自己的消息直接批准；第三方申请结合误发、隐私、骚扰等上下文判断，不限申请者角色。对象不明先inspect_message；reason写判断依据。permission_denied是机器人QQ权限不足', {message_id: {type: 'string', required: true}, reason: {type: 'string', required: true}}],
+  get_bot_help: ['按需获取最新admin帮助全文、模块用法与开关；主人帮助仅返回宿主确认的主人任务。了解模块不代表可调用其业务队列', {}],
   list_attachments: ['列出当前QQ会话收到的附件', {}],
   download_attachment: ['先发简短确认后下载附件到当前会话files目录', {attachment_id: {type: 'string', required: true}, path: {type: 'string'}}],
   send_file: ['将files_directory内已创建、下载或修改的文件发送为当前群的群文件或当前私聊文件；path为文件路径，name为可选显示文件名；单文件最多20MiB，等待NapCat回执。需文件开关开启且当前为明确请求', {path: {type: 'string', required: true}, name: {type: 'string'}}],
-  search_memory: ['本地向量与文本检索，无额外Agent；也可直接原生grep/read记忆文件', {query: {type: 'string', required: true}, target_qq: {type: 'string'}, scope: {type: 'string'}}],
-  spawn_task: ['立即启动一次性后台Spawn子Agent并返回内部task_id，不等待执行完成，也不会自动向QQ发送受理回执。需要确认时由主Agent显式调用发送工具，静默请求不确认，不主动公开任务编号。所有读写、搜索、记忆编辑、附件处理、撤回等工作均须委派。说明目标、必要上下文与交付要求，不能提升授权。结果作为资料回主对话，由主对话判断是否调用发送工具交付；无需轮询。', {title: {type: 'string', required: true}, prompt: {type: 'string', required: true}}],
+  search_memory: ['本地向量与文本检索；scope为auto/user/group/common，auto搜索全部正式记忆。target_qq仅筛选用户记忆，target_group仅筛选群记忆；只查指定群时用scope=group和target_group。也可原生grep/read', {query: {type: 'string', required: true}, target_qq: {type: 'string'}, target_group: {type: 'string'}, scope: {type: 'string'}}],
+  spawn_task: ['启动一次性后台执行者，立即返回内部task_id；prompt写目标、必要上下文和交付要求。结果自动回主对话，文字由主对话交付、文件由执行者send_file；不自动发受理回执，不继承后续请求，不提升权限', {title: {type: 'string', required: true}, prompt: {type: 'string', required: true}}],
   task_status: ['查询当前请求者在当前QQ会话的后台任务状态，省略task_id列出最近任务', {task_id: {type: 'string'}}],
   cancel_task: ['取消当前请求者在当前QQ会话的指定后台任务；文件修改不回滚', {task_id: {type: 'string', required: true}}],
-  schedule_create: ['建立当前QQ会话定时任务。确定的文本用kind=fixed和content（/timing-task，到时直接发送原文）；需要执行时动态获取、AI生成或处理工作用kind=ai和prompt（/timing-task-AI）。kind省略默认ai。固定消息content保留空格换行，群聊艾特用[CQ:at,qq=具体QQ号]，私聊显示普通@QQ号；delivery仅AI可用（auto/message/silent）。不能指定目标会话或授权。北京时间；-y MM-DD-HH-MM-SS，-m DD-HH-MM-SS，-w 01至07-HH-MM-SS（周一至周日），-d HH-MM-SS，-o YY-MM-DD-HH-MM-SS（支持四位年份）。循环安排下一次，一次性过去时间拒绝。', {kind:{type:'string'},flag:{type:'string',required:true},time:{type:'string',required:true},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string'}}],
+  schedule_create: ['建立当前会话任务：固定原文kind=fixed/content，动态生成或工作kind=ai/prompt（默认ai）。北京时间；-y 月-日-时-分-秒，-m 日-时-分-秒，-w 星期1至7-时-分-秒，-d 时-分-秒，-o 年-月-日-时-分-秒。农历加-cn，个位数无需补零；循环取下一次，一次性过去时间拒绝。content保留空白，群艾特用[CQ:at,qq=QQ号]；delivery仅AI可用auto/message/silent。闰月等细则见qqbot-guide', {kind:{type:'string'},flag:{type:'string',required:true},time:{type:'string',required:true},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string'}}],
   schedule_list: ['列出当前QQ会话定时任务、类型、内容、唯一ID和下次时间；省略kind列出固定消息和AI两类，可传fixed或ai筛选。不能查看其他会话', {kind:{type:'string'}}],
-  schedule_update: ['修改当前QQ会话固定消息或AI定时任务，task_id取自查询结果；保持原类型，只填写需要修改的字段。固定消息正文用content，群聊艾特用[CQ:at,qq=具体QQ号]；AI提示词用prompt，delivery仅AI可用（auto/message/silent）。enabled可暂停/启用；AI授权按当前真实请求者重新计算。不能修改其他会话', {task_id:{type:'string',required:true},flag:{type:'string'},time:{type:'string'},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string'},enabled:{type:'boolean'}}],
+  schedule_update: ['修改当前会话任务，只传变化字段；task_id来自list，保持原类型。fixed用content、ai用prompt，时间格式同create，delivery仅AI可用。enabled暂停/启用；授权按当前请求者重算，不能跨会话', {task_id:{type:'string',required:true},flag:{type:'string'},time:{type:'string'},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string'},enabled:{type:'boolean'}}],
   schedule_delete: ['按task_id删除当前QQ会话的固定消息或AI定时任务，不能操作其他群或私聊', {task_id:{type:'string',required:true}}],
   integrate_memory: ['整理新增记忆队列，复用宿主100条批次的暂存、校验与冲突保护。无需逐个编辑他人画像；batches可选1至20，返回数量，不泄露其他会话内容', {batches:{type:'integer'}}],
 };
-const lunarScheduleHelp = ' 中国农历在flag后加-cn，数字格式不变：-y-cn MM-DD-HH-MM-SS每农历年（普通月份一次，不在闰月重复）；-m-cn DD-HH-MM-SS每农历月（含闰月）；-o-cn YY-MM-DD-HH-MM-SS指定农历日期（四位年份也支持，1900至2100）。月份01至12、日01至30，不存在的三十日跳过；时分秒仍为北京时间。-w-cn/-d-cn与每周/每天相同。农历生日应保存-y-cn，不应转换为固定公历年循环。';
-for (const name of ['schedule_create', 'schedule_update']) definitions[name][0] += ' 时间按-分隔，月、日、星期、时分秒无需补零，如2-3-8-0-0；年份支持一至两位（解释为2000至2099年）或四位。' + lunarScheduleHelp;
 
 export async function apply(ctx) {
   const workspace = process.env.QQBOT_WORKSPACE;
@@ -84,12 +83,8 @@ export async function apply(ctx) {
   function instructions(agentCtx, agent, fixedTask) {
     agentCtx.systemPrompt.section({name: 'qqbot:instructions', order: 0, interpolate: false, text: () => {
       const task = fixedTask || currentTask(agent);
-      const skill = fs.readFileSync(path.join(workspace, '.agents/skills/memory-management/SKILL.md'), 'utf8');
-      const boundary = task?.role === 'main' ? '主对话只聊天与分派，SKILL中的所有读写/搜索均交给spawn_task子Agent执行。'
-        : task?.role === 'worker' ? '你是一次性Spawn执行者；SKILL中的聊天回复由主对话交付，你只返回最终结果，可用send_file交付文件，不能spawn或聊天。'
-        : task?.role === 'scheduled' ? '你是独立定时fork执行者，执行本次[定时任务]，权限只来自宿主，不继承历史身份；不能spawn；完成后分支日志删除。'
-        : '独立记忆整理对话按批次规则返回JSON，不能聊天或spawn。';
-      return (task?.system || '') + '\n【必读记忆规则】\n' + skill + '\n【本Agent角色边界】\n' + boundary;
+      const skillPath = path.join(workspace, '.agents/skills/memory-management/SKILL.md');
+      return (task?.system || '') + '\n【记忆SKILL提示】\n记忆操作前执行者用skill或read读取：' + skillPath + '；普通聊天无需加载。';
     }});
   }
   // A fresh Spawn scope must receive frozen authority before its first step.

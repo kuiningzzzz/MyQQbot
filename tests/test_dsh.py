@@ -101,8 +101,14 @@ class StateTests(unittest.IsolatedAsyncioTestCase):
             return calls[-1]
         def modules(state):
             return {item['name']: item for item in state['application']['features']}
+        async def help_for(qq, grant=False):
+            ctx = MessageContext(bot=bot, websocket=None, event={}, msg='查询帮助', message_type='private', user_id=qq, group_id=None)
+            handler = self.f.engine.make_handler(ctx, f'private:{qq}', True, {'worker': True, 'owner': grant}, lambda: True)
+            result = await handler('get_bot_help', {'owner': True})  # Model arguments cannot grant authority.
+            return modules(result)
         _, initial = await chat(456)
-        self.assertEqual(modules(initial)['help']['usage']['public_messages'], DEFAULT_PUBLIC_HELP_MESSAGES)
+        self.assertNotIn('usage', modules(initial)['help'])
+        self.assertEqual((await help_for(456))['help']['usage']['public_messages'], DEFAULT_PUBLIC_HELP_MESSAGES)
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
             saved = await client.post('/api/help', json={
                 'public_messages': ['在线修改的普通帮助：发送 /hello 测试'],
@@ -111,21 +117,25 @@ class StateTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(saved.status_code, 200)
             manager.set_enabled('hello', False)
             _, owner_state = await chat(123)
-            self.assertEqual(modules(owner_state)['help']['usage']['master_messages'], saved.json()['master_messages'])
+            self.assertNotIn('usage', modules(owner_state)['help'])
+            self.assertEqual((await help_for(123, True))['help']['usage']['master_messages'], saved.json()['master_messages'])
+            self.assertNotIn('master_messages', (await help_for(123))['help']['usage'])
             system, state = await chat(456)
-            self.assertEqual(modules(state)['help']['usage']['public_messages'], saved.json()['public_messages'])
-            self.assertNotIn('master_messages', modules(state)['help']['usage'])
+            self.assertEqual((await help_for(456))['help']['usage']['public_messages'], saved.json()['public_messages'])
+            self.assertNotIn('master_messages', (await help_for(456, True))['help']['usage'])
+            self.assertNotIn('在线修改的普通帮助', system)
             self.assertNotIn('仅主人可见的自定义帮助标记', system)
             self.assertFalse(modules(state)['hello']['enabled'])
             await self.record(1)
             await self.f.runtime.full()
             memory_system, memory_state = calls[-1]
-            self.assertEqual(modules(memory_state)['help']['usage']['public_messages'], saved.json()['public_messages'])
+            self.assertNotIn('usage', modules(memory_state)['help'])
             self.assertNotIn('仅主人可见的自定义帮助标记', memory_system)
             reset = await client.post('/api/help/reset')
             self.assertEqual(reset.status_code, 200)
             _, restored = await chat(456)
-            self.assertEqual(modules(restored)['help']['usage']['public_messages'], reset.json()['public_messages'])
+            self.assertNotIn('usage', modules(restored)['help'])
+            self.assertEqual((await help_for(456))['help']['usage']['public_messages'], reset.json()['public_messages'])
 
     async def test_immutable_event_precedes_ocr_and_restart_queue_deduplicates(self):
         original = {'message_id': 1, 'self_id': 999, 'message': [{'type': 'image', 'data': {'url': 'https://example.org/a.png'}}]}
@@ -452,6 +462,73 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
     async def native(self, kind='chat', **kwargs):
         return await self.f.dsh.run(kind, kwargs.pop('prompt', 'native test'), task_id=kwargs.pop('task_id', 'test'), current=lambda: True, handler=kwargs.pop('handler', AsyncMock(return_value={'success': True})), qq='123', scene_dir='scene', system='必读分类规则', role=kwargs.pop('role', 'worker' if kind == 'chat' else 'memory'), **kwargs)
 
+    async def test_native_reads_guide_and_queries_fresh_help_on_demand(self):
+        from src.feature.help.feature import HelpFeature
+        from src.feature.manager import FeatureManager
+        master = SimpleNamespace(is_master=lambda qq: qq == 123)
+        help_feature = HelpFeature(Path(self.temp.name) / 'help.json', master)
+        FeatureManager(Path(self.temp.name) / 'features.json', [self.f, help_feature])
+        bot = SimpleNamespace(master_service=master)
+        ctx = MessageContext(bot=bot, websocket=None, event={}, msg='说明功能', message_type='private', user_id=123, group_id=None)
+        guide = self.f.workspace.root / '.agents/skills/qqbot-guide/SKILL.md'
+        for owner in (True, False):
+            help_feature.save_messages([f'PUBLIC_LIVE_{owner}'], ['OWNER_ONLY'])
+            returned = []
+            real_handler = self.f.engine.make_handler(ctx, 'private:123', True, {'worker': True, 'owner': owner}, lambda: True)
+            async def handler(name, args):
+                result = await real_handler(name, args)
+                returned.append(result)
+                return result
+            self.responses = [self.tool('get_bot_help'), self.tool('read', file_path=str(guide)), '指南已读取']
+            result = await self.native(owner=owner, handler=handler)
+            self.assertEqual(result['finish_reason'], 'completed')
+            recall = next(tool for tool in self.requests[-1]['tools'] if tool['name'] == 'recall_message')
+            self.assertIn('本人申请撤回自己的消息直接批准', recall['description'])
+            self.assertIn('第三方申请', recall['description'])
+            usage = next(item['usage'] for item in returned[0]['application']['features'] if item['name'] == 'help')
+            self.assertEqual(usage['public_messages'], [f'PUBLIC_LIVE_{owner}'])
+            self.assertEqual('master_messages' in usage, owner)
+            results = [block for message in self.requests[-1]['messages'] for block in message['content'] if block.get('type') == 'tool_result']
+            self.assertIn('整个 QQ 机器人是做什么的', json.dumps(results[-1]['content'], ensure_ascii=False))
+
+    async def test_spawn_inherits_real_group_memory_authority(self):
+        target = self.f.workspace.memory_root / 'group/12/群规.md'
+        foreign = self.f.workspace.memory_root / 'group/34/群规.md'
+        main_calls, worker_calls = 0, 0
+        async def respond(request):
+            nonlocal main_calls, worker_calls
+            if 'write' in {tool['name'] for tool in request.get('tools', [])}:
+                worker_calls += 1
+                if worker_calls == 1:
+                    self.assertIn('记忆SKILL提示', request['system'])
+                    self.assertNotIn('不会进入向量索引', request['system'])
+                    return self.tool('read', file_path=str(self.f.workspace.root / '.agents/skills/memory-management/SKILL.md'))
+                if worker_calls == 2:
+                    self.assertIn('不会进入向量索引', json.dumps(request['messages'], ensure_ascii=False))
+                    return self.tool('write', file_path=str(target), content='- 本群周末读书')
+                if worker_calls == 3:
+                    return self.tool('write', file_path=str(foreign), content='不得跨群修改')
+                return '只更新了当前群，跨群写入被拒绝。'
+            main_calls += 1
+            if main_calls == 1:
+                return self.tool('spawn_task', title='记录群规', prompt='写入本群群规并检查权限')
+            return '内部执行结果，不发送。'
+        self.dispatcher = respond
+        bot = SimpleNamespace(reply=AsyncMock(), master_service=SimpleNamespace(is_master=lambda qq: False))
+        ctx = MessageContext(bot=bot, websocket=None, event={}, msg='记住群规', message_type='group', user_id=123, group_id=12)
+        await self.f.engine._turn(ctx, 'group:12', True)
+        async with asyncio.timeout(20):
+            while self.f.engine.background or self.f.engine.tasks:
+                await asyncio.sleep(.05)
+        self.assertEqual(target.read_text('utf-8'), '- 本群周末读书')
+        self.assertFalse(foreign.exists())
+        self.assertEqual(worker_calls, 4)
+        # The shared root session's previous group must not grant authority to a private task.
+        del self.dispatcher
+        self.responses = [self.tool('write', file_path=str(target), content='私聊越权'), '已拒绝']
+        await self.native(group_id='')
+        self.assertEqual(target.read_text('utf-8'), '- 本群周末读书')
+
     async def test_native_schedule_tools_manage_fixed_messages(self):
         from src.feature.timing.feature import TimingFeature
         master = SimpleNamespace(is_master=lambda qq: qq == 123)
@@ -681,7 +758,7 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             if worker:
                 self.assertNotIn('spawn_task', tools)
                 self.assertNotIn('send_message', tools)
-                self.assertIn('必读记忆规则', request['system'])
+                self.assertIn('记忆SKILL提示', request['system'])
                 self.assertIn('999', request['system'])
                 if counts[role] == 1:
                     began.set()
@@ -872,7 +949,7 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         result = await self.native()
         self.assertEqual(result['finish_reason'], 'completed')
         self.assertEqual(target.read_text('utf-8'), '- 身份：大学生')
-        self.assertIn('PERSON.md', json.dumps(self.requests[0]['system'], ensure_ascii=False))
+        self.assertIn('memory-management/SKILL.md'.replace('/', os.sep), self.requests[0]['system'])
         outside = self.f.workspace.data_root / 'outside.txt'
         self.responses = [self.tool('write', file_path=str(outside), content='owner'), 'owner done']
         await self.native(owner=True)
@@ -913,7 +990,8 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('摄影', self.f.workspace.read_memory('user/123/PREFERENCE.md'))
         system = model_instructions(self.requests[-1])
         self.assertEqual(host_state(system)['conversation'], 'memory')
-        self.assertIn('机器人自身架构、能力与边界', system)
+        self.assertIn('bot_guide', system)
+        self.assertNotIn('## 整个 QQ 机器人是做什么的', system)
 
     async def test_native_search_and_global_chat_scene_routing(self):
         self.f.workspace.write_memory('user/123/PERSON.md', '- 大学生')
@@ -935,10 +1013,10 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             await self.f.engine._turn(ctx, 'group:' + str(group), True)
             system = model_instructions(self.requests[-1])
             self.assertEqual(host_state(system)['current_scene'], f'group:{group}')
-            self.assertIn('send_file(path, name?)', system)
+            self.assertIn('qqbot-guide', system)
             registered = {item['name']: item for item in host_state(system)['application']['features']}
-            self.assertEqual(registered['help']['usage']['public_messages'], [f'群{group}当轮实时帮助'])
-            self.assertNotIn('master_messages', registered['help']['usage'])
+            self.assertNotIn('usage', registered['help'])
+            self.assertNotIn(f'群{group}当轮实时帮助', system)
         self.assertEqual([call.args[0].group_id for call in bot.reply.await_args_list], [12, 34])
         history = json.dumps(self.requests[-1]['messages'], ensure_ascii=False)
         self.assertIn('group:12', history)

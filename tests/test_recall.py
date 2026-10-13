@@ -85,7 +85,8 @@ class RecallTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_tool_failure_is_returned_to_agent(self):
         async def run(kind, prompt, **kwargs):
-            self.assertIn('非发送者请求', kwargs['system'])
+            self.assertNotIn('非发送者请求', kwargs['system'])  # Detailed policy now lives in the recall tool description.
+            self.assertIn('spawn_task', kwargs['system'])
             child = await kwargs['spawn']('recall-test', '撤回消息')
             result = await child['handler']('recall_message', {'message_id': '101', 'reason': '本人申请'})
             self.assertEqual(result['code'], 'permission_denied')

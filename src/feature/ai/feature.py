@@ -279,15 +279,40 @@ class AiFeature(Feature):
         for file in source.rglob('*'):
             if file.is_file() and file.suffix in {".md", ".py"}:
                 dest = target / file.relative_to(source)
+                # Ship fixes to the optional search helper, keeping the previous
+                # (possibly customized) script for the administrator to recover.
+                if file.relative_to(source).as_posix() == 'scripts/search.py' and dest.exists() and dest.read_text('utf-8') != file.read_text('utf-8'):
+                    backup = dest.with_name('search.py.pre-upgrade.bak')
+                    if not backup.exists():
+                        atomic_write(backup, dest.read_text('utf-8'))
+                    atomic_write(dest, file.read_text('utf-8'))
                 if not dest.exists():
                     atomic_write(dest, file.read_text('utf-8'))
+        # Preserve custom SKILL content; replace only the host-owned appendix.
+        skill = target / 'SKILL.md'
+        start, end = '<!-- qqbot:memory-layout:start -->', '<!-- qqbot:memory-layout:end -->'
+        content = skill.read_text('utf-8')
+        appendix = start + '\n' + Path(__file__).with_name('memory_layout.md').read_text('utf-8').rstrip() + '\n' + end
+        if start in content and end in content and content.index(start) < content.index(end):
+            content = content[:content.index(start)] + appendix + content[content.index(end) + len(end):]
+        else:
+            content = content.rstrip() + '\n\n' + appendix + '\n'
+        if content != skill.read_text('utf-8'):
+            atomic_write(skill, content)
+        # This is shipped documentation, separate from the editable persona and
+        # memory SKILL. It is visible through native read/skill, never injected.
+        guide = self.workspace.root / '.agents/skills/qqbot-guide/SKILL.md'
+        guide_content = ('---\nname: qqbot-guide\ndescription: QQ机器人架构、模块命令、admin功能、定时任务和工具详细使用指南；需要功能细节时按需读取。\n---\n\n'
+                         + Path(__file__).with_name('self_description.md').read_text('utf-8'))
+        if not guide.exists() or guide.read_text('utf-8') != guide_content:
+            atomic_write(guide, guide_content)
 
-    async def query_memory(self, query, target_qq=None, scope='auto'):
-        if scope not in {'auto', 'user', 'common'} or (target_qq and not str(target_qq).isdigit()):
-            raise ValueError('检索范围或QQ号无效')
+    async def query_memory(self, query, target_qq=None, scope='auto', target_group=None):
+        if scope not in {'auto', 'user', 'group', 'common'} or any(value is not None and (not str(value).isascii() or not str(value).isdigit()) for value in (target_qq, target_group)):
+            raise ValueError('检索范围、QQ号或群号无效')
         if not self.config.load().memory_enabled:
             return {'success': False, 'error': '记忆已关闭'}
-        hits = await asyncio.to_thread(self.index.search, query, scope, target_qq)
+        hits = await asyncio.to_thread(self.index.search, query, scope, str(target_qq) if target_qq is not None else None, group_id=str(target_group) if target_group is not None else None)
         hits = [h for h in hits if not any(str(h.get('source') or h.get('path') or '').startswith('user/' + qq + '/') for qq in self.identity.ids)]
         return {'success': True, 'memories': hits}
 

@@ -31,7 +31,7 @@ export function denial(task, name, args, workspace) {
   if (task.role === 'worker' && ['send_message', 'send_forward_message'].includes(name)) return 'PERMISSION_DENIED: 子任务结果由主对话交付，文件使用send_file';
   if (task.owner) return;
   const fileTools = new Set(['read', 'write', 'edit', 'glob', 'grep']);
-  const qqTools = new Set(['send_message', 'send_forward_message', 'recall_message', 'inspect_message', 'list_attachments', 'download_attachment', 'send_file', 'web_search', 'web_fetch', 'search_memory', 'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'integrate_memory']);
+  const qqTools = new Set(['send_message', 'send_forward_message', 'recall_message', 'inspect_message', 'get_bot_help', 'list_attachments', 'download_attachment', 'send_file', 'web_search', 'web_fetch', 'search_memory', 'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'integrate_memory']);
   if (name === 'skill' || name === 'search_memory') return;
   if (qqTools.has(name)) {
     if (task.kind !== 'chat') return 'PERMISSION_DENIED: 记忆整理对话不能使用QQ或网络工具';
@@ -61,7 +61,7 @@ export function denial(task, name, args, workspace) {
   if (fs.existsSync(target) && fs.statSync(target).isFile() && fs.statSync(target).nlink > 1) return 'PERMISSION_DENIED: 禁止硬链接';
   if (name === 'read') return;
   const memoryRelative = path.relative(path.join(task.cwd, 'memory'), target).split(path.sep).join('/');
-  const memoryFile = /^(user\/[0-9]+\/(PERSON|PREFERENCE|RECENTNESS)\.md|user\/[0-9]+\/memory\/[^/<>:"|?*]+\.md|common\/GLOSSARY\.md)$/.test(memoryRelative);
+  const memoryFile = /^(user\/[0-9]+\/(PERSON|PREFERENCE|RECENTNESS)\.md|user\/[0-9]+\/memory\/[^/<>:"|?*]+\.md|group\/[0-9]+\/[^/\r\n<>:"|?*]+\.md|common\/GLOSSARY\.md)$/.test(memoryRelative);
   if (task.kind === 'memory') {
     for (const qq of task.self_ids || []) {
       if (within(path.join(task.cwd, 'memory/user', qq), target)) return 'PERMISSION_DENIED: 不能给机器人建立画像';
@@ -71,5 +71,6 @@ export function denial(task, name, args, workspace) {
   }
   if (within(path.join(workspace, 'files', task.scene_dir), target)) return;
   if (memoryFile && within(path.join(workspace, 'memory/user', task.qq), target)) return;
-  return 'PERMISSION_DENIED: 只能修改自己的记忆与当前会话文件；规则和他人资料需要主人';
+  if (memoryFile && /^[0-9]+$/.test(task.group_id || '') && within(path.join(workspace, 'memory/group', task.group_id), target)) return;
+  return 'PERMISSION_DENIED: 只能修改自己的记忆、当前群记忆与当前会话文件；规则和他人资料需要主人';
 }

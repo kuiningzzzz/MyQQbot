@@ -149,7 +149,7 @@ class DshRuntime:
                 raise RuntimeError(result.get("error", "dsh操作失败"))
             return result.get("result", {})
 
-    async def run(self, kind, prompt, *, task_id, handler, current, owner=False, qq="", cwd=None, system="", scene_dir="", expires_at=None, role=None, worker_system='', spawn=None, delivery=False, revoke=None):
+    async def run(self, kind, prompt, *, task_id, handler, current, owner=False, qq="", cwd=None, system="", scene_dir="", group_id="", expires_at=None, role=None, worker_system='', spawn=None, delivery=False, revoke=None):
         # Root conversations are ordered independently; native forks never
         # hold a root turn lock while doing their potentially long work.
         gate = asyncio.Lock() if role == 'scheduled' else self.kind_locks[kind]
@@ -170,7 +170,7 @@ class DshRuntime:
                     deadline = min(deadline, oldest + 30 * 86400)
                 request_task = asyncio.create_task(self.request('/scheduled' if role == 'scheduled' else '/run', {"kind": kind, "role": role or ('main' if kind == 'chat' else 'memory'), 'worker_system': worker_system,
                     'delivery': delivery, "task_id": task_id, "owner": owner, "qq": qq,
-                    "prompt": prompt, "system": system, "self_ids": sorted(self.feature.identity.ids), "scene_dir": scene_dir, "cwd": str(cwd or self.feature.workspace.root),
+                    "prompt": prompt, "system": system, "self_ids": sorted(self.feature.identity.ids), "scene_dir": scene_dir, "group_id": group_id, "cwd": str(cwd or self.feature.workspace.root),
                     "expires_at": deadline * 1000}, timeout=None))
                 async def watch():
                     while not request_task.done():

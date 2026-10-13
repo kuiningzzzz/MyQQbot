@@ -5,15 +5,6 @@ from src.onebot_error import OneBotError
 
 logger = logging.getLogger(__name__)
 
-FORWARD_POLICY = """
-【聊天记录发送】用户要求用聊天记录、合并转发形式回复时，调用send_forward_message。
-长篇说明、多段资料也可以用此工具，按内容分成若干条记录，避免刷屏；普通短回复仍用send_message。
-messages是按顺序排列的文本列表，1至20条，每条最多4000字符，总计最多20000字符。
-这些记录均以机器人自己的身份发送，是你整理的回复；引用他人时在正文注明来源，不得冒充他人原话或泄露无关会话。
-发送聊天记录本身即完成回复，不必重复发送正文。检查success，失败不能声称成功；unknown表示结果未知，不要自动重发。
-"""
-
-
 async def send_forward_message(feature, ctx, messages):
     if not isinstance(messages, list) or not 1 <= len(messages) <= 20:
         raise ValueError("聊天记录必须包含1至20条文本")

@@ -65,13 +65,16 @@ data/ai/
   workspace/
     AGENT.md                       唯一聊天人设，管理界面可编辑
     .agents/skills/memory-management/
-      SKILL.md                     主对话、子Agent及整理每轮必读的分类与读写规则
+      SKILL.md                     记忆执行者按需读取的目录、分类与读写规则
       scripts/search.py            可选的纯Python记忆搜索脚本
+    .agents/skills/qqbot-guide/
+      SKILL.md                     宿主更新的完整机器人说明，按需读取
     memory/
       user/<QQ>/PERSON.md
       user/<QQ>/PREFERENCE.md
       user/<QQ>/RECENTNESS.md
       user/<QQ>/memory/<主题>.md
+      group/<群号>/<任意主题>.md    群规、专属梗、共同活动与群体项目；仅一层.md
       common/GLOSSARY.md
       raw/<日期>/<消息身份哈希>.json 原始QQ事件及原文，不用模型转述替代
       raw/<日期>/*.rendered.txt      单独保存的OCR/转发展开内容，同样保留30天
@@ -80,11 +83,15 @@ data/ai/
     tmp/                           可重建的聊天输入与整理暂存，使用后清理
 ```
 
-`SKILL.md` 模板在 `src/feature/ai/skills/memory-management/SKILL.md`，首次启动复制到工作区，此后不覆盖你的微调。实际运行请修改工作区的副本，每轮会重新读取。聊天基础规则在 `src/feature/ai/engine.py` 的 `CHAT_RULES`，整理任务规则在 `src/feature/ai/runtime.py`。原生工具权限在 `dsh/policy.mjs`，它们不随人设修改而放宽。
+`SKILL.md` 模板在 `src/feature/ai/skills/memory-management/SKILL.md`，首次启动复制到工作区，此后保留你的微调。宿主启动时仅刷新末尾 `qqbot:memory-layout:start/end` 标记之间的目录规范，来源为 `src/feature/ai/memory_layout.md`；规范只保存在SKILL中，不会作为独立系统上下文重复注入。dsh仅提供简短SKILL路径提示，涉及记忆查询、编辑或整理时由执行者使用skill或read按需读取全文，普通聊天无需加载；主对话委派子Agent读取并执行。可选 `scripts/search.py` 随部署更新，旧内容不同时备份为 `scripts/search.py.pre-upgrade.bak`。实际运行可微调SKILL的非托管部分，下次读取生效。聊天基础规则在 `src/feature/ai/engine.py` 的 `CHAT_RULES`，整理任务规则在 `src/feature/ai/runtime.py`。原生工具权限在 `dsh/policy.mjs`，它们不随人设修改而放宽。
 
-机器人自身架构、工具用法和能力边界集中在 `src/feature/ai/self_description.md`，由聊天和记忆整理入口每轮强制注入系统上下文；已有工作区和恢复的会话同样生效，不依赖Agent主动发现，也不覆盖已有 `AGENT.md` 或记忆SKILL。`src/feature/ai/self_context.py` 同时生成当轮宿主状态，包含真实请求者/主人标记、会话目的地、实际目录和功能开关，不包含连接密钥。部署更新并重启服务后即可使用；微调自身说明请修改源码中的Markdown，修改权限仍以 `dsh/policy.mjs` 和Python实际校验为准。
+每轮只提供人设（聊天任务）、机器人身份、简短角色规则、`src/feature/ai/core_prompt.md` 的公共边界，以及 `self_context.py` 生成的当前身份、权限、路径和开关；动态JSON紧凑序列化，不重复附上模块使用资料或admin帮助全文。主对话保持只聊天和分派，显式发送、静默、跨场景隐私和真实授权等关键规则保留；详细工具参数只在工具定义中说明，不另附撤回/合并转发长篇规则。
 
-自身说明同时涵盖整个QQ机器人的命令、模块分发、JM/Pixiv队列和admin三个页面。FeatureManager通过通用 `bind_application_context` 回调提供每轮最新的已注册模块、简介及开关状态；各模块通过 `agent_usage` 选择性提供使用资料，不读取模块配置或凭据。帮助模块直接提供与admin和 `/help` 共用的内存文本，保存/恢复后下一轮生效；普通任务与记忆整理只注入普通帮助，主人聊天任务还注入主人帮助。帮助内容是使用资料，不能授权或创造AI工具；当前AI不能直接调用JM/Pixiv处理队列，也不能靠发出斜杠命令触发自身模块。
+完整架构、模块命令、admin功能和操作说明仍在 `src/feature/ai/self_description.md`。启动时作为宿主管理的 `workspace/.agents/skills/qqbot-guide/SKILL.md` 发布，执行者需要功能细节时用原生skill/read读取；它不会覆盖人设或自定义记忆SKILL，也不再每轮注入全文。指南的微调请修改源码；工作区副本随部署启动更新。涉及记忆的任务仍须先读取memory-management SKILL。已有会话下一轮使用精简规则，历史记录按dsh原有保留和压缩策略管理，无需清空会话或记忆。
+
+FeatureManager通过通用 `bind_application_context` 回调提供模块信息；每轮仅注入模块name/title/enabled摘要。详细 `agent_usage`、普通帮助全文及主人帮助改由执行者调用 `get_bot_help()` 按需读取，与admin和 `/help` 共用实时数据，保存/恢复后立即可查，不写入共享工作区文件。主人帮助同时检查本次任务的固定主人授权和请求者当前仍为绑定主人；模型参数不能授权，普通任务和已撤销授权的任务不返回主人帮助。主对话须委派执行者查询，整理对话不能调用此工具。帮助内容不能授权或创造AI工具；AI仍不能直接调用JM/Pixiv业务队列。
+
+以相同临时配置（AI和帮助两个模块、默认人设）测量，主对话的Python宿主提示词由13,524字符降至2,106字符，执行子Agent由12,961降至2,090，定时任务由12,945降至2,126。这里只统计固定宿主提示词，不含消息历史、工具schema、dsh附加内容和按需查询结果；字符数并非计费token，实际费用还受缓存命中和任务长度影响。
 
 ## 队列、记忆与上下文
 
@@ -96,11 +103,13 @@ data/ai/
 
 所有原始新消息都有可读路径；模型输入只展示有限预览，大批积压放输入文件，Agent可以原生读取。dsh根据原生模型目录和默认策略自动压缩。SQLite是队列依据，dsh摘要不是队列游标。向量索引不索引原始聊天，原生编辑后会按内容哈希同步或重建；不可用时降级为Markdown文本检索，不再让Attention二次筛选。
 
+正式长期记忆仅包括上列user、group路径及common/GLOSSARY.md；group下可自由命名.md，但不允许再嵌套目录。三类均参与向量索引、文本回退、自动整理暂存及admin增删改查。`search_memory`的scope支持auto/user/group/common；target_qq只过滤用户部分，target_group只过滤群部分，auto仍包含其他类型，只查某群须指定scope=group。已有 `workspace/memory/group/<群号>/*.md` 无需迁移，下次检索会检测新增文件并同步索引；其他层级或非规范文件仍不纳入流程，不能靠重建索引补收。整理暂存中发现非法.md路径会拒绝整批提交。
+
 ## 权限和发送
 
 主人身份沿用管理界面的绑定机制，当前 `ctx.user_id` 必须与 `MasterService.master_id` 一致。转发、历史记录、昵称、自称主人及模型参数都不能提供主人授权。每轮重新计算；主人权限不从共享历史或上轮任务继承。
 
-普通用户可以读取工作区、编辑自己的合法Markdown画像及当前场景files目录；不能写规则、他人画像、其他场景文件，也不能调用任意命令或访问工作区外路径。符号链接越界、硬链接和搜索路径逃逸受到检查。整理会话没有主人身份，只可写暂存画像，可检索正式记忆，不能发送QQ消息、执行命令或修改服务器。
+普通用户可以读取工作区、编辑自己的合法Markdown画像、当前群的合法群记忆及当前场景files目录；私聊不能编辑群记忆，不能写规则、他人画像、其他群记忆或其他场景文件，也不能调用任意命令或访问工作区外路径。群写入权限绑定宿主从真实QQ事件传入的group_id，子Agent和定时分支继承当次真实场景，不从模型参数或共享历史获取授权。符号链接越界、硬链接和搜索路径逃逸受到检查。整理会话没有主人身份，只可写暂存用户/群记忆和公共知识，可检索正式记忆，不能发送QQ消息、执行命令或修改服务器。
 
 主人当前请求可以使用原生Bash（Linux）或PowerShell（Windows），以及工作区外读写，其操作范围取决于服务进程的OS权限。Docker方式可控制容器及挂载目录；要控制宿主服务器，应使用下面的原生部署方式。没有默认挂载Docker socket或整个宿主根目录。
 

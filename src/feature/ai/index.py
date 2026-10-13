@@ -123,7 +123,7 @@ class VectorIndex:
                 paths = self.workspace.files() if relative is None or rebuild else [relative]
                 hashes = {} if rebuild else state.get("hashes", {})
                 if rebuild:
-                    for scope in ("user", "common"):
+                    for scope in ("user", "group", "common"):
                         collection = self._collection(scope)
                         all_ids = collection.get()["ids"]
                         if all_ids:
@@ -138,7 +138,7 @@ class VectorIndex:
                         # BGE's 512-token input: overlapping slices locate a full entry.
                         for offset in range(0, max(1, len(item["content"])), 300):
                             documents.append(item["heading"][:80] + "\n" + item["content"][offset:offset + 380])
-                            metadatas.append({"source_file": path, "line_start": item["line_start"], "qq": path.split("/")[1] if path.startswith("user/") else "", "file_hash": digest(text), "entry_type": path.rsplit("/", 1)[-1].removesuffix(".md"), "last_updated": (re.findall(r"\d{4}-\d{2}-\d{2}", item["content"]) or [""])[-1]})
+                            metadatas.append({"source_file": path, "line_start": item["line_start"], "qq": path.split("/")[1] if path.startswith("user/") else "", "group_id": path.split("/")[1] if path.startswith("group/") else "", "file_hash": digest(text), "entry_type": path.rsplit("/", 1)[-1].removesuffix(".md"), "last_updated": (re.findall(r"\d{4}-\d{2}-\d{2}", item["content"]) or [""])[-1]})
                             ids.append(digest(f"{path}:{item['line_start']}:{offset}"))
                     vectors = self._encode(documents) if documents else []
                     collection = self._collection(path.split("/")[0])
@@ -159,7 +159,7 @@ class VectorIndex:
                 logger.exception("同步向量索引失败；下次同步将全量重建")
                 return False
 
-    def search(self, query: str, scope: str = "auto", qq: str | None = None, limit: int = 10) -> list[dict]:
+    def search(self, query: str, scope: str = "auto", qq: str | None = None, limit: int = 10, group_id: str | None = None) -> list[dict]:
         with self._lock:
             if self.config.load().vector_index_enabled:
                 try:
@@ -169,14 +169,16 @@ class VectorIndex:
                         self.workspace.save_state("index", state)
                     if state.get("dirty", True) or state.get("model") != self.config.load().embedding_model:
                         if not self.sync():
-                            return self._lexical(query, scope, qq, limit)
+                            return self._lexical(query, scope, qq, limit, group_id)
                     vector = self._encode([query], query=True)
                     hits = []
-                    for area in ("user", "common") if scope == "auto" else (scope,):
+                    for area in ("user", "group", "common") if scope == "auto" else (scope,):
                         collection = self._collection(area)
                         if not collection.count():
                             continue
                         kwargs = {"where": {"qq": qq}} if area == "user" and qq else {}
+                        if area == "group" and group_id:
+                            kwargs = {"where": {"group_id": group_id}}
                         result = collection.query(query_embeddings=vector, n_results=min(limit, collection.count()), **kwargs)
                         for metadata, distance in zip(result["metadatas"][0], result["distances"][0]):
                             path = metadata["source_file"]
@@ -195,7 +197,7 @@ class VectorIndex:
                     self.last_error = "向量检索失败，暂用文本检索"
                     self.workspace.save_state("index", {"dirty": True})
                     logger.exception(self.last_error)
-            return self._lexical(query, scope, qq, limit)
+            return self._lexical(query, scope, qq, limit, group_id)
 
     @staticmethod
     def _dedup(hits: list[dict], limit: int):
@@ -207,13 +209,15 @@ class VectorIndex:
                 result.append(hit)
         return result[:limit]
 
-    def _lexical(self, query, scope, qq, limit):
+    def _lexical(self, query, scope, qq, limit, group_id=None):
         terms = set(re.findall(r"[\u3400-\u9fff]|[a-z0-9_]+", query.casefold()))
         hits = []
         for path in self.workspace.files():
             if scope != "auto" and not path.startswith(scope + "/"):
                 continue
             if qq and path.startswith("user/") and not path.startswith(f"user/{qq}/"):
+                continue
+            if group_id and path.startswith("group/") and not path.startswith(f"group/{group_id}/"):
                 continue
             for item in entries(self.workspace.read_memory(path)):
                 overlap = sum(term in item["content"].casefold() for term in terms)

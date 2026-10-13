@@ -3,7 +3,7 @@ featureAdminControls.ai = async function (row) {
   const $$ = selector => [...row.querySelectorAll(selector)];
   const fields = {};
   let items = [], openedPath = '', fileHash = '', savedContent = '', openRevision = 0;
-  const hints = {PERSON:'职业、称呼、关系等稳定背景。', PREFERENCE:'长期喜好、习惯与沟通偏好。', RECENTNESS:'近期计划、状态与待办，建议注明日期。', EVENT:'具体经历、项目背景或持续更新的主题。', GLOSSARY:'跨用户通用的术语、群内梗与公共知识。'};
+  const hints = {PERSON:'职业、称呼、关系等稳定背景。', PREFERENCE:'长期喜好、习惯与沟通偏好。', RECENTNESS:'近期计划、状态与待办，建议注明日期。', EVENT:'具体经历、项目背景或持续更新的主题。', GROUP:'本群群规、专属梗、共同活动与项目；群号为身份主键，主题名称可自由命名。', GLOSSARY:'跨群、跨用户通用的术语与公共知识。'};
   function status(message, error=false) {
     $('[data-ai-status]').textContent=message;
     $('[data-ai-status]').dataset.error=String(error);
@@ -72,7 +72,7 @@ featureAdminControls.ai = async function (row) {
     $('[data-memory-empty]').hidden=true;$('[data-memory-editor]').hidden=false;
     const item=items.find(item=>item.path===openedPath);
     $('[data-memory-title]').textContent=item?.title||openedPath.split('/').at(-1);
-    $('[data-memory-meta]').textContent=(item?.qq?`${item.nickname} · QQ ${item.qq} · `:'公共记忆 · ')+openedPath+(item?.updated_at?' · '+new Date(item.updated_at*1000).toLocaleString():'');
+    $('[data-memory-meta]').textContent=(item?.group_id?`群 ${item.group_id} · `:item?.qq?`${item.nickname} · QQ ${item.qq} · `:'公共记忆 · ')+openedPath+(item?.updated_at?' · '+new Date(item.updated_at*1000).toLocaleString():'');
     updateDirty();renderList();
   }
   async function openFile(path,force=false){
@@ -86,17 +86,17 @@ featureAdminControls.ai = async function (row) {
   function renderList(){
     const container=$('[data-memory-list]');container.replaceChildren();
     const query=$('[data-memory-filter]').value.trim().toLowerCase(),category=$('[data-memory-category]').value;
-    const visible=items.filter(item=>(!category||item.category===category)&&`${item.nickname} ${item.qq} ${item.title} ${item.path}`.toLowerCase().includes(query));
+    const visible=items.filter(item=>(!category||item.category===category)&&`${item.nickname} ${item.qq} ${item.group_id||''} ${item.title} ${item.path}`.toLowerCase().includes(query));
     let previous=null;
     for(const item of visible){
-      const group=item.qq||'common';
-      if(group!==previous){const heading=document.createElement('div');heading.className='ai-file-group';heading.textContent=item.qq?`${item.nickname} · ${item.qq}`:'公共记忆';container.append(heading);previous=group;}
+      const group=item.group_id?`group:${item.group_id}`:item.qq?`user:${item.qq}`:'common';
+      if(group!==previous){const heading=document.createElement('div');heading.className='ai-file-group';heading.textContent=item.group_id?`群聊 · ${item.group_id}`:item.qq?`${item.nickname} · ${item.qq}`:'公共记忆';container.append(heading);previous=group;}
       const button=document.createElement('button');button.type='button';button.className='ai-file';button.setAttribute('aria-pressed',String(item.path===openedPath));
       button.append(document.createTextNode(item.title));
-      if(item.category==='EVENT'){const subtitle=document.createElement('small');subtitle.textContent='主题与事件';button.append(subtitle);}
+      if(['EVENT','GROUP'].includes(item.category)){const subtitle=document.createElement('small');subtitle.textContent=item.category==='GROUP'?'群聊记忆':'主题与事件';button.append(subtitle);}
       button.onclick=async()=>{try{await openFile(item.path);}catch(error){status(error.message,true);}};container.append(button);
     }
-    if(!visible.length){const empty=document.createElement('p');empty.className='ai-muted';empty.textContent=items.length?'没有匹配的记忆。':'暂无用户记忆，点击“新建记忆”开始。';container.append(empty);}
+    if(!visible.length){const empty=document.createElement('p');empty.className='ai-muted';empty.textContent=items.length?'没有匹配的记忆。':'暂无记忆，点击“新建记忆”开始。';container.append(empty);}
   }
   async function refresh(){
     const data=await request('/api/ai/files');items=data.items;
@@ -123,26 +123,27 @@ featureAdminControls.ai = async function (row) {
   const dialog=$('[data-memory-create]');
   function createCategory(){
     const category=$('[data-create-category]').value;
-    $('[data-create-user-field]').hidden=category==='GLOSSARY';$('[data-create-qq]').required=category!=='GLOSSARY';
-    $('[data-create-title-field]').hidden=category!=='EVENT';$('[data-create-title]').required=category==='EVENT';$('[data-create-hint]').textContent=hints[category];
+    $('[data-create-user-field]').hidden=['GLOSSARY','GROUP'].includes(category);$('[data-create-qq]').required=!['GLOSSARY','GROUP'].includes(category);
+    $('[data-create-group-field]').hidden=category!=='GROUP';$('[data-create-group]').required=category==='GROUP';
+    $('[data-create-title-field]').hidden=!['EVENT','GROUP'].includes(category);$('[data-create-title]').required=['EVENT','GROUP'].includes(category);$('[data-create-hint]').textContent=hints[category];
   }
   $('[data-create-category]').onchange=createCategory;
   $('[data-memory-new]').onclick=()=>{
     if(!mayLeave())return;
-    const selected=items.find(item=>item.path===openedPath);$('[data-create-qq]').value=selected?.qq||'';$('[data-create-error]').textContent='';createCategory();dialog.showModal();
+    const selected=items.find(item=>item.path===openedPath);$('[data-create-qq]').value=selected?.qq||'';$('[data-create-group]').value=selected?.group_id||'';$('[data-create-error]').textContent='';createCategory();dialog.showModal();
   };
   $('[data-create-cancel]').onclick=()=>dialog.close();
   $('[data-memory-create-form]').onsubmit=async event=>{
     event.preventDefault();const button=$('[data-create-submit]');button.disabled=true;
     try{
-      const data=await request('/api/ai/file/create',{qq:$('[data-create-qq]').value.trim(),category:$('[data-create-category]').value,title:$('[data-create-title]').value.trim()});
+      const data=await request('/api/ai/file/create',{qq:$('[data-create-qq]').value.trim(),group_id:$('[data-create-group]').value.trim(),category:$('[data-create-category]').value,title:$('[data-create-title]').value.trim()});
       $('[data-memory-filter]').value='';$('[data-memory-category]').value='';
       await refresh();showFile(data);dialog.close();status('记忆文件已创建，可以开始编辑。');$('[data-memory-content]').focus();
     }catch(error){$('[data-create-error]').textContent=error.message;}finally{button.disabled=false;}
   };
   action('[data-memory-test]',async()=>{
     const query=$('[data-memory-query]').value.trim();if(!query)throw new Error('请输入查询内容。');status('正在检索记忆…');
-    const data=await request('/memory/query',{query,target_qq:$('[data-memory-qq]').value.trim()||null,scope:'auto'});
+    const data=await request('/memory/query',{query,target_qq:$('[data-memory-qq]').value.trim()||null,target_group:$('[data-memory-group]').value.trim()||null,scope:$('[data-memory-scope]').value});
     if(!data.success)throw new Error(data.error||'检索失败');
     const container=$('[data-memory-result]');container.replaceChildren();
     for(const hit of data.memories){

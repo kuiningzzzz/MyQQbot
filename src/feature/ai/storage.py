@@ -57,7 +57,7 @@ class Workspace:
         self.root = self.data_root / "workspace"
         self.memory_root = self.root / "memory"
         (self.data_root / ".state").mkdir(parents=True, exist_ok=True)
-        for directory in ("memory/raw", "memory/user", "memory/common", "files", "tmp"):
+        for directory in ("memory/raw", "memory/user", "memory/group", "memory/common", "files", "tmp"):
             path = self.root / directory
             if path.resolve() != path.absolute():
                 raise ValueError("记忆目录不能是符号链接")
@@ -68,8 +68,8 @@ class Workspace:
             atomic_write(self.memory_root / "common/GLOSSARY.md", "# 网络黑话与通用知识\n")
 
     def memory_path(self, relative: str) -> Path:
-        if "\\" in relative or not re.fullmatch(r"(?:user/[0-9]+/(?:PERSON|PREFERENCE|RECENTNESS)\.md|user/[0-9]+/memory/[^/]+\.md|common/GLOSSARY\.md)", relative):
-            raise ValueError("只允许访问 user 用户画像和 common/GLOSSARY.md")
+        if "\\" in relative or not re.fullmatch(r"(?:user/[0-9]+/(?:PERSON|PREFERENCE|RECENTNESS)\.md|user/[0-9]+/memory/[^/]+\.md|group/[0-9]+/[^/\r\n]+\.md|common/GLOSSARY\.md)", relative):
+            raise ValueError("只允许访问合法用户记忆、group/<群号>/<主题>.md 和 common/GLOSSARY.md")
         path = self.memory_root / relative
         if path.resolve() != path.absolute() or not path.resolve().is_relative_to(self.root) or any(part in {"..", "."} for part in Path(relative).parts) or any(char in relative for char in '<>:"|?*'):
             raise ValueError("路径越界")
@@ -77,7 +77,7 @@ class Workspace:
 
     def files(self) -> list[str]:
         result = []
-        for folder in ('user', 'common'):
+        for folder in ('user', 'group', 'common'):
             for file in (self.memory_root / folder).rglob('*.md'):
                 relative = file.relative_to(self.memory_root).as_posix()
                 try:

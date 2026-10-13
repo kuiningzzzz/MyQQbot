@@ -1,9 +1,9 @@
-"""Host-owned self description, refreshed for each chat/memory task."""
+"""Small mandatory rules and current authority; detailed manuals load on demand."""
 import json
 from pathlib import Path
 
 
-DESCRIPTION = Path(__file__).with_name('self_description.md')
+CORE_PROMPT = Path(__file__).with_name('core_prompt.md')
 
 
 def self_context(feature, kind, *, cwd=None, scene=None, requester=None,
@@ -40,9 +40,14 @@ def self_context(feature, kind, *, cwd=None, scene=None, requester=None,
         'ocr_enabled': settings.ocr_enabled,
         'vector_index_enabled': settings.vector_index_enabled,
         'timezone': settings.timezone,
+        'bot_guide': str(feature.workspace.root / '.agents/skills/qqbot-guide/SKILL.md'),
     }
     provider = feature.application_context
-    state['application'] = provider(bool(chat and owner)) if provider else {
-        'features': [], 'notice': '未连接应用功能管理器，无法确认其他模块的实时状态或admin帮助文本。',
-    }
-    return DESCRIPTION.read_text('utf-8') + '\n【当轮宿主状态】\n' + json.dumps(state, ensure_ascii=False)
+    application = provider(False) if provider else {'features': [], 'notice': '模块状态未知'}
+    state['application'] = {'features': [
+        {key: item[key] for key in ('name', 'title', 'enabled') if key in item}
+        for item in application.get('features', [])
+    ]}
+    if application.get('notice'):
+        state['application']['notice'] = application['notice']
+    return CORE_PROMPT.read_text('utf-8') + '\n【当轮宿主状态】\n' + json.dumps(state, ensure_ascii=False, separators=(',', ':'))

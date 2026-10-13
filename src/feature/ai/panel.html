@@ -97,13 +97,14 @@
 <div class="ai-library">
 <aside class="ai-sidebar" aria-label="记忆文件导航">
 <div class="ai-filters">
-<input type="text" data-memory-filter placeholder="搜索昵称、QQ、主题…" aria-label="筛选记忆文件">
+<input type="text" data-memory-filter placeholder="搜索昵称、QQ、群号、主题…" aria-label="筛选记忆文件">
 <select data-memory-category aria-label="筛选分类">
 <option value="">所有分类</option>
 <option value="PERSON">身份与关系</option>
 <option value="PREFERENCE">偏好与习惯</option>
 <option value="RECENTNESS">近期状态</option>
 <option value="EVENT">主题与事件</option>
+<option value="GROUP">群聊记忆</option>
 <option value="GLOSSARY">公共知识</option>
 </select>
 </div>
@@ -111,7 +112,7 @@
 </div>
 </aside>
 <div class="ai-editor">
-<div data-memory-empty class="ai-empty">从左侧选择记忆文件，或点击“新建记忆”。<br>按用户和分类管理，无需填写文件路径。</div>
+<div data-memory-empty class="ai-empty">从左侧选择记忆文件，或点击“新建记忆”。<br>按用户、群聊和分类管理，无需填写文件路径。</div>
 <div data-memory-editor hidden>
 <div class="ai-editor-heading">
 <div>
@@ -147,7 +148,7 @@
 <h3>功能开关</h3>
 <div class="ai-grid" data-ai-switches>
 </div>
-<p class="ai-muted">普通用户可修改自己的记忆和当前会话文件；服务器命令仅主人当前请求可执行。OCR支持图片与PDF。</p>
+<p class="ai-muted">普通用户可修改自己的记忆、当前群的记忆和当前会话文件；服务器命令仅主人当前请求可执行。OCR支持图片与PDF。</p>
 </div>
 <div class="ai-card">
 <h3>本地记忆检索</h3>
@@ -171,8 +172,13 @@
 <div class="ai-grid">
 <label class="ai-field">查询内容<input type="text" data-memory-query placeholder="例如：谁喜欢摄影？">
 </label>
-<label class="ai-field">限定用户（可选）<input type="text" data-memory-qq inputmode="numeric" placeholder="填写QQ号，留空检索全部">
+<label class="ai-field">限定用户（可选）<input type="text" data-memory-qq inputmode="numeric" placeholder="仅筛选用户记忆，留空不限QQ号">
 </label>
+<label class="ai-field">限定群聊（可选）<input type="text" data-memory-group inputmode="numeric" placeholder="仅筛选群记忆，留空不限群号">
+</label>
+<label class="ai-field">检索范围<select data-memory-scope>
+<option value="auto">全部正式记忆</option><option value="user">用户记忆</option><option value="group">群聊记忆</option><option value="common">公共知识</option>
+</select></label>
 </div>
 <div class="ai-editor-actions">
 <button type="button" data-memory-test>检索记忆</button>
@@ -202,10 +208,13 @@
 <option value="PREFERENCE">偏好与习惯</option>
 <option value="RECENTNESS">近期状态</option>
 <option value="EVENT">主题与事件</option>
+<option value="GROUP">群聊记忆</option>
 <option value="GLOSSARY">公共知识</option>
 </select>
 </label>
 <label class="ai-field" data-create-user-field>用户QQ号<input type="text" data-create-qq inputmode="numeric" pattern="[0-9]+" required placeholder="例如：123456789">
+</label>
+<label class="ai-field" data-create-group-field hidden>群号<input type="text" data-create-group inputmode="numeric" pattern="[0-9]+" placeholder="例如：158132790">
 </label>
 <label class="ai-field" data-create-title-field hidden>主题名称<input type="text" data-create-title maxlength="100" placeholder="例如：摄影项目">
 </label>

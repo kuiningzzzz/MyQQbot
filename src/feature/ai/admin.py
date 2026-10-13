@@ -28,6 +28,7 @@ class RecordRequest(BaseModel):
 class QueryRequest(BaseModel):
     query: str = Field(min_length=1, max_length=4000)
     target_qq: str | None = None
+    target_group: str | None = None
     scope: str = "auto"
 
 
@@ -56,6 +57,7 @@ class MemoryDeleteRequest(BaseModel):
 
 class MemoryCreateRequest(BaseModel):
     qq: str = ''
+    group_id: str = ''
     category: str
     title: str = Field(default='', max_length=100)
 
@@ -116,14 +118,15 @@ class AiAdmin:
                 qq = parts[1] if parts[0] == 'user' else ''
                 if qq in f.identity.ids:
                     continue
-                category = 'EVENT' if len(parts) == 4 else Path(path).stem
+                group_id = parts[1] if parts[0] == 'group' else ''
+                category = 'GROUP' if group_id else 'EVENT' if len(parts) == 4 else Path(path).stem
                 file = f.workspace.memory_path(path)
                 try:
                     info = file.stat()
                 except FileNotFoundError:
                     continue  # Agent may delete a file while the list is read.
-                items.append({'path': path, 'qq': qq, 'nickname': nicknames.get(qq, qq), 'category': category,
-                    'title': Path(path).stem if category == 'EVENT' else labels.get(category, category),
+                items.append({'path': path, 'qq': qq, 'group_id': group_id, 'nickname': nicknames.get(qq, qq), 'category': category,
+                    'title': Path(path).stem if category in {'EVENT', 'GROUP'} else labels.get(category, category),
                     'updated_at': info.st_mtime, 'size': info.st_size})
             return {'files': [item['path'] for item in items], 'items': items}
 
@@ -152,6 +155,12 @@ class AiAdmin:
             try:
                 if data.category == 'GLOSSARY':
                     path = 'common/GLOSSARY.md'
+                elif data.category == 'GROUP':
+                    if not data.group_id.isascii() or not data.group_id.isdigit():
+                        raise ValueError('请填写有效的群号')
+                    if not data.title.strip() or '/' in data.title or '\\' in data.title or '\n' in data.title or '\r' in data.title:
+                        raise ValueError('请填写不含路径分隔符或换行的主题名称')
+                    path = f'group/{data.group_id}/{data.title.strip()}.md'
                 else:
                     if not data.qq.isascii() or not data.qq.isdigit() or data.qq in f.identity.ids:
                         raise ValueError('请填写有效的用户QQ号，不能使用机器人账号')
@@ -166,7 +175,7 @@ class AiAdmin:
                 target = f.workspace.memory_path(path)
                 if target.exists():
                     raise ValueError('该记忆文件已存在，请从列表打开')
-                text = '# ' + (data.title.strip() if data.category == 'EVENT' else labels[data.category]) + '\n\n'
+                text = '# ' + (data.title.strip() if data.category in {'EVENT', 'GROUP'} else labels[data.category]) + '\n\n'
                 await asyncio.to_thread(f.workspace.write_memory, path, text, digest(''))
                 f.workspace.save_state('index', {'dirty': True})
                 return {'path': path, 'content': text, 'hash': digest(text)}

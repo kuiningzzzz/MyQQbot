@@ -20,6 +20,16 @@ test('ordinary user can use native own-memory and scene writes', () => {
   assert.match(check('write', 'files/another/result.txt'), /PERMISSION_DENIED/);
   assert.match(check('write', '.agents/skills/memory-management/SKILL.md'), /PERMISSION_DENIED/);
 });
+test('group memory writes require the actual current group, private chats cannot borrow it', () => {
+  assert.equal(check('write', 'memory/group/158132790/群规.md', {group_id:'158132790'}), undefined);
+  assert.equal(check('edit', 'memory/group/158132790/共同项目.md', {group_id:'158132790',role:'scheduled'}), undefined);
+  assert.match(check('write', 'memory/group/42/群规.md', {group_id:'158132790'}), /PERMISSION_DENIED/);
+  assert.match(check('write', 'memory/group/158132790/群规.md'), /PERMISSION_DENIED/);
+  for (const file of ['memory/group/158132790/topic/细节.md','memory/group/158132790/群规.txt','memory/group/abc/群规.md']) {
+    assert.match(check('write', file, {group_id:'158132790'}), /PERMISSION_DENIED/);
+  }
+  assert.equal(check('write', 'memory/group/42/群规.md', {owner:true}), undefined);
+});
 test('main delegates every execution even for owner; children cannot spawn or chat', () => {
   assert.match(check('write', 'files/scene/a', {role:'main', owner:true}), /DELEGATION_REQUIRED/);
   assert.match(check('web_search', '.', {role:'main', owner:true}), /DELEGATION_REQUIRED/);
@@ -36,7 +46,7 @@ test('owner status belongs only to current task and expired tasks never run', ()
   assert.match(check('read', '../secret'), /OWNER_REQUIRED/);
 });
 test('scheduled forks can execute and deliver, but do not inherit owner or spawn authority', () => {
-  for (const name of ['send_message','send_file','web_search','schedule_create','schedule_list','schedule_update','schedule_delete','integrate_memory']) {
+  for (const name of ['send_message','send_file','web_search','get_bot_help','schedule_create','schedule_list','schedule_update','schedule_delete','integrate_memory']) {
     assert.equal(check(name, '.', {role:'scheduled'}), undefined);
     assert.match(check(name, '.', {kind:'memory',role:'memory'}), /PERMISSION_DENIED/);
     if (name === 'send_message') assert.equal(check(name, '.', {role:'main',owner:true}), undefined);
@@ -48,6 +58,9 @@ test('scheduled forks can execute and deliver, but do not inherit owner or spawn
 test('maintenance writes only staged memory, cannot send or execute', () => {
   const maintenance = {...task,kind:'memory',cwd:path.join(work,'tmp/memory-stage')};
   assert.equal(denial(maintenance,'write',{file_path:'memory/user/123/PERSON.md'},work), undefined);
+  assert.equal(denial(maintenance,'write',{file_path:'memory/group/42/群规.md'},work), undefined);
+  assert.match(denial(maintenance,'write',{file_path:path.join(work,'memory/group/42/群规.md')},work), /PERMISSION_DENIED/);
+  assert.match(denial(maintenance,'write',{file_path:'memory/group/42/nested/群规.md'},work), /PERMISSION_DENIED/);
   assert.match(denial(maintenance,'write',{file_path:path.join(work,'memory/user/123/PERSON.md')},work), /PERMISSION_DENIED/);
   assert.match(denial(maintenance,'write',{file_path:'memory/user/999/PERSON.md'},work), /PERMISSION_DENIED/);
   assert.match(denial(maintenance,'send_message',{},work), /PERMISSION_DENIED/);
