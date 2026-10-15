@@ -1066,3 +1066,100 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         await self.f.dsh.prune()
         self.assertFalse(self.f.dsh.has_session('chat'))
         self.assertEqual(list((self.f.dsh.home / 'sessions').glob('*/*/*.jsonl')), [])
+
+
+class RobustnessTests(unittest.IsolatedAsyncioTestCase):
+    """模型服务抽风（503、流式工具参数损坏）或回合卡死时，队列必须继续推进。"""
+
+    async def asyncSetUp(self):
+        await StateTests.asyncSetUp(self)
+
+    async def asyncTearDown(self):
+        await StateTests.asyncTearDown(self)
+
+    def context(self, text, replies, group=12):
+        async def reply(ctx, message):
+            replies.append(message)
+        bot = SimpleNamespace(reply=reply)
+        return MessageContext(bot=bot, event={'_ai_arrival_forced': True}, websocket=None,
+            msg=text, message_type='group', user_id=123, group_id=group)
+
+    async def test_failed_turn_keeps_queue_moving(self):
+        replies, calls = [], []
+        async def run(kind, prompt, **kwargs):
+            calls.append(json.loads(prompt)['request'])
+            if len(calls) == 1:
+                raise RuntimeError("dsh本轮未完成：{'message': 'Service is too busy', 'status': 503}")
+            if kwargs['current']():
+                await kwargs['handler']('send_message', {'message': '第二条的回复'})
+            return {'finish_reason': 'completed'}
+        self.f.dsh.run = run
+        await self.f.engine.handle(self.context('第一条', replies))
+        await self.f.engine.handle(self.context('第二条', replies))
+        await asyncio.gather(*list(self.f.engine.tasks.values()), return_exceptions=True)
+        self.assertEqual(calls, ['第一条', '第二条'])
+        self.assertIn('第二条的回复', replies)
+        # 失败的回合对请求者给出明确提示，而不是静默吞掉。
+        self.assertIn('这次处理失败了，请稍后再试。', replies)
+
+    async def test_hung_turn_times_out_and_releases_gate(self):
+        self.f.dsh.limits = lambda: (0.3, 0.5)
+        self.f.dsh.start = AsyncMock()
+        self.f.dsh.url = 'http://127.0.0.1:1'
+        async def request(endpoint, data, timeout=30):
+            if endpoint == '/run':
+                await asyncio.sleep(30)
+            return {}
+        self.f.dsh.request = request
+        with self.assertRaises(RuntimeError) as caught:
+            await self.f.dsh.run('chat', '{}', task_id='hung', handler=AsyncMock(), current=lambda: True)
+        self.assertIn('超时', str(caught.exception))
+        # 锁必须已释放，否则后续回合会永久排队。
+        lock = self.f.dsh.kind_locks['chat']
+        await asyncio.wait_for(lock.acquire(), timeout=1)
+        lock.release()
+
+    async def test_leaked_gate_is_force_reset(self):
+        self.f.dsh.limits = lambda: (0.2, 0.3)
+        recovered = []
+        original = self.f.dsh.recover_stalled
+        async def recover(kind=None):
+            recovered.append(kind)
+            await original(kind)
+        self.f.dsh.recover_stalled = recover
+        leaked = self.f.dsh.kind_locks['chat']
+        await leaked.acquire()  # 模拟上一回合泄漏了锁
+        gate = await asyncio.wait_for(self.f.dsh.acquire_gate('chat'), timeout=5)
+        self.assertEqual(recovered, ['chat'])
+        self.assertIsNot(gate, leaked)
+        gate.release()
+
+    async def test_watchdog_restarts_worker_with_pending_backlog(self):
+        self.f.config.save({'dsh_timeout_seconds': 30})
+        async def run(kind, prompt, **kwargs):
+            return {'finish_reason': 'completed'}
+        self.f.dsh.run = run
+        await self.f.engine.pending.put((self.context('排队中', []), True, None))
+        self.f.engine.tasks.clear()  # 回调竞态：有积压但没有工人
+        self.f.engine.watchdog()
+        self.assertTrue(self.f.engine.tasks)
+        await asyncio.gather(*list(self.f.engine.tasks.values()), return_exceptions=True)
+        self.assertTrue(self.f.engine.pending.empty())
+
+    async def test_watchdog_force_recovers_wedged_turn(self):
+        self.f.config.save({'dsh_timeout_seconds': 30})
+        self.f.dsh.recover_stalled = AsyncMock()
+        async def wedged():
+            await asyncio.sleep(3600)
+        worker = asyncio.create_task(wedged())
+        self.f.engine.tasks['global'] = worker
+        self.f.engine.current = {'key': 'group:12', 'qq': '123', 'valid': True, 'attempts': {}}
+        self.f.engine.last_progress = time.monotonic() - 100000
+        self.f.engine.watchdog()
+        for _ in range(50):
+            if self.f.dsh.recover_stalled.await_count:
+                break
+            await asyncio.sleep(0.05)
+        self.f.dsh.recover_stalled.assert_awaited()
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)

@@ -129,10 +129,20 @@ class MemoryRuntime:
         self.running = True
         await self.tick()
         self.scheduler = asyncio.create_task(self._schedule())
+        self.watchdog_task = asyncio.create_task(self._watchdog())
+
+    async def _watchdog(self):
+        # 独立于清理循环：清理本身也可能被泄漏的锁拖住。
+        while self.running:
+            await asyncio.sleep(30)
+            try:
+                self.feature.engine.watchdog()
+            except Exception:
+                logger.exception('聊天看门狗执行失败')
 
     async def stop(self):
         self.running = False
-        tasks = [t for t in (self.worker, self.scheduler) if t and not t.done()]
+        tasks = [t for t in (self.worker, self.scheduler, getattr(self, 'watchdog_task', None)) if t and not t.done()]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

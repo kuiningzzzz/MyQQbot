@@ -29,6 +29,9 @@ class Settings(BaseModel):
     memory_auto_learn: bool = True
     raw_retention_days: int = Field(default=30, ge=30, le=30)
     memory_batch_size: int = Field(default=100, ge=100, le=100)
+    # 单轮 dsh 任务的硬上限：模型服务过载时官方循环会长时间重试，
+    # 没有上限会让整个聊天队列永久停摆。
+    dsh_timeout_seconds: int = Field(default=600, ge=30, le=3600)
     vector_index_enabled: bool = True
     embedding_model: str = "BAAI/bge-small-zh-v1.5"
     timezone: str = "Asia/Shanghai"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import secrets
@@ -15,6 +16,7 @@ import httpx
 from .storage import atomic_write
 
 DSH_VERSION = "0.2.0-rc.2"
+logger = logging.getLogger(__name__)
 
 
 class DshRuntime:
@@ -149,13 +151,51 @@ class DshRuntime:
                 raise RuntimeError(result.get("error", "dsh操作失败"))
             return result.get("result", {})
 
+    def limits(self):
+        """单轮任务的 (请求超时, 总截止时间)；模型服务过载时用于让队列继续。"""
+        try:
+            value = int(self.feature.config.load().dsh_timeout_seconds)
+        except Exception:
+            value = 600
+        timeout = float(max(30, min(3600, value)))
+        return timeout, timeout + 15.0
+
+    async def acquire_gate(self, kind):
+        """有界地等待同类回合，超时即判定上一回合泄漏并强制复位运行时。"""
+        lock = self.kind_locks.setdefault(kind, asyncio.Lock())
+        wait = self.limits()[1] * 2
+        try:
+            await asyncio.wait_for(lock.acquire(), timeout=wait)
+            return lock
+        except TimeoutError:
+            self.last_error = '等待回合锁超时，已强制复位 dsh 运行时'
+            logger.error('等待 %s 回合超过 %.0f 秒仍未释放，判定上一回合泄漏，强制复位 dsh 运行时', kind, wait)
+            await self.recover_stalled(kind)
+            lock = self.kind_locks[kind]
+            await lock.acquire()
+            return lock
+
+    async def recover_stalled(self, kind=None):
+        """终止卡死的 dsh 内核并换发新锁，让排队的回合重新开始。"""
+        try:
+            await self.stop()
+        except Exception:
+            logger.exception('复位 dsh 运行时失败')
+        if isinstance(kind, str):
+            self.kind_locks[kind] = asyncio.Lock()
+        else:
+            for name in list(self.kind_locks):
+                self.kind_locks[name] = asyncio.Lock()
+        self.turn_lock = asyncio.Lock()
+
     async def run(self, kind, prompt, *, task_id, handler, current, owner=False, qq="", cwd=None, system="", scene_dir="", group_id="", expires_at=None, role=None, worker_system='', spawn=None, delivery=False, revoke=None):
         # Root conversations are ordered independently; native forks never
         # hold a root turn lock while doing their potentially long work.
-        gate = asyncio.Lock() if role == 'scheduled' else self.kind_locks[kind]
-        async with gate:
+        gate = None if role == 'scheduled' else await self.acquire_gate(kind)
+        try:
             if not current():
                 return {"cancelled": True}
+            turn_timeout, turn_deadline = self.limits()
             async with self.turn_lock:
                 await self.start()
                 self.active[task_id] = {"handler": handler, "current": current, 'spawn': spawn, 'revoke': revoke}
@@ -171,7 +211,7 @@ class DshRuntime:
                 request_task = asyncio.create_task(self.request('/scheduled' if role == 'scheduled' else '/run', {"kind": kind, "role": role or ('main' if kind == 'chat' else 'memory'), 'worker_system': worker_system,
                     'delivery': delivery, "task_id": task_id, "owner": owner, "qq": qq,
                     "prompt": prompt, "system": system, "self_ids": sorted(self.feature.identity.ids), "scene_dir": scene_dir, "group_id": group_id, "cwd": str(cwd or self.feature.workspace.root),
-                    "expires_at": deadline * 1000}, timeout=None))
+                    "expires_at": deadline * 1000}, timeout=turn_timeout))
                 async def watch():
                     while not request_task.done():
                         if not current():
@@ -179,7 +219,14 @@ class DshRuntime:
                             return
                         await asyncio.sleep(.25)
                 monitor = asyncio.create_task(watch())
-                return await request_task
+                try:
+                    return await asyncio.wait_for(request_task, timeout=turn_deadline)
+                except TimeoutError as exc:
+                    # 模型服务长时间无响应时不能占着队列：取消本轮并让上层
+                    # 记录失败，后续消息继续处理。
+                    request_task.cancel()
+                    self.last_error = 'dsh回合超时'
+                    raise RuntimeError('dsh回合超时：超过 %.0f 秒未返回，已取消本轮' % turn_timeout) from exc
             except BaseException as exc:
                 if revoke:
                     revoke()
@@ -196,6 +243,9 @@ class DshRuntime:
                     monitor.cancel()
                     await asyncio.gather(monitor, return_exceptions=True)
                 self.active.pop(task_id, None)
+        finally:
+            if gate is not None:
+                gate.release()
 
     async def cancel(self, task_id):
         task = self.active.pop(task_id, None)
@@ -213,7 +263,10 @@ class DshRuntime:
         children = [task for task in self.active.values() if task.get('finish')]
         self.active.clear()
         for task in children:
-            await task['finish']({'state': 'cancelled', 'output': ''})
+            try:
+                await asyncio.wait_for(task['finish']({'state': 'cancelled', 'output': ''}), timeout=5)
+            except Exception:
+                logger.exception('后台任务收尾失败')
         if self.process and self.process.returncode is None:
             if self.url:
                 try:
@@ -225,12 +278,22 @@ class DshRuntime:
                 await asyncio.wait_for(self.process.wait(), 10)
             except TimeoutError:
                 self.process.kill()
-                await self.process.wait()
+                try:
+                    await asyncio.wait_for(self.process.wait(), 5)
+                except TimeoutError:
+                    logger.error('dsh进程未能退出，复位流程继续')
         if self.server:
             self.server.close()
             await self.server.wait_closed()
         if self.diagnostic_task:
-            await self.diagnostic_task
+            # 诊断任务在读 stderr；进程异常时它可能永不返回，不能让它拖住复位。
+            try:
+                await asyncio.wait_for(asyncio.shield(self.diagnostic_task), timeout=5)
+            except TimeoutError:
+                self.diagnostic_task.cancel()
+                await asyncio.gather(self.diagnostic_task, return_exceptions=True)
+            except Exception:
+                pass
         self.process = self.server = None
         self.url = ""
 
@@ -242,6 +305,10 @@ class DshRuntime:
         return bool(item and item.get('expires', 0) > time.time() * 1000 and any((self.home / 'sessions').glob('*/' + item['id'])))
 
     async def prune(self):
+        if self.turn_lock.locked():
+            # 有回合正持有锁（或锁已泄漏）；不要在这里排队等待，交给看门狗处理。
+            logger.error('dsh 清理跳过：回合锁被占用')
+            return
         async with self.turn_lock:
             manifest = self.home / 'qqbot-sessions.json'
             retention = self.home / 'qqbot-retention.json'

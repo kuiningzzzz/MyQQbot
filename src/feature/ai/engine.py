@@ -35,6 +35,9 @@ class ChatEngine:
         self.current = None
         self.background = {}
         self.cleanup_tasks = set()
+        # 最近一次回合推进的时间：看门狗据此判断队列是否已经停摆。
+        self.last_progress = time.monotonic()
+        self.recovering = False
 
     def reset_transient(self):
         if self.current:
@@ -94,6 +97,7 @@ class ChatEngine:
         # Also resume requests queued while a disabled worker was unwinding.
         if self.tasks.get('global') is worker:
             self.tasks.pop('global')
+        self.last_progress = time.monotonic()
         if not self.pending.empty() and self.feature.enabled and self.feature.config.load().chat_enabled:
             self._start_worker()
 
@@ -103,6 +107,7 @@ class ChatEngine:
                 ctx, forced, completion = self.pending.get_nowait()
                 if not self.feature.enabled or not self.feature.config.load().chat_enabled:
                     continue
+                self.last_progress = time.monotonic()
                 try:
                     await self._turn(ctx, self.feature.scene_key(ctx), forced, completion=completion)
                 except asyncio.CancelledError:
@@ -110,11 +115,62 @@ class ChatEngine:
                 except Exception:
                     logger.exception('dsh聊天任务失败')
                     if completion is None and forced and self.current and self.current['valid'] and not self.current['attempts'] and self.feature.enabled and self.feature.config.load().chat_enabled:
-                        await ctx.bot.reply(ctx, '这次处理失败了，请稍后再试。')
+                        try:
+                            await ctx.bot.reply(ctx, '这次处理失败了，请稍后再试。')
+                        except Exception:
+                            logger.exception('发送失败提示失败')
                 finally:
                     self.current = None
+                    self.last_progress = time.monotonic()
         finally:
             self.current = None
+            self.last_progress = time.monotonic()
+
+    def watchdog(self):
+        """周期检查：工人协程长时间不推进就强制复位，避免队列永久停摆。"""
+        if self.recovering:
+            return
+        worker = self.tasks.get('global')
+        if worker is None or worker.done():
+            self.tasks.pop('global', None)
+            if not self.pending.empty() and self.feature.enabled and self.feature.config.load().chat_enabled:
+                logger.error('聊天队列有积压但没有工人协程，重新拉起')
+                self.last_progress = time.monotonic()
+                self._start_worker()
+            return
+        if self.pending.empty() and self.current is None:
+            self.last_progress = time.monotonic()
+            return
+        try:
+            limit = max(300.0, float(self.feature.config.load().dsh_timeout_seconds) * 3)
+        except Exception:
+            limit = 1800.0
+        idle = time.monotonic() - self.last_progress
+        if idle < limit:
+            return
+        logger.error('聊天回合已 %.0f 秒没有推进，判定卡死，强制复位 dsh 运行时', idle)
+        self.recovering = True
+        self.last_progress = time.monotonic()
+        recovery = asyncio.create_task(self._recover())
+        recovery.add_done_callback(self._recovered)
+
+    def _recovered(self, task):
+        self.recovering = False
+        if not task.cancelled() and task.exception():
+            logger.error('聊天队列复位失败：%s', task.exception())
+
+    async def _recover(self):
+        worker = self.tasks.pop('global', None)
+        self.current = None
+        try:
+            await self.feature.dsh.recover_stalled()
+        except Exception:
+            logger.exception('复位 dsh 运行时失败')
+        if worker and not worker.done():
+            worker.cancel()
+        self.last_progress = time.monotonic()
+        if not self.pending.empty() and self.feature.enabled and self.feature.config.load().chat_enabled:
+            self._start_worker()
 
     async def _turn(self, ctx, key, forced, revision=None, completion=None):
         f = self.feature
