@@ -189,6 +189,13 @@ export async function apply(ctx) {
   }
   async function createHandle(kind, data) {
     let generation = generations[kind];
+    // 工作目录变了（例如从容器部署迁到原生部署）旧物理会话就不能复用：
+    // dsh 不允许改变会话的 cwd，这里直接轮换成新会话，Python 会从档案重新播种上下文。
+    if (generation && generation.cwd !== data.cwd) {
+      generation = null;
+      delete generations[kind];
+      writeJSON(manifest, generations);
+    }
     // Roll physical logs weekly without importing their raw history. Logical
     // conversations persist via memory + Python's retained recent context.
     if (generation && generation.expires <= Date.now()) {
@@ -208,7 +215,7 @@ export async function apply(ctx) {
     if (generation && stored(generation.id)) {
       handle = await ctx.agents.resume({resumeSessionId: generation.id, agentOptions: data.options, setup});
     } else {
-      generation = {id: kind + '-' + randomUUID(), created: Date.now(), expires: Math.min(data.expires_at, Date.now() + 7 * 86400000)};
+      generation = {id: kind + '-' + randomUUID(), created: Date.now(), expires: Math.min(data.expires_at, Date.now() + 7 * 86400000), cwd: data.cwd};
       handle = await ctx.agents.create({sessionId: generation.id, meta: {cwd: data.cwd}, agentOptions: data.options, setup});
       generations[kind] = generation;
       writeJSON(manifest, generations);

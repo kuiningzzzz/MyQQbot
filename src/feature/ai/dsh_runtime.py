@@ -302,7 +302,11 @@ class DshRuntime:
         if not path.exists():
             return False
         item = json.loads(path.read_text('utf-8')).get(kind)
-        return bool(item and item.get('expires', 0) > time.time() * 1000 and any((self.home / 'sessions').glob('*/' + item['id'])))
+        # 工作目录变化（容器 → 原生部署等）会让旧会话失效：这里按“无会话”处理，
+        # 以便重新播种上下文；插件的 cwd 校验同样会轮换掉旧物理会话。
+        return bool(item and item.get('expires', 0) > time.time() * 1000
+            and item.get('cwd') == str(self.feature.workspace.root)
+            and any((self.home / 'sessions').glob('*/' + item['id'])))
 
     async def prune(self):
         if self.turn_lock.locked():
