@@ -22,4 +22,5 @@ data/
 **/node_modules/
 !src/feature/ai/skills/**/*.md
 !src/feature/ai/*.md
+!THIRD_PARTY_NOTICES.md
 .test_*

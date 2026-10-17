@@ -1,194 +1,276 @@
 # MyQQbot
 
-一个基于 FastAPI + WebSocket 的轻量 QQ 机器人后端，面向 NapCat / OneBot 风格事件上报。
+一个基于 NapCat / OneBot 的自部署 QQ 机器人。主要功能是带长期记忆的 AI 聊天、文件处理和定时任务，也提供网页管理界面。
 
-## 项目结构
+项目使用 Python 处理 QQ 消息和业务逻辑，使用 [DeepSeek Harness（dsh）](https://github.com/deepseek-ai/deepseek-harness) 运行 AI。QQ 登录和消息收发由单独部署的 NapCat 完成，本仓库不包含 NapCat。
+
+适合个人和熟人群使用。目前不是面向陌生用户的多租户服务，也不建议把接口直接开放到公网。部署前请阅读下方的[数据和权限边界](#数据和权限边界)，公开仓库前的已知问题见[检查记录](docs/开源前检查.md)。
+
+## AI 聊天与长期记忆
+
+在群里 @ 机器人或提到它的网名即可唤醒，之后 60 秒内可以继续交谈；私聊会直接受理。机器人使用一份统一人设，可以在管理界面设置 QQ 号、网名、账号说明和人设正文。
+
+可以直接提出这类请求：
+
+- “请记住，我最近在学摄影。”
+- “帮我把这份资料整理成 Markdown 文件，做好后发给我。”
+- “生成一份 Docker 使用说明，用聊天记录发给我。”
+- “撤回我刚才引用的那条消息。”
+
+### 对话与后台任务
+
+所有群聊和私聊共用一个主对话，每条消息都带有场景、发送者、时间和消息 ID。主 Agent 负责聊天和分派，读写文件、搜索、修改记忆等工作交给一次性后台子 Agent。长任务执行时，主对话仍能接待新消息。
+
+子 Agent 完成后返回结果；文件可以直接发回发起任务的会话，文字由主对话决定是否发送。QQ 消息必须通过发送工具交付，模型的最终回答不会自动转成 QQ 消息，所以静默请求可以不回复。
+
+目前提供的能力包括：
+
+- **记忆读写**：自然语言要求“记住、纠正、忘记”时，可以立即修改允许范围内的记忆。
+- **联网查询**：通过 dsh 原生搜索和网页读取工具查询资料，需要可用的 DeepSeek 网络接口。
+- **图片和 PDF 理解**：结合 OCR、PDF 文本层和视觉模型生成转述。PDF 自动提取前 10 页文本、查看前 4 页图像，不代表完整读完长文档。
+- **文件处理与发送**：按请求下载附件，在当前会话的工作目录创建或修改文件，再发送到群聊或私聊；单个文件最多 20 MiB。能处理哪些格式，取决于安装的软件和当次任务权限。
+- **文字与聊天记录**：可以发送普通消息，也可以把整理后的文本发成 QQ 合并转发卡片。
+- **撤回消息**：支持撤回自己或群友的消息，但最终受 QQ 权限限制。权限不足会明确返回给 Agent；私聊不能撤回对方的消息。
+- **群聊总结**：`/short 50` 总结当前群仍保留的最近消息，支持 10–200 条。
+
+模型固定使用 `deepseek-flash`，API Key 从环境变量读取。内核锁定为 `@deepseek-ai/dsh@0.2.1-rc.2`，属于预发布版本；输出预算和上下文压缩由 dsh 管理，宿主另有超时与队列恢复保护。
+
+### 记忆如何保存
+
+聊天原文和长期记忆分别保存。人类消息进入持久队列，开启自动学习后，每满 100 条由独立的记忆对话整理一次。整理先写暂存副本，完成后校验文件范围和修改冲突，再发布到正式记忆库；失败不会把这一批消息标成已处理。管理员也可以手动整理不足 100 条的消息。
+
+长期记忆是可以直接编辑的 Markdown 文件，本地向量索引用于检索，索引不可用时会退回文本搜索。默认嵌入模型为 `BAAI/bge-small-zh-v1.5`。
+
+```text
+data/ai/workspace/memory/
+├── raw/                         原始事件与原文，滚动保留 30 天
+├── user/<QQ>/
+│   ├── PERSON.md                身份、背景、关系
+│   ├── PREFERENCE.md            长期偏好、习惯
+│   ├── RECENTNESS.md            近期状态、计划
+│   └── memory/<主题>.md         经历、事件和项目背景
+├── group/<群号>/<主题>.md       群规、活动、共同项目等
+└── common/GLOSSARY.md           通用术语与公共知识
+```
+
+群记忆只支持这一层 Markdown 文件，不支持继续嵌套目录。详细的分类、检索范围、SKILL 和权限规则见 [AI 服务说明](docs/AI服务架构与运行说明.md)。
+
+## 定时任务
+
+支持群聊和私聊，时间统一按北京时间计算。任务分为两类：
+
+| 类型 | 用途 | 指令 |
+| --- | --- | --- |
+| 固定消息 | 到点原样发送文字，例如生日祝福、喝水提醒；不需要 AI | `/timing-task` |
+| AI 任务 | 到点执行提示词，例如查新闻、生成日报、整理新增记忆 | `/timing-task-AI` |
+
+固定消息可以保留空格、换行和群聊中的真实 @。AI 任务每次从主聊天已完成的历史中 fork 一个独立分支，注入 `[定时任务]` 提示，完成后删除分支日志，生成的文件和已提交的记忆修改可以保留。
+
+```text
+/timing-task -d 8-0-0 早上好，记得吃早餐
+/timing-task -w 1-9-0-0 本周计划别忘了整理
+/timing-task -y-cn 8-15-0-0-0 中秋快乐
+/timing-task-AI -d 8-0-0 查询今天的科技新闻，核对日期和来源后在本群播报
+/timing-task-AI -d 2-0-0 整理新增记忆，不发送聊天消息
+
+/timing-task list
+/timing-task-AI list
+/timing-task del <任务ID>
+```
+
+| 选项 | 周期 | 时间格式 |
+| --- | --- | --- |
+| `-y` | 每年 | `月-日-时-分-秒` |
+| `-m` | 每月 | `日-时-分-秒` |
+| `-w` | 每周 | `星期-时-分-秒`，1 为周一、7 为周日 |
+| `-d` | 每天 | `时-分-秒` |
+| `-o` | 仅一次 | `年-月-日-时-分-秒`，建议用四位年份 |
+
+各项不必补零。`-y-cn`、`-m-cn`、`-o-cn` 使用中国农历；农历年循环只在普通月份提醒，月循环包含闰月，没有对应日期的月份会跳过。循环时间已经过去时安排下一次，一次性任务不能设置在过去。
+
+也可以直接对 AI 说“每天早上八点提醒本群吃早餐”。Agent 能增删改查当前会话的两类任务；管理界面能管理全部任务。**同一群里的成员都能管理本群任务，不是只能删除自己创建的任务**，但不能通过群聊指令操作别的群或私聊。
+
+调度状态保存在 SQLite 中。离线后恢复时不会逐次补发所有错过的周期；发送结果未知时不自动重试。更多例子和农历规则见[定时任务说明](docs/定时任务使用说明.md)。
+
+## 部署
+
+需要先有一个能正常运行的 NapCat。模型接口、本地嵌入模型下载和可选内容服务，也需要部署环境能够访问对应网络。
+
+以下命令以 Linux 为例。Docker 镜像会安装 Node.js、本地嵌入依赖、Tesseract、Poppler 和 Chromium，首次构建可能较久。
+
+### 1. 准备配置和管理密码
+
+在仓库根目录复制配置：
+
+```bash
+cp .env.example .env
+```
+
+使用 AI 时，在 `.env` 中填写：
+
+```dotenv
+DEEPSEEK_API_KEY=填写你自己的Key
+```
+
+**第一次启动前，先创建 `data/admin/auth.json`，设置自己的管理密码。** 文件内容如下，请替换占位文字，不要直接照抄作为密码：
+
+```json
+{"password": "替换为你自己生成的长随机密码"}
+```
+
+这个文件目前保存明文密码，应限制文件访问权限；修改后重启服务生效。代码仍有固定初始密码，不应依赖它来保护部署；这里不再转载该口令。
+
+### 2. Docker 启动
+
+```bash
+docker compose up -d --build
+docker compose logs -f myqqbot
+```
+
+按仓库自带的 Compose 配置，宿主机访问地址是：
+
+| 服务 | 地址 |
+| --- | --- |
+| NapCat 反向 WebSocket | `ws://127.0.0.1:8081/ws` |
+| 管理界面 | `http://127.0.0.1:10012` |
+
+两个端口都只发布到宿主机回环地址。Compose 不会自动安装 nginx，也不会自动配置 HTTPS；远程管理可用 SSH 隧道或自己配置反向代理，具体见[远程访问注意事项](#远程访问注意事项)。
+
+`./data` 挂载到容器的 `/app/data`，重建镜像不会清空这部分数据。**在容器里临时安装的软件不属于这个挂载，重建容器后可能丢失**；需要长期使用的软件应写入自己的镜像。
+
+### 3. 连接 NapCat
+
+在 NapCat 中添加 **WebSocket 客户端（反向 WebSocket）**，填写上面的 `/ws` 地址，消息上报格式选择 `array`。本项目按 NapCat 的消息段数组处理消息，不能改成纯字符串上报。配置方式可参考 [NapCat 官方说明](https://doc.napneko.icu/config/basic)。
+
+上面的回环地址只适用于 NapCat 在同一宿主机上运行的情况。NapCat 在其他容器或设备上时，需要配置它真正能访问的内网地址，同时限制端口来源。**当前后端没有验证 OneBot 连接 token，不要直接把 8081 开放到公网。**
+
+JM、Pixiv 的部分文件通过 HTTP 地址交给 NapCat 获取。跨容器或跨设备时，还要把 `MYQQBOT_PUBLIC_BASE_URL` 设置为 NapCat 能访问的机器人 HTTP 地址；这里的 `127.0.0.1` 指的是 NapCat 自己所在的网络环境。
+
+### 4. 配置机器人
+
+打开管理界面，进入“主人管理”，生成一次性鉴别码，再用自己的 QQ 向机器人发送页面给出的 `/set-master` 指令。随后在“AI 服务”中配置机器人 QQ 号、网名、人设和需要开启的功能。
+
+主人授权允许对应任务在服务进程权限内使用命令和工作区外文件。Docker 下通常只影响容器及挂载目录；原生部署则可能影响服务器本身。建议使用专用普通系统账号运行，不要为方便直接授予 root 或挂载整个宿主根目录。
+
+### 原生运行和 systemd
+
+需要 Python 3.11+、Node.js 24+。Linux 还需要 Bash、Git、ripgrep；图片和 PDF 处理需要 Tesseract 的简体中文、繁体中文、英文语言包以及 Poppler。
+
+```bash
+# 安装 Python/npm 依赖并准备迁移；在已经安装 Node.js 的环境执行
+bash deploy/install-host.sh
+
+# 只监听本机，便于首次配置
+MYQQBOT_WS_HOST=127.0.0.1 MYQQBOT_ADMIN_HOST=127.0.0.1 .venv/bin/python -m src.main
+```
+
+这个启动方式的管理端口默认是 **10010**。systemd 模板使用 **10012**，可按实际需要修改。原生监听地址可通过 `MYQQBOT_WS_HOST`、`MYQQBOT_WS_PORT`、`MYQQBOT_ADMIN_HOST`、`MYQQBOT_ADMIN_PORT` 设置。
+
+长期运行可参考 [systemd 模板](deploy/myqqbot.service)，修改 `User`、目录和环境文件路径后再安装。环境配置可放 `.env.host`，模板会通过 `EnvironmentFile` 读取。Pixiv 自动登录还需单独安装 Chromium：
+
+```bash
+.venv/bin/python -m playwright install --with-deps chromium
+```
+
+完整部署和升级细节见 [AI 服务说明](docs/AI服务架构与运行说明.md)。
+
+## 管理界面
+
+网页中可以开关功能、编辑人设和记忆、重建索引、手动整理消息队列，以及新增、修改、暂停或删除定时任务。记忆编辑带版本冲突检查，避免覆盖 Agent 刚写入的内容。
+
+另有实时日志、主人绑定和帮助文本编辑。`/help` 会用 QQ 聊天记录发送帮助菜单，`/hello` 可用于检查消息链路是否连通。
+
+### 远程访问注意事项
+
+管理界面能查看聊天记录、记忆和日志，也能修改主人绑定、账号配置与定时任务。访问凭据泄露后，影响可能扩大到机器人账号和服务器操作权限。对外提供管理入口前，请先完成以下配置：
+
+1. **检查监听地址、防火墙和云服务器安全组。** 远程浏览器需要能访问你提供的管理入口；使用 HTTPS 反向代理时，只放行代理实际使用的端口（例如 443 或自行设置的 HTTPS 端口），并尽量限制来源 IP。默认的 `127.0.0.1:10012` 仅供本机访问，单独放行防火墙不会让它变成公网入口；应由代理转发到它，后端端口保持不对外开放。同机访问或通过 SSH 隧道管理时，通常不需要放行公网管理端口。
+2. **启动前设置独立的强密码。** 按[部署步骤](#1-准备配置和管理密码)创建 `data/admin/auth.json`，不要使用固定初始密码、示例文字或其他账号的密码。管理界面涉及隐私与高权限操作，不能因为地址不容易猜到就省略登录保护；也不要把密码、Cookie 或含敏感内容的截图和日志公开。
+3. **远程访问自行配置 HTTPS。** 本项目自身提供 HTTP，不附带域名、证书或 HTTPS 服务。请用 nginx、Caddy 等配置有效证书，并通过 HTTPS 访问；反向代理应正确传递 `X-Forwarded-Proto`。不要通过公网明文 HTTP 登录：密码和会话凭据可能被窃听或篡改，单靠登录密码无法保护传输过程。尚未配置 HTTPS 时，请先使用 SSH 隧道访问本地管理界面。
+
+## 数据和权限边界
+
+这些限制会影响是否适合你的群，建议部署前就和群友说明：
+
+- **上下文是共享的。** 群聊、私聊共用主对话和记忆库，普通执行任务也可以读取工作区内的其他记忆。虽然提示词要求不跨场景披露隐私，但这不是代码层面的读取隔离，不适合把互不信任的群或敏感私聊混在一起。
+- **采集开关尚不独立。** 当前关闭 AI 功能、聊天或记忆，并不等于停止消息入档；图片/PDF 的处理流程仍可能调用视觉模型。需要完全停止采集时，应停止服务或断开对应消息来源。
+- **模型服务会收到资料。** 聊天、记忆整理及图片理解会把相应内容发给配置的模型服务；嵌入模型在本地运行，不代表整个 AI 链路都离线。
+- **30 天不是所有数据的期限。** 原始聊天档案滚动保留 30 天，提炼后的长期记忆不会因此自动删除；系统日志、外部备份也要分别管理保留期限。
+- **权限主要限制操作范围。** 普通任务只能写自己的合法记忆、当前群记忆和本会话文件；命令与工作区外读写只给主人任务。主人任务仍可能因模型错误或恶意资料执行不当操作，进程权限要由部署者控制。
+- **有并发限制，但没有完整预算系统。** 后台任务有数量上限，当前没有面向所有群友的完整费用配额或排队长度控制。加入陌生群前需要另做限制。
+
+不要上传 `data/`、`.env`、`.env.host` 或真实日志。`data/` 不只有聊天，还可能含模型会话、索引、账号凭据和 Pixiv 本地加密密钥。现有公开前问题及处理建议见[开源前检查](docs/开源前检查.md)。
+
+## 数据保存与更新
+
+主要数据位置：
+
+| 路径 | 内容 |
+| --- | --- |
+| `data/ai/workspace/` | 人设、Markdown 记忆、收到及生成的文件 |
+| `data/ai/.state/` | 消息队列、游标、记忆提交状态和升级备份 |
+| `data/ai/dsh-home/` | dsh 持久化会话及保留期信息 |
+| `data/ai/.vector_cache/` | 本地嵌入模型和向量索引 |
+| `data/timing/tasks.sqlite3` | 定时任务与执行记录 |
+| `data/admin/auth.json`、`data/master.json` | 管理密码与主人绑定 |
+
+更新前停止旧进程并备份 `data/`，不要让两个实例同时使用同一份数据。Docker 更新后重新构建；原生部署更新 Python 依赖并在 `dsh` 目录执行 `npm ci`，再启动服务。
+
+从旧架构及 dsh `0.2.0-rc.2` 升级的迁移保护会自动执行，也可停机后运行 `python scripts/migrate_ai.py --root data/ai` 提前准备。内核升级备份遵守原会话的保留期限，不是永久备份；恢复步骤见[升级说明](docs/AI服务架构与运行说明.md#升级与迁移)。
+
+## 其他功能
+
+JM 和 Pixiv 默认关闭，按需在管理界面开启：
+
+- `/jm <号码>`：下载对应漫画，生成 PDF 并发送；`/jm status` 查看队列。
+- `/pixiv <作品ID>`：获取图片或图片集，以聊天记录发送；`/pixiv status` 查看队列。需要可用的 Pixiv 授权，可手动填写 refresh token，也可配置账号登录。
+
+**这两个功能都不算稳定。部署环境的网络、代理、账号风控、授权失效或上游接口变化，都可能使它们随时失效。** 管理界面提供一键可用性测试，帮助判断下载、认证或 PDF 处理卡在哪一步；测试通过不代表 QQ 上传链路一定正常。验证码等情况仍可能需要人工处理。
+
+Compose 给 Pixiv 设置了宿主机 `20170` 端口的 SOCKS 代理默认值，首次部署要按自己的网络修改；需要直连时，应去掉 Compose 中该代理的默认配置。内容的获取、保存和转发也应事先确认来源与使用授权，不要在不适合的群聊中启用这些功能。
+
+## 开发与测试
 
 ```text
 src/
-  main.py              # 应用入口，同时启动机器人后端和管理 WebUI
-  bot.py               # WebSocket 消息处理和 OneBot 动作发送
-  admin.py             # Feature 管理 WebUI
-  feature/
-    atom/               # Feature 抽象、JSON 文件读写等通用原子能力
-      base.py
-      plugin.py
-      serial_queue.py
-      json_file.py
-    help/               # /help 功能及其内部实现
-      admin.py
-      feature.py
-      plugin.py
-    hello/              # /hello 示例功能
-      feature.py
-      plugin.py
-    jm/                 # /jm 功能及其内部实现
-      admin.py
-      feature.py
-      plugin.py
-    pixiv/              # /pixiv 队列和 Pixiv API 下载适配器
-      admin.py
-      client.py
-      feature.py
-      plugin.py
-    timing/             # 固定消息与AI定时任务、场景内管理及admin面板
-    ai/                 # 单一人格、跨场景上下文与文件记忆系统
-      feature.py        # QQ消息、附件、撤回与断线采集
-      engine.py         # 全局聊天队列、真实请求授权与QQ工具
-      dsh_runtime.py    # 官方dsh生命周期及私有工具桥接
-      context.py        # 撤回和总结的近期缓存（模型上下文由dsh管理）
-      storage.py        # Markdown原始记录与画像、原子写入
-      index.py          # 本地BGE嵌入与Chroma索引
-      media.py          # 图片与文件理解
-      runtime.py        # 持久100条队列和可恢复记忆提交
-      admin.py          # 配置、记忆编辑器与管理接口
-      config.py
-      client.py
-      plugin.py
-    catalog.py          # 唯一的功能组合入口
-    manager.py          # 通用 Feature 注册、开关和消息调度
-  master/               # 始终启用的主人认证基础设施（不属于 Feature）
-    admin.py
-    service.py
+├── main.py、bot.py、admin.py   服务入口、QQ 传输和管理界面
+├── master/                    主人绑定
+└── feature/
+    ├── ai/                    聊天、记忆、文件与模型桥接
+    ├── timing/                定时调度、存储与管理界面
+    ├── jm/、pixiv/            可选内容服务
+    ├── help/、hello/          帮助和基础示例
+    ├── atom/                 通用组件
+    └── catalog.py            功能装配入口
+dsh/                           官方内核依赖、插件组合和 QQ 工具守卫
+deploy/                        原生部署脚本和 systemd 模板
+tests/                         单元测试与真实内核的本地集成测试
 ```
 
-`atom` 中的代码不依赖任何具体业务 Feature。新增功能时，应建立独立的功能目录，
-并由目录内的 `__init__.py` 暴露主要 Feature 类；只有被多个功能复用、且不包含业务语义的
-小能力才放入 `atom`。
-
-每个功能目录通过 `plugin.py` 组合自己的 Feature、管理端扩展和静态资源。应用核心只认识
-`FeaturePlugin`，不会导入具体功能。新增功能后，只需在 `feature/catalog.py` 的组合入口加入
-一个 `create_plugin()`；不需要修改 `main.py`、`admin.py`、`bot.py` 或 `manager.py`。
-
-依赖方向保持为：应用入口依赖通用插件协议，插件组合各自功能，具体功能依赖 `atom`；
-`atom`、Bot 和 FeatureManager 均不反向导入任何具体功能。
-
-运行时数据会写入 `data/`：
-
-- `data/features.json`：Feature 开关状态。
-- `data/help.json`：`/help` 返回的聊天记录文本。
-- `data/master.json`：当前绑定的机器人主人 QQ ID。
-- `data/jm/tasks/`：JM 任务目录。每个任务都有独立的下载缓存和生成 PDF。
-- `data/pixiv/tasks/`：Pixiv 任务目录。每个任务都有独立的图片缓存。
-- `data/pixiv/config.json`：Pixiv refresh token 配置，由管理 WebUI 写入。
-- `data/pixiv/config.account` / `config.key`：加密保存的 Pixiv 账号密码、可选 TOTP 密钥及本地加密密钥。备份时一同保管；拥有服务器文件权限的人仍可解密。这些文件与 token 配置均不通过图片文件路由提供。
-- `data/ai/config.yaml`：账号身份、功能开关和本地记忆配置；模型密钥仅从环境读取。
-- `data/timing/tasks.sqlite3`：北京时间定时任务、下次触发时间及执行回执，自动创建并持久保存。
-- `data/ai/workspace/AGENT.md`：唯一人设，由WebUI编辑。
-- `data/ai/workspace/memory/raw/`：原始QQ事件及原文，滚动保留30天。
-- `data/ai/workspace/memory/user/QQ号/`：PERSON、PREFERENCE、RECENTNESS和额外memory文件。
-- `data/ai/workspace/memory/common/GLOSSARY.md`：通用知识。
-- `data/ai/.vector_cache/`：本地模型与Chroma索引。
-- `data/ai/.state/`：上下文、整合进度及调度状态。
-
-旧版 `data/summary/` 和 `data/news/` 保留原样，不自动导入新记忆。
-
-Docker 部署时，`docker-compose.yml` 会把项目目录下的 `./data` 挂载到容器内的 `/app/data`。因此重建镜像或重启容器不会删除 feature 开关和已生成文件。
-
-## 运行
+新增功能通常只需建立自己的 Feature 目录，并在 `src/feature/catalog.py` 注册。扩展机制见 [Feature 指南](docs/Feature架构与扩展指南.md)。
 
 ```bash
-pip install -r requirements.txt
-# 复制 .env.example 为 .env，并填写 DEEPSEEK_API_KEY
-# Node.js >=24
-cd dsh && npm ci && cd ..
-python -m src.main
+cd dsh
+npm ci
+npm test
+cd ..
+python -X utf8 -m unittest discover -s tests -v
 ```
 
-服务端口：
+测试使用临时数据；AI 集成测试连接本地模拟模型服务并运行实际 dsh，不需要真实 Key，也不会发送真实 QQ 消息。未安装 Node.js 或 dsh 依赖时，内核集成测试会跳过。真实模型、NapCat 上传和第三方内容服务仍需单独验收。
 
-- QQ Bot WebSocket：`ws://127.0.0.1:8081/ws`
-- 管理 WebUI：`http://127.0.0.1:10010`
-- 生成文件静态访问：`http://127.0.0.1:8081/files/文件名`
-- Pixiv 图片静态访问：`http://127.0.0.1:8081/pixiv-files/文件名`
+[AI 服务说明](docs/AI服务架构与运行说明.md)与[定时任务说明](docs/定时任务使用说明.md)介绍现行机制。`tutorial.md`、`memory_structure.md` 等保留了早期教程和设计，不应作为当前部署步骤。
 
-管理 WebUI 包含三个页面：
+## 许可证与第三方项目
 
-- “功能管理”：Feature 卡片默认折叠，卡片头部可直接开关功能，展开后显示功能自己的配置和维护操作。
-- “实时日志”：进入页面时加载当前进程最近的历史日志，并通过 SSE 持续显示新日志。内存中最多保留 1000 条，刷新或重新进入日志页时默认显示最近 500 条。
-- “主人管理”：生成一次性鉴别码、查看当前主人 QQ ID，不受 Feature 开关影响。
+本项目自己的代码采用 [MIT License](LICENSE)。第三方库、模型和系统工具保留各自的许可证，不能一并视为本项目的 MIT 代码。
 
-Help 的详细设置支持编辑、保存，以及一键恢复并保存代码中的默认帮助文本。
+主要复用项目包括：
 
-JM 和 Pixiv 的详细设置都提供“一键测试可用性”：Pixiv 使用当前保存的 refresh token 重新认证，检查作品详情和首张原图；JM 检查首章首图下载/还原及单页 PDF 导出。结果分阶段显示成功、失败、耗时和排查建议。无需先开启模块，不发送 QQ 消息，每个模块同时只运行一项测试，180 秒超时自动终止并清理样本。页面刷新后可继续查看当前测试和当前进程的最近一次结果。
+- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)：AI 推理、工具循环、上下文压缩及子 Agent 内核。
+- [JMComic-Crawler-Python](https://github.com/hect0x7/JMComic-Crawler-Python)：JM 下载和 PDF 导出接口。
+- [PixivPy](https://github.com/upbit/pixivpy) 与 [get-pixivpy-token](https://github.com/eggplants/get-pixivpy-token)：Pixiv 接口、图片下载与授权获取。
+- [lunar-python](https://github.com/6tail/lunar-python)：中国农历日期计算。
+- [Sentence Transformers](https://github.com/huggingface/sentence-transformers)、[BGE](https://huggingface.co/BAAI/bge-small-zh-v1.5) 和 [Chroma](https://github.com/chroma-core/chroma)：本地记忆检索。
 
-Pixiv 还支持在 admin 保存邮箱/账号、密码和可选 TOTP 密钥，保存后通过 [gppt](https://github.com/eggplants/get-pixivpy-token) 启动无头浏览器获取并保存 refresh token；也保留手动 token 配置。不要尝试不确定的密码变体。验证码、邮箱验证、账号风控或站点变更可能阻止全自动登录，需要本地人工登录后配置 token。接口只回传账号及状态，不回传密码、TOTP 或 token；请通过 HTTPS 或本机回环访问管理端。
-
-`/pixiv` 认证失败时先刷新现有授权；refresh token 确认无效后才用已保存账号重新登录，更新配置并重新初始化客户端，原下载任务重试一次。网络错误、作品不可见及 QQ 发送失败不会启动重登，也不会重发已经发送的消息。自动浏览器登录最多每 10 分钟一次，同一时间只有一个登录进程，180 秒超时后终止进程树；可在 admin 主动重新登录。清除账号停止自动登录并保留 token，清除 token 会保留账号。可用性自检只诊断，不修改授权或触发重登。
-
-Docker 部署需要**重新构建镜像**以安装新依赖与 Chromium。原生部署在安装 requirements.txt 后执行 `python -m playwright install --with-deps chromium`（Windows 使用 `python -m playwright install chromium`）。登录不会在运行时安装浏览器或系统软件；沿用 `PIXIV_PROXY`，默认 Docker 代理的 `socks5h` 会为 Chromium 转为 `socks5`。
-
-测试作品 ID 可留空：Pixiv 自动选择日榜普通图片作品，JM 使用样本 `438696`。单个作品下架或受限不代表整个功能不可用，可改用已知有效 ID 再测。测试使用点击时已保存的配置，修改 token 后需重新测试；测试通过不覆盖 QQ/NapCat 上传链路。实现复用 [PixivPy 的认证与下载接口](https://github.com/upbit/pixivpy) 和 [jmcomic 的 PDF 导出 Feature](https://jmcomic.readthedocs.io/zh-cn/latest/tutorial/13_export_and_feature/)，不下载整部漫画作为探针。
-
-Docker:
-
-```bash
-docker compose up --build
-```
-
-## 核心能力与当前 Feature
-
-### 主人管理
-
-主人认证是始终启用的应用基础设施，不属于可开关的 Feature。在管理 WebUI 顶部进入
-“主人管理”页面，点击“生成鉴别码”，然后使用准备绑定的
-QQ 账号向机器人发送页面给出的完整指令：
-
-```text
-/set-master 鉴别码
-```
-
-鉴别码由 10 位小写字母和数字组成，10 分钟内有效，只能成功使用一次。每次重新生成都会
-立即废弃之前的鉴别码；绑定成功后，QQ 用户 ID 会保存到 `data/master.json`。需要更换主人时，
-直接在 WebUI 生成新鉴别码并使用新的 QQ 账号绑定即可。鉴别码只保存在进程内存中，服务重启后失效。
-
-### 帮助菜单
-
-默认开启。
-
-在群聊或私聊发送：
-
-```text
-/help
-```
-
-机器人会用 QQ 合并转发/聊天记录的形式返回当前支持的指令合集。普通用户和主人使用两套独立帮助文本，只有主人版默认包含人设与长期记忆管理指令。管理 WebUI 可以分别修改两套文本：单独一行的 `---` 用于分隔不同消息，普通换行会保留在同一条消息中。例如：
-
-```text
-第一条消息的第一行
-第一条消息的第二行
----
-第二条消息
-```
-
-### AI 服务
-
-AI模块采用官方dsh内核、单一人格、跨群聊与私聊的共享主对话，以及独立记忆整理对话。主 Agent 只处理聊天与分派，所有执行工作交给原生 Spawn 子 Agent 在后台完成；结果和文件回到发起任务的 QQ 会话，新聊天不会打断任务。原始 [memory_structure.md](memory_structure.md) 仅保留为历史设计参考；现行机制见下方运行说明。
-
-内核固定为 `@deepseek-ai/dsh@0.2.1-rc.2`，从 `0.2.0-rc.2` 升级时自动备份并续接旧会话，保留现有data、记忆和业务数据库。部署前停止旧进程；Docker重新构建，原生部署在dsh目录执行 `npm ci`。备份位置、有效期和恢复步骤见下方运行说明的“升级与迁移”。
-
-定时任务支持北京时间年/月/周/日/一次性固定消息及AI工作，群聊/私聊均可通过 `/timing-task`、`/timing-task-AI` 创建、list查看和del删除。AI每次在原生fork分支中独立执行、结束后删除分支，支持自然语言增删改查本会话的固定消息和AI任务：确定文本用固定消息，动态获取或生成用AI任务；admin可管理所有任务。详见[定时任务使用说明](docs/定时任务使用说明.md)。
-
-选项加 `-cn` 支持中国农历，例如 `/timing-task -y-cn 08-15-00-00-00 生日快乐`。农历年循环只在普通月份提醒一次，农历月循环包含闰月，无三十日的月份跳过；admin可选择历法并核对公历、农历下次日期。新增依赖 `lunar_python` 已加入 requirements.txt，更新时原生部署需安装依赖，Docker部署需重新构建镜像；原有公历任务无需迁移。
-
-在管理WebUI的“AI服务”中配置：
-
-- 机器人QQ号、网名（也是文本唤醒词）、账号身份说明和人设正文。主对话、Spawn子Agent和记忆整理均知道机器人自身账号，不会为其建立画像。
-- 模型固定为 `deepseek-flash`，密钥放 `.env` 的 `DEEPSEEK_API_KEY`，管理界面只显示配置状态。
-- 上下文、输出与压缩由dsh/DeepSeek默认策略管理，原文仍可在30天档案中读取；联网使用dsh原生DeepSeek搜索。
-- dsh聊天与独立记忆整理会话、每100条消息自动整理、原文30天保留、本地向量检索。
-
-聊天、后台 Spawn、记忆、主人服务器权限、文件/OCR、合并转发、部署和自动数据迁移详见 [AI服务架构与运行说明](docs/AI服务架构与运行说明.md)。Attention、每日整理任务及ai-sandbox已移除；新镜像直接运行官方dsh。升级执行 `docker compose up -d --build --remove-orphans`，首次启动自动迁移旧data。需要主人控制宿主服务器时，使用文档中的原生systemd部署。
-
-## 文档
-
-- [QQ Bot 基础开发指南](docs/QQBot基础开发指南.md)
-- [Napcat 事件 JSON 格式说明](docs/Napcat事件JSON格式说明.md)
-
-### AI 发送聊天记录
-
-可以对机器人说“请用聊天记录形式整理并发送”。主 Agent 使用 `send_forward_message(messages)` 将文本列表发送为 QQ 原生合并转发卡片，群聊和私聊均支持，目标固定为当前会话。长篇回复也可自行选择这种形式。
-
-每张卡片包含 1–20 条文本，每条最多 4000 字符、总计最多 20000 字符；每轮最多尝试发送一张。记录统一使用机器人账号和配置的昵称，这是机器人整理的文本，不是保留他人身份的原消息转发。提示词和发送实现位于 `src/feature/ai/forward.py`，工具接入位于 `src/feature/ai/engine.py`。
-
-发送等待 NapCat 回执（最长 120 秒），成功后将正文和真实消息 ID 记入自身上下文。明确权限错误返回 `permission_denied`，其他 NapCat 拒绝返回 `send_failed`；超时返回 `unknown`，提示 Agent 不自动重发。接口参考：[NapCat 发送群合并转发消息](https://napcat.apifox.cn/226657396e0)。更新代码后需重新构建并重启机器人服务。
+具体使用位置、许可证、参考来源，以及镜像中需要留意的 LGPL/MPL/GPL 组件，见 [第三方说明](THIRD_PARTY_NOTICES.md)。
