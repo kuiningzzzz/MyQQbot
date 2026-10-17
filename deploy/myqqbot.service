@@ -14,6 +14,16 @@ Environment=TZ=Asia/Shanghai
 Environment=HF_ENDPOINT=https://hf-mirror.com
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 EnvironmentFile=-/opt/MyQQbot/.env.host
+# 两个监听口默认 0.0.0.0:8081 / 0.0.0.0:10010（容器部署沿用）。原生部署时建议
+# 收到回环：NapCat 连 127.0.0.1:8081，nginx 反代 127.0.0.1:10012。
+Environment=MYQQBOT_WS_HOST=127.0.0.1
+Environment=MYQQBOT_WS_PORT=8081
+Environment=MYQQBOT_ADMIN_HOST=127.0.0.1
+Environment=MYQQBOT_ADMIN_PORT=10012
+Environment=MYQQBOT_PUBLIC_BASE_URL=http://127.0.0.1:8081
+# Pixiv 令牌功能用 Playwright 打开浏览器；用 install-host.sh 的账号装完后，
+# 把这里指向实际的浏览器目录（默认 ~/.cache/ms-playwright）。
+# Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/MyQQbot/.playwright
 ExecStart=/opt/MyQQbot/.venv/bin/python -m src.main
 Restart=on-failure
 RestartSec=5

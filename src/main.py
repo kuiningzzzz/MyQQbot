@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -13,6 +14,12 @@ from src.feature.catalog import create_default_plugins
 from src.feature.manager import FeatureManager
 from src.logging_service import install_application_log_handler
 from src.master import MasterService
+
+# 原生部署时用环境变量把两个监听口收到回环，容器部署沿用原默认值。
+WS_HOST = os.getenv("MYQQBOT_WS_HOST", "0.0.0.0")
+WS_PORT = int(os.getenv("MYQQBOT_WS_PORT", "8081"))
+ADMIN_HOST = os.getenv("MYQQBOT_ADMIN_HOST", "0.0.0.0")
+ADMIN_PORT = int(os.getenv("MYQQBOT_ADMIN_PORT", "10010"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -69,7 +76,7 @@ async def root():
         "message": "QQ Bot is running",
         "websocket_endpoint": "/ws or /ws/",
         "connected_clients": len(bot.connected_clients),
-        "admin": "http://127.0.0.1:10010",
+        "admin": f"http://127.0.0.1:{ADMIN_PORT}",
     }
 
 
@@ -77,8 +84,8 @@ async def serve():
     bot_server = uvicorn.Server(
         uvicorn.Config(
             bot_app,
-            host="0.0.0.0",
-            port=8081,
+            host=WS_HOST,
+            port=WS_PORT,
             # A 20MiB attachment encoded as Base64 needs about 27MiB per frame.
             ws_max_size=32 * 1024 * 1024,
             ws_max_queue=4,
@@ -89,8 +96,8 @@ async def serve():
     admin_server = uvicorn.Server(
         uvicorn.Config(
             admin_app,
-            host="0.0.0.0",
-            port=10010,
+            host=ADMIN_HOST,
+            port=ADMIN_PORT,
             log_level="info",
             log_config=None,
         )

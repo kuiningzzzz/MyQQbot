@@ -1203,3 +1203,22 @@ class RobustnessTests(unittest.IsolatedAsyncioTestCase):
         self.f.dsh.recover_stalled.assert_awaited()
         worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)
+
+    async def test_session_is_treated_missing_when_workspace_moved(self):
+        """容器→原生等目录变化后，旧会话必须视为不存在，以便重新播种上下文。"""
+        f = self.f
+        manifest = f.dsh.home / 'qqbot-sessions.json'
+        (f.dsh.home / 'sessions' / 'x' / 'chat-old').mkdir(parents=True, exist_ok=True)
+        base = {'id': 'chat-old', 'created': 0, 'expires': time.time() * 1000 + 86400000}
+
+        def write(**extra):
+            atomic_write(manifest, json.dumps({'chat': {**base, **extra}}))
+
+        write()  # 旧版清单没有 cwd 字段
+        self.assertFalse(f.dsh.has_session('chat'))
+        write(cwd=str(f.workspace.root))
+        self.assertTrue(f.dsh.has_session('chat'))
+        write(cwd='/app/data/ai/workspace')  # 容器时代的 cwd
+        self.assertFalse(f.dsh.has_session('chat'))
+        write(cwd=str(f.workspace.root), expires=0)
+        self.assertFalse(f.dsh.has_session('chat'))
