@@ -206,26 +206,34 @@ export async function apply(ctx) {
     rootCreation = start.then(() => {}, () => {});
     return start;
   }
+  const sameDirectory = (left, right) => typeof left === 'string' && path.relative(path.resolve(left), path.resolve(right)) === '';
+  async function retireHandle(kind) {
+    const old = handles.get(kind);
+    if (!old) return;
+    const active = currentTask(old.agent);
+    if (active) active.cancelled = true;
+    const children = [...jobs.values(), ...scheduled.values()].filter(job => job.parent_id === old.agent.id && !job.finished);
+    for (const job of children) cancel(job);
+    // Revoke Python-side QQ callbacks and memory transactions as well as native
+    // tool execution before a parent is replaced. Completion cannot reauthorize.
+    await Promise.allSettled(children.map(job => callback(job.task, '__revoke', {})));
+    await Promise.allSettled(children.map(job => job.done));
+    await ctx.subagents.drainDescendants([old.agent]);
+    await old.dispose();
+    handles.delete(kind);
+  }
   async function createHandle(kind, data) {
     let generation = generations[kind];
-    // 工作目录变了（例如从容器部署迁到原生部署）旧物理会话就不能复用：
-    // dsh 不允许改变会话的 cwd，这里直接轮换成新会话，Python 会从档案重新播种上下文。
-    if (generation && generation.cwd !== data.cwd) {
-      generation = null;
-      delete generations[kind];
-      writeJSON(manifest, generations);
+    if (generation && typeof generation.cwd !== 'string') {
+      // Old manifests predate the cwd field. Observe the immutable native
+      // header instead of mistaking missing metadata for a deployment move.
+      const snapshot = await ctx.sessionPersistence.stat(generation.id);
+      generation.cwd = snapshot?.header.cwd;
     }
-    // Roll physical logs weekly without importing their raw history. Logical
-    // conversations persist via memory + Python's retained recent context.
-    if (generation && generation.expires <= Date.now()) {
-      // Do not dispose a parent underneath live children. Retention guard and
-      // child deadlines cancel expired work before the next rotation.
-      const children = [...jobs.values()].filter(job => job.parent_id === handles.get(kind)?.agent.id && !job.finished);
-      for (const job of children) cancel(job);
-      await Promise.allSettled(children.map(job => job.done));
-      const old = handles.get(kind);
-      if (old) await old.dispose();
-      handles.delete(kind);
+    // A genuine move or expiration retires the whole live scope before its
+    // manifest is replaced. Keep physical logs until their retention deadline.
+    if (!generation || !sameDirectory(generation.cwd, data.cwd) || generation.expires <= Date.now()) {
+      await retireHandle(kind);
       generation = null;
     }
     if (handles.has(kind)) return handles.get(kind);
@@ -237,8 +245,8 @@ export async function apply(ctx) {
       generation = {id: kind + '-' + randomUUID(), created: Date.now(), expires: Math.min(data.expires_at, Date.now() + 7 * 86400000), cwd: data.cwd};
       handle = await ctx.agents.create({sessionId: generation.id, meta: {cwd: data.cwd}, agentOptions: data.options, setup});
       generations[kind] = generation;
-      writeJSON(manifest, generations);
     }
+    writeJSON(manifest, generations);
     handles.set(kind, handle);
     return handle;
   }
@@ -254,7 +262,7 @@ export async function apply(ctx) {
       const agent = handle.agent;
       // Native filesystem/shell/Spawn now consult the effective directory
       // service, rather than the immutable original session header alone.
-      if (path.resolve(await ctx.workingDirectory.ensure(agent)) !== path.resolve(data.cwd)) throw new Error('对话工作目录不能改变');
+      if (!sameDirectory(await ctx.workingDirectory.ensure(agent), data.cwd)) throw new Error('对话工作目录不能改变');
       const generation = generations[data.kind];
       generation.expires = Math.min(generation.expires, data.expires_at);
       retained[generation.id] = generation.expires;
@@ -288,6 +296,7 @@ export async function apply(ctx) {
       const start = creation.then(async () => {
         if (closing || job.controller.signal.aborted) throw new Error('TASK_EXPIRED');
         const parent = await getHandle('chat', {...data, options:{provider:'deepseek-official',model:'deepseek-flash'}});
+        job.parent_id = parent.agent.id;
         task.expires_at = Math.min(task.expires_at, generations.chat.expires);
         return activate('fork', parent.agent, task, '定时任务', data.prompt, job.controller);
       });

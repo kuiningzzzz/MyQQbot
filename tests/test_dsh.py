@@ -479,6 +479,10 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         deadline = time.time() * 1000 + 86400000
         atomic_write(self.f.dsh.home / 'qqbot-sessions.json', json.dumps({'chat': {'id': identity, 'expires': deadline}}))
         atomic_write(self.f.dsh.home / 'qqbot-retention.json', json.dumps({identity: deadline}))
+        manifest = self.f.dsh.home / 'qqbot-sessions.json'
+        old_manifest = manifest.read_bytes()
+        self.assertTrue(self.f.dsh.has_session('chat'))
+        self.assertEqual(manifest.read_bytes(), old_manifest)  # No mutation before backup.
         await self.f.record('group', '12', '123', '甲', '待整合原文', message_id='upgrade-pending')
         memory = self.f.workspace.memory_root / 'group/12/原有记忆.md'
         atomic_write(memory, '原有记忆：不可重写\n')
@@ -490,17 +494,118 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['finish_reason'], 'completed')
         self.assertIn('LEGACY_DSH_HISTORY_0_2_0', json.dumps(self.requests[-1]))
         self.assertEqual(json.loads((self.f.dsh.home / 'qqbot-sessions.json').read_text('utf-8'))['chat']['id'], identity)
+        self.assertEqual(json.loads(manifest.read_text('utf-8'))['chat']['cwd'], str(self.f.workspace.root))
         self.assertEqual(self.f.journal.pending_count(), 1)
         self.assertEqual(before, {p: p.read_bytes() for p in before})
         state = json.loads(self.f.dsh.upgrade.marker.read_text('utf-8'))
         self.assertEqual((state['version'], state['status']), (DSH_VERSION, 'ready'))
         backup = self.f.dsh.upgrade.directory / state['backup'] / 'runtime'
         self.assertEqual((backup / checkpoint.relative_to(self.f.dsh.home)).read_bytes(), original_bytes)
+        self.assertEqual((backup / 'qqbot-sessions.json').read_bytes(), old_manifest)
         await self.f.dsh.stop()
         self.responses = ['重启继续']
         await self.native(role='main')
         self.assertIn('新内核已继续旧对话', json.dumps(self.requests[-1], ensure_ascii=False))
         self.assertEqual(len(list(self.f.dsh.upgrade.directory.glob('*/snapshot.json'))), 1)
+
+    async def test_live_directory_rotation_replaces_handle_and_can_rotate_back(self):
+        manifest = self.f.dsh.home / 'qqbot-sessions.json'
+        self.responses = ['ORIGINAL_NATIVE_HISTORY']
+        await self.native(role='main')
+        original = json.loads(manifest.read_text('utf-8'))['chat']['id']
+        alternate = self.f.workspace.root / 'tmp/alternate-workspace'
+        alternate.mkdir(parents=True)
+        self.responses = ['MOVED_NATIVE_HISTORY']
+        result = await asyncio.wait_for(self.native(role='main', cwd=alternate), 10)
+        moved = json.loads(manifest.read_text('utf-8'))['chat']
+        self.assertEqual(result['finish_reason'], 'completed')
+        self.assertNotEqual(moved['id'], original)
+        self.assertEqual(moved['cwd'], str(alternate))
+        self.assertNotIn('ORIGINAL_NATIVE_HISTORY', model_instructions(self.requests[-1]))
+        self.assertFalse(self.f.dsh.has_session('chat'))
+        self.responses = ['RETURNED_NATIVE_HISTORY']
+        await asyncio.wait_for(self.native(role='main'), 10)
+        restored = json.loads(manifest.read_text('utf-8'))['chat']['id']
+        self.assertNotIn(restored, {original, moved['id']})
+        self.assertTrue(self.f.dsh.has_session('chat'))
+        self.assertNotIn('MOVED_NATIVE_HISTORY', model_instructions(self.requests[-1]))
+        self.assertTrue(list((self.f.dsh.home / 'sessions').glob('*/' + original)))
+        self.assertTrue(list((self.f.dsh.home / 'sessions').glob('*/' + moved['id'])))
+        await self.f.dsh.stop()
+        self.responses = ['重启继续当前会话']
+        await self.native(role='main')
+        self.assertEqual(json.loads(manifest.read_text('utf-8'))['chat']['id'], restored)
+        self.assertIn('RETURNED_NATIVE_HISTORY', model_instructions(self.requests[-1]))
+
+    async def test_legacy_manifest_with_real_directory_change_rotates_after_restart(self):
+        old_cwd = self.f.workspace.root / 'tmp/old-deployment'
+        old_cwd.mkdir(parents=True)
+        self.responses = ['OLD_DEPLOYMENT_HISTORY']
+        await self.native(role='main', cwd=old_cwd)
+        await self.f.dsh.stop()
+        manifest = self.f.dsh.home / 'qqbot-sessions.json'
+        entries = json.loads(manifest.read_text('utf-8'))
+        old = entries['chat']['id']
+        del entries['chat']['cwd']
+        atomic_write(manifest, json.dumps(entries))
+        self.assertFalse(self.f.dsh.has_session('chat'))
+        self.responses = ['已迁移到当前目录']
+        result = await self.native(role='main')
+        self.assertEqual(result['finish_reason'], 'completed')
+        current = json.loads(manifest.read_text('utf-8'))['chat']
+        self.assertNotEqual(current['id'], old)
+        self.assertEqual(current['cwd'], str(self.f.workspace.root))
+        self.assertNotIn('OLD_DEPLOYMENT_HISTORY', model_instructions(self.requests[-1]))
+        self.assertTrue(list((self.f.dsh.home / 'sessions').glob('*/' + old)))
+
+    async def test_directory_rotation_revokes_spawn_and_cleans_scheduled_fork(self):
+        worker_started, fork_started, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        worker_revoked, fork_revoked = asyncio.Event(), asyncio.Event()
+        finished = []
+        count = 0
+        late_file = self.f.workspace.root / 'files/scene/must-not-write.txt'
+        async def respond(request):
+            nonlocal count
+            names = {tool['name'] for tool in request.get('tools', [])}
+            if 'write' in names:
+                (fork_started if 'send_message' in names else worker_started).set()
+                await release.wait()
+                return self.tool('write', file_path=str(late_file), content='late effect')
+            count += 1
+            return self.tool('spawn_task', title='旧目录后台任务', prompt='等待后写入文件') if count == 1 else '主对话正常'
+        self.dispatcher = respond
+        async def finish(result):
+            finished.append(result)
+        async def spawn(identifier, title):
+            return {'handler': AsyncMock(), 'current': lambda: not worker_revoked.is_set(),
+                    'revoke': worker_revoked.set, 'finish': finish, 'context': {}}
+        branch = None
+        try:
+            await self.native(role='main', spawn=spawn)
+            await asyncio.wait_for(worker_started.wait(), 10)
+            branch = asyncio.create_task(self.native(role='scheduled', prompt='[定时任务]等待后写文件',
+                task_id='directory-rotation-fork', revoke=fork_revoked.set))
+            await asyncio.wait_for(fork_started.wait(), 10)
+            fork_ids = json.loads((self.f.dsh.home / 'qqbot-branches.json').read_text('utf-8'))
+            alternate = self.f.workspace.root / 'tmp/rotated-workspace'
+            alternate.mkdir(parents=True)
+            result = await asyncio.wait_for(self.native(role='main', cwd=alternate, task_id='rotation'), 15)
+            self.assertEqual(result['finish_reason'], 'completed')
+            self.assertTrue((await asyncio.wait_for(branch, 5))['cancelled'])
+            self.assertTrue(worker_revoked.is_set())
+            self.assertTrue(fork_revoked.is_set())
+            self.assertEqual([item['state'] for item in finished], ['cancelled'])
+            self.assertEqual(json.loads((self.f.dsh.home / 'qqbot-branches.json').read_text('utf-8')), {})
+            self.assertTrue(all(not list((self.f.dsh.home / 'sessions').glob('*/' + identity)) for identity in fork_ids))
+            release.set()
+            await self.f.dsh.stop()
+            self.assertFalse(late_file.exists())
+        finally:
+            release.set()
+            if branch and not branch.done():
+                branch.cancel()
+            if branch:
+                await asyncio.gather(branch, return_exceptions=True)
 
     async def test_native_reads_guide_and_queries_fresh_help_on_demand(self):
         from src.feature.help.feature import HelpFeature
@@ -1215,6 +1320,12 @@ class RobustnessTests(unittest.IsolatedAsyncioTestCase):
             atomic_write(manifest, json.dumps({'chat': {**base, **extra}}))
 
         write()  # 旧版清单没有 cwd 字段
+        self.assertFalse(f.dsh.has_session('chat'))
+        checkpoint = f.dsh.home / 'sessions/x/chat-old/session.v4.jsonl'
+        atomic_write(checkpoint, json.dumps({'type': 'session', 'id': 'chat-old', 'cwd': str(f.workspace.root)}) + '\n')
+        self.assertTrue(f.dsh.has_session('chat'))  # Read the real header, not the absent field.
+        self.assertNotIn('cwd', json.loads(manifest.read_text('utf-8'))['chat'])
+        atomic_write(checkpoint, json.dumps({'type': 'session', 'id': 'chat-old', 'cwd': '/app/data/ai/workspace'}) + '\n')
         self.assertFalse(f.dsh.has_session('chat'))
         write(cwd=str(f.workspace.root))
         self.assertTrue(f.dsh.has_session('chat'))

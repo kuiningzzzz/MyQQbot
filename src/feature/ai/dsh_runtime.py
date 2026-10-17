@@ -308,11 +308,27 @@ class DshRuntime:
         if not path.exists():
             return False
         item = json.loads(path.read_text('utf-8')).get(kind)
-        # 工作目录变化（容器 → 原生部署等）会让旧会话失效：这里按“无会话”处理，
-        # 以便重新播种上下文；插件的 cwd 校验同样会轮换掉旧物理会话。
-        return bool(item and item.get('expires', 0) > time.time() * 1000
-            and item.get('cwd') == str(self.feature.workspace.root)
-            and any((self.home / 'sessions').glob('*/' + item['id'])))
+        if not item or item.get('expires', 0) <= time.time() * 1000:
+            return False
+        folders = list((self.home / 'sessions').glob('*/' + item['id']))
+        if not folders:
+            return False
+        cwd = item.get('cwd')
+        if not isinstance(cwd, str):
+            # This read-only check runs before startup's upgrade backup. Let
+            # the native bridge persist the inferred field after that backup;
+            # otherwise Python would reset its cursor and replay old input.
+            for folder in folders:
+                try:
+                    with (folder / 'session.v4.jsonl').open(encoding='utf-8') as stream:
+                        header = json.loads(stream.readline(65536))
+                    if isinstance(header, dict) and header.get('type') == 'session' and header.get('id') == item['id']:
+                        cwd = header.get('cwd')
+                        break
+                except (OSError, ValueError):
+                    continue
+        # Only an actual directory move requires re-seeding retained context.
+        return isinstance(cwd, str) and Path(cwd) == self.feature.workspace.root
 
     async def prune(self):
         if self.turn_lock.locked():
