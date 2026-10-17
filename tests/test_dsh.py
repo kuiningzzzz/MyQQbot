@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -461,6 +462,45 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
 
     async def native(self, kind='chat', **kwargs):
         return await self.f.dsh.run(kind, kwargs.pop('prompt', 'native test'), task_id=kwargs.pop('task_id', 'test'), current=lambda: True, handler=kwargs.pop('handler', AsyncMock(return_value={'success': True})), qq='123', scene_dir='scene', system='必读分类规则', role=kwargs.pop('role', 'worker' if kind == 'chat' else 'memory'), **kwargs)
+
+    async def test_upgrade_resumes_genuine_old_checkpoint_and_preserves_data(self):
+        from src.feature.ai.dsh_upgrade import DSH_VERSION
+        fixture = Path(__file__).parent / 'fixtures/dsh-0.2.0-rc.2/session.v4.jsonl'
+        original = fixture.read_text('utf-8')
+        # Only relocate the deployment-specific directory; events are genuine
+        # 0.2.0-rc.2 output, including its old header, replay state and tools.
+        content = original.replace('__LEGACY_WORKSPACE__', json.dumps(str(self.f.workspace.root))[1:-1])
+        header = json.loads(content.splitlines()[0])
+        identity = header['id']
+        project = '--' + re.sub(r'[/\\:]+', '-', str(self.f.workspace.root)).lstrip('-')[:251] + '--'
+        checkpoint = self.f.dsh.home / 'sessions' / project / identity / 'session.v4.jsonl'
+        atomic_write(checkpoint, content)
+        original_bytes = checkpoint.read_bytes()
+        deadline = time.time() * 1000 + 86400000
+        atomic_write(self.f.dsh.home / 'qqbot-sessions.json', json.dumps({'chat': {'id': identity, 'expires': deadline}}))
+        atomic_write(self.f.dsh.home / 'qqbot-retention.json', json.dumps({identity: deadline}))
+        await self.f.record('group', '12', '123', '甲', '待整合原文', message_id='upgrade-pending')
+        memory = self.f.workspace.memory_root / 'group/12/原有记忆.md'
+        atomic_write(memory, '原有记忆：不可重写\n')
+        human_skill = self.f.workspace.root / '.agents/skills/memory-management/SKILL.md'
+        human_skill.write_text(human_skill.read_text('utf-8') + '\n用户自定义提醒\n', encoding='utf-8')
+        before = {p: p.read_bytes() for p in [memory, human_skill, self.f.workspace.root / 'AGENT.md']}
+        self.responses = ['新内核已继续旧对话']
+        result = await self.native(role='main')
+        self.assertEqual(result['finish_reason'], 'completed')
+        self.assertIn('LEGACY_DSH_HISTORY_0_2_0', json.dumps(self.requests[-1]))
+        self.assertEqual(json.loads((self.f.dsh.home / 'qqbot-sessions.json').read_text('utf-8'))['chat']['id'], identity)
+        self.assertEqual(self.f.journal.pending_count(), 1)
+        self.assertEqual(before, {p: p.read_bytes() for p in before})
+        state = json.loads(self.f.dsh.upgrade.marker.read_text('utf-8'))
+        self.assertEqual((state['version'], state['status']), (DSH_VERSION, 'ready'))
+        backup = self.f.dsh.upgrade.directory / state['backup'] / 'runtime'
+        self.assertEqual((backup / checkpoint.relative_to(self.f.dsh.home)).read_bytes(), original_bytes)
+        await self.f.dsh.stop()
+        self.responses = ['重启继续']
+        await self.native(role='main')
+        self.assertIn('新内核已继续旧对话', json.dumps(self.requests[-1], ensure_ascii=False))
+        self.assertEqual(len(list(self.f.dsh.upgrade.directory.glob('*/snapshot.json'))), 1)
 
     async def test_native_reads_guide_and_queries_fresh_help_on_demand(self):
         from src.feature.help.feature import HelpFeature

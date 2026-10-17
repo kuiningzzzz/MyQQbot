@@ -2,7 +2,13 @@
   "name": "myqqbot-dsh-runtime",
   "private": true,
   "type": "module",
-  "scripts": {"test": "node --test tests/*.test.mjs"},
-  "engines": {"node": ">=24"},
-  "dependencies": {"@deepseek-ai/dsh": "0.2.0-rc.2"}
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.1-rc.2"
+  }
 }

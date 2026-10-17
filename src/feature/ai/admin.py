@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
 
 from .client import ModelError
+from .dsh_runtime import DSH_VERSION
 
 from .storage import atomic_write, digest
 
@@ -82,7 +83,7 @@ class AiAdmin:
 
         @app.get("/api/ai/config")
         async def config():
-            return {**f.config.public(), "observed_self_ids": sorted(f.identity.observed_ids), "agent_prompt": (f.workspace.root / "AGENT.md").read_text("utf-8"), "index_error": f.index.last_error, "integration_error": f.runtime.last_error, "pending_messages": f.journal.pending_count(), "dsh_version": "0.2.0-rc.2", "workspace_path": str(f.workspace.root), "memory_skill_path": str(f.workspace.root / ".agents/skills/memory-management/SKILL.md")}
+            return {**f.config.public(), "observed_self_ids": sorted(f.identity.observed_ids), "agent_prompt": (f.workspace.root / "AGENT.md").read_text("utf-8"), "index_error": f.index.last_error, "integration_error": f.runtime.last_error, "pending_messages": f.journal.pending_count(), "dsh_version": DSH_VERSION, "workspace_path": str(f.workspace.root), "memory_skill_path": str(f.workspace.root / ".agents/skills/memory-management/SKILL.md")}
 
         @app.post("/api/ai/config")
         async def save_config(data: dict = Body(...)):

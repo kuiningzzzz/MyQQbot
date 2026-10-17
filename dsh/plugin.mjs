@@ -6,7 +6,7 @@ import {defineTool} from '@deepseek-ai/dsh-tools';
 import {denial, within} from './policy.mjs';
 
 export const name = 'myqqbot-bridge';
-export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt', 'sessionPersistence', 'fs', 'compaction', 'subagents'];
+export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt', 'sessionPersistence', 'fs', 'compaction', 'subagents', 'workingDirectory'];
 
 const text = value => [{type: 'text', text: value}];
 function writeJSON(file, value) {
@@ -89,11 +89,16 @@ export async function apply(ctx) {
   }
   // A fresh Spawn scope must receive frozen authority before its first step.
   ctx.on('agent/created', ({agent}) => {
-    const task = pendingChildren.get(agent.session.header.parentSession);
+    const task = pendingChildren.get(agent.id);
     if (!task || agent.session.header.origin !== 'subagent') return;
     tasks.set(agent.id, task);
     task.agent_id = agent.id;
     instructions(agent.ctx, agent, task);
+    // rc.2 removed request.toolFilter. Bind the child scope before its first
+    // model step, independently of the changing shared parent's authority.
+    agent.ctx.tools.restrict({deny: task.role === 'worker'
+      ? ['spawn_task', 'task_status', 'cancel_task', 'send_message', 'send_forward_message']
+      : ['spawn_task', 'task_status', 'cancel_task']});
     if (task.role === 'scheduled') {
       branches[agent.id] = true;
       writeJSON(branchFile, branches);
@@ -107,7 +112,7 @@ export async function apply(ctx) {
     clearTimeout(job.timer);
     job.state = job.task.cancelled ? 'cancelled' : result.stopReason === 'completed' ? 'completed' : 'failed';
     try {
-      if (job.run?.localAgent) await ctx.sessions.flush(job.run.localAgent.session);
+      // Activation.result settles after native flush and child teardown.
       await callback(job.task, '__finish', {task_id: job.task.task_id, title: job.title, state: job.state,
         output: (result.output || []).filter(b => b.type === 'text').map(b => b.text).join('\n').slice(0, 24000)});
     } catch (error) {
@@ -125,6 +130,26 @@ export async function apply(ctx) {
       for (const [id] of finished.slice(0, Math.max(0, finished.length - 50))) jobs.delete(id);
     }
   }
+  function cancel(job) {
+    job.task.cancelled = true;
+    job.controller.abort(); // Cancels admission before startActivation publishes.
+    // After publication the admission signal no longer owns execution.
+    // Issue disposal synchronously; callers join job.done where required.
+    job.run?.dispose().catch(error => process.stderr.write('QQBOT_CANCEL ' + error.message + '\n'));
+  }
+  async function activate(provider, parent, task, label, prompt, controller) {
+    const childId = randomUUID();
+    pendingChildren.set(childId, task);
+    try {
+      const activation = await ctx.subagents.startActivation({provider, childId, label,
+        delivery: 'caller', signal: controller.signal,
+        request: {parent, cwd: task.cwd, prompt: text(prompt), maxDepth: 1}});
+      // Cancellation may race with publication; never leave an accepted child
+      // running merely because its admission signal was already aborted.
+      if (controller.signal.aborted) await activation.dispose();
+      return activation;
+    } finally { pendingChildren.delete(childId); }
+  }
   async function dispatch(name, args, exec, parent) {
     for (const [id, job] of jobs) if (job.finished && Date.now() - job.finished > 3600000) jobs.delete(id);
     if (name !== 'spawn_task') {
@@ -132,9 +157,8 @@ export async function apply(ctx) {
       const selected = [...jobs.values()].filter(job => owned(job, parent) && (!args.task_id || args.task_id === job.task.task_id));
       if (name === 'cancel_task') {
         for (const job of selected) if (!job.finished) {
-          job.task.cancelled = true;
           try { await callback(job.task, '__revoke', {}); }
-          finally { job.controller.abort(); }
+          finally { cancel(job); }
         }
       }
       return {success: true, tasks: selected.map(job => ({task_id: job.task.task_id, title: job.title, state: job.task.cancelled ? 'cancelled' : job.state}))};
@@ -152,18 +176,13 @@ export async function apply(ctx) {
       // Only scope creation is serialized. Model/tool execution is independent.
       const start = creation.then(async () => {
         if (closing || job.controller.signal.aborted) throw new Error('TASK_EXPIRED');
-        pendingChildren.set(exec.agent.id, task);
-        try {
-          return await ctx.subagents.start('spawn', {parent: exec.agent, label: args.title,
-            prompt: text(JSON.stringify({assignment: args.prompt, origin: prepared.context})),
-            signal: job.controller.signal, maxDepth: 1,
-            toolFilter: {deny: ['spawn_task', 'task_status', 'cancel_task', 'send_message', 'send_forward_message']}});
-        } finally { pendingChildren.delete(exec.agent.id); }
+        return activate('spawn', exec.agent, task, args.title,
+          JSON.stringify({assignment: args.prompt, origin: prepared.context}), job.controller);
       });
       creation = start.then(() => {}, () => {});
       job.run = await start;
       job.state = 'running';
-      job.timer = setTimeout(() => { task.cancelled = true; job.controller.abort(); }, Math.max(1, task.expires_at - Date.now()));
+      job.timer = setTimeout(() => cancel(job), Math.max(1, task.expires_at - Date.now()));
       job.done = job.run.result.then(result => settle(job, result), error => settle(job, {stopReason: 'error', output: text(error.message)}));
       return {success: true, task_id: id, state: 'running', mode: 'spawn-one-shot', delivery: '完成后作为资料回主对话，按上下文显式调用发送工具交付；允许静默，无自动受理回执'};
     } catch (error) {
@@ -195,7 +214,7 @@ export async function apply(ctx) {
       // Do not dispose a parent underneath live children. Retention guard and
       // child deadlines cancel expired work before the next rotation.
       const children = [...jobs.values()].filter(job => job.parent_id === handles.get(kind)?.agent.id && !job.finished);
-      for (const job of children) { job.task.cancelled = true; job.controller.abort(); }
+      for (const job of children) cancel(job);
       await Promise.allSettled(children.map(job => job.done));
       const old = handles.get(kind);
       if (old) await old.dispose();
@@ -226,8 +245,9 @@ export async function apply(ctx) {
       if (!['chat', 'memory'].includes(data.kind)) throw new Error('未知对话');
       handle = await getHandle(data.kind, {...data, options: {provider: 'deepseek-official', model: 'deepseek-flash'}});
       const agent = handle.agent;
-      // Memory stages change each batch; native tools consult session.cwd.
-      if (agent.session.header.cwd !== data.cwd) throw new Error('对话工作目录不能改变');
+      // Native filesystem/shell/Spawn now consult the effective directory
+      // service, rather than the immutable original session header alone.
+      if (path.resolve(await ctx.workingDirectory.ensure(agent)) !== path.resolve(data.cwd)) throw new Error('对话工作目录不能改变');
       const generation = generations[data.kind];
       generation.expires = Math.min(generation.expires, data.expires_at);
       retained[generation.id] = generation.expires;
@@ -262,16 +282,11 @@ export async function apply(ctx) {
         if (closing || job.controller.signal.aborted) throw new Error('TASK_EXPIRED');
         const parent = await getHandle('chat', {...data, options:{provider:'deepseek-official',model:'deepseek-flash'}});
         task.expires_at = Math.min(task.expires_at, generations.chat.expires);
-        pendingChildren.set(parent.agent.id, task);
-        try {
-          return await ctx.subagents.start('fork', {parent:parent.agent, label:'定时任务', prompt:text(data.prompt),
-            signal:job.controller.signal, maxDepth:1,
-            toolFilter:{deny:['spawn_task','task_status','cancel_task']}});
-        } finally {pendingChildren.delete(parent.agent.id);}
+        return activate('fork', parent.agent, task, '定时任务', data.prompt, job.controller);
       });
       creation = start.then(() => {}, () => {});
       job.run = await start;
-      job.timer = setTimeout(() => {task.cancelled=true;job.controller.abort();}, Math.max(1, task.expires_at-Date.now()));
+      job.timer = setTimeout(() => cancel(job), Math.max(1, task.expires_at-Date.now()));
       const result = await job.run.result;
       return {cancelled:task.cancelled,finish_reason:result.stopReason,
         final_response:(result.output||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n')};
@@ -279,8 +294,7 @@ export async function apply(ctx) {
       clearTimeout(job.timer);
       try {
         if (job.run) {
-          try {await ctx.sessions.flush(job.run.localAgent.session);}
-          finally {await job.run.dispose();}
+          await job.run.dispose();
         }
       } finally {
         tasks.delete(task.agent_id);
@@ -305,9 +319,9 @@ export async function apply(ctx) {
       }
       else if (request.url === '/cancel') {
         const job = jobs.get(data.task_id);
-        if (job) { job.task.cancelled = true; job.controller.abort(); }
+        if (job) cancel(job);
         const branch = scheduled.get(data.task_id);
-        if (branch) {branch.task.cancelled=true;branch.controller.abort();await branch.done;}
+        if (branch) {cancel(branch);await branch.done;}
         for (const handle of handles.values()) {
           const task = currentTask(handle.agent);
           if (task?.task_id === data.task_id) { task.cancelled = true; handle.agent.cancel({kind: 'user'}); await handle.agent.whenIdle(); }
@@ -315,8 +329,8 @@ export async function apply(ctx) {
         result = {cancelled: true};
       } else if (request.url === '/close') {
         closing = true;
-        for (const job of jobs.values()) { job.task.cancelled = true; job.controller.abort(); }
-        for (const job of scheduled.values()) {job.task.cancelled=true;job.controller.abort();}
+        for (const job of jobs.values()) cancel(job);
+        for (const job of scheduled.values()) cancel(job);
         await creation;
         await Promise.allSettled([...jobs.values()].map(job => job.done));
         await Promise.allSettled([...scheduled.values()].map(job => job.done));
@@ -331,8 +345,8 @@ export async function apply(ctx) {
   process.stdout.write('QQBOT_READY http://127.0.0.1:' + server.address().port + '\n');
   ctx.on('dispose', async () => {
     closing = true;
-    for (const job of jobs.values()) { job.task.cancelled = true; job.controller.abort(); }
-    for (const job of scheduled.values()) {job.task.cancelled=true;job.controller.abort();}
+    for (const job of jobs.values()) cancel(job);
+    for (const job of scheduled.values()) cancel(job);
     await creation;
     await Promise.allSettled([...jobs.values()].map(job => job.done));
     await Promise.allSettled([...scheduled.values()].map(job => job.done));

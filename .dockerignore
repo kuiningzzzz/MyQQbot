@@ -21,4 +21,5 @@ data/
 
 **/node_modules/
 !src/feature/ai/skills/**/*.md
+!src/feature/ai/*.md
 .test_*

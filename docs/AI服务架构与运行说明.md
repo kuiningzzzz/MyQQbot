@@ -4,7 +4,7 @@
 
 聊天和记忆整理分别使用一个持久化 dsh 会话。所有群聊和私聊共用聊天会话，历史消息包含真实QQ号、昵称、场景、时间和消息ID；记忆整理共用另一个会话。聊天启用原生一次性 Spawn 子 Agent，主 Agent 只处理对话和分派。没有 Attention、可续聊/多层子 Agent 或03:00记忆任务。
 
-锁定官方 npm 版本 `@deepseek-ai/dsh@0.2.0-rc.2`，依赖完整锁在 `dsh/package-lock.json`。官方仓库：https://github.com/deepseek-ai/deepseek-harness 。`dsh/profile.yml` 组合官方模型适配器、Agent循环、JSONL会话持久化、token计量、自动上下文压缩、原生read/write/edit/glob/grep、Bash/PowerShell和SKILL。模型循环及上下文压缩由官方实现承担。
+锁定官方 npm 版本 `@deepseek-ai/dsh@0.2.1-rc.2`（2026-10-17发布的next预发布版本），依赖完整锁在 `dsh/package-lock.json`。官方仓库：https://github.com/deepseek-ai/deepseek-harness 。`dsh/profile.yml` 组合官方模型适配器、Agent循环、JSONL会话持久化、工作目录服务、token计量、自动上下文压缩、原生read/write/edit/glob/grep、Bash/PowerShell和SKILL。模型循环及上下文压缩由官方实现承担。
 
 Python处理QQ事件、持久消息队列、文件/OCR、记忆提交、后台任务来源及OneBot回执；Node插件桥接业务能力、原生工具权限和 Spawn 生命周期。两端仅监听127.0.0.1，使用启动时生成的随机令牌，模型无法指定回调地址。不会启动dsh网页、SDK公网服务、MCP、可续聊子Agent或插件管理。
 
@@ -12,7 +12,9 @@ Python处理QQ事件、持久消息队列、文件/OCR、记忆提交、后台�
 
 主 Agent 只有 `send_message`、`send_forward_message`、`spawn_task`、`task_status`、`cancel_task`。原生文件/搜索/命令、记忆检索、附件处理、文件发送和撤回工具从主对话的工具列表移除，执行守卫也会拒绝直接调用；主人身份不能绕过这条角色边界。普通聊天可直接回答，凡需执行的工作均委派，包括“请记住”这样的简单修改。
 
-`spawn_task(title,prompt)` 使用官方 `dsh-subagent` 服务和 `dsh-subagent-spawn-in-process` provider，调用 `ctx.subagents.start('spawn', ...)`；模型、工具循环、文件观察、网页搜索及压缩继续使用 dsh 原生实现。宿主持有独立 AbortController，工具只等待子 Agent 创建，立即返回任务 ID，不等待 `run.result`，因此主回合结束和新消息到达都不会取消它。普通后台任务使用Spawn；定时任务另外使用原生fork。没有continuable或子Agent继续委派，深度上限为1。
+`spawn_task(title,prompt)` 使用官方 `dsh-subagent` 服务和 `dsh-subagent-spawn-in-process` provider，调用 `ctx.subagents.startActivation({provider:'spawn', delivery:'caller', ...})`；模型、工具循环、文件观察、网页搜索及压缩继续使用 dsh 原生实现。工具只等待子 Agent 接受任务，立即返回任务 ID，不等待 `activation.result`，因此主回合结束和新消息到达都不会取消它。普通后台任务使用Spawn；定时任务另外使用原生fork。虽然新内核支持可续聊子Agent，本项目仍只暴露一次性任务，不能继续委派，深度上限为1。
+
+宿主提前保留childId，在子Agent创建时绑定任务权限和工具过滤；不再使用新版已删除的request.toolFilter/localAgent接口。`delivery:'caller'`将唯一结果交给Python已有交付队列，避免内核再次自动唤醒共享主对话或重复交付。入队前通过AbortController取消，入队后显式调用activation.dispose()终止执行；原生result在会话刷新和资源释放后完成。文件和命令工具通过workingDirectory服务获得当前目录，宿主仍校验它必须与任务目录一致。
 
 子 Agent 使用全新上下文，不复制主对话整段历史；宿主附上原请求、真实 QQ、主人授权、绑定场景、引用、文件目录及独立原文输入文件，主 Agent 在说明中补充必要事实与交付要求。人设、账号身份、整体架构及记忆SKILL同样强制注入。权限固定来自发起请求，不能因主对话后来切换到主人或别的群而扩大。各任务使用独立 QQ 回调和发送计数；文件最多3次、20MiB，目的地始终是原会话。
 
@@ -22,7 +24,7 @@ QQ发送采用显式工具边界：主聊天、私聊、后台交付与AI定时�
 
 同时最多4个任务，每位请求者每个QQ会话最多2个，满额返回 `task_capacity`；不自动重排或重复提交。用户询问进度时查询 `task_status`，明确取消时调用 `cancel_task`，只能查看/取消本人在同一会话的任务。状态最多保存最近50个已结束任务，查询时清理1小时前状态。新聊天及补充说明不会自动修改任务；需要改要求时取消后重建。
 
-取消、关闭AI、保存AI配置、服务停止、运行时重启或上下文到期都会终止任务；在途QQ操作可能无法撤销，已完成文件修改不回滚。后台执行状态不跨进程恢复、不自动重做，因此重启后如需继续，应先检查已有文件再发起新任务。更新仅启用现有锁定依赖中的 Spawn 插件，不改数据格式，无需额外迁移；保留原人设和记忆SKILL微调。
+取消、关闭AI、保存AI配置、服务停止、运行时重启或上下文到期都会终止任务；在途QQ操作可能无法撤销，已完成文件修改不回滚。后台执行状态不跨进程恢复、不自动重做，因此重启后如需继续，应先检查已有文件再发起新任务。原人设和记忆SKILL微调保留；内核升级保护见下方说明。
 
 提示词入口：`src/feature/ai/engine.py` 的 `CHAT_RULES`（主对话）和 `WORKER_RULES`（执行子Agent）；整体说明在 `src/feature/ai/self_description.md`；硬性角色与路径权限在 `dsh/policy.mjs`，原生生命周期桥接在 `dsh/plugin.mjs`。
 
@@ -56,6 +58,8 @@ data/ai/
   .state/
     messages.sqlite3                事件去重、100条队列和完成游标（不存正文）
     dsh-migration.json              自启动迁移完成记录
+    dsh-upgrades/runtime.json       内核版本、准备/成功状态及备份位置
+    dsh-upgrades/<升级ID>/          校验过的旧会话备份，按原会话期限清理
     pre-dsh-config.yaml             迁移前配置快照
     context.json                   撤回/总结使用的有限近期消息缓存
     memory-commit.json              提交中断时的重做日志；完成后删除
@@ -119,6 +123,20 @@ QQ工具不接受任意目标，始终绑定当轮真实请求场景。最多4�
 
 ## 升级与迁移
 
+### dsh 0.2.0-rc.2 → 0.2.1-rc.2
+
+本次兼容已有v4 JSONL会话，原目录直接续接，不清空聊天或记忆会话。`workspace`、人设、用户自定义记忆SKILL、原始记录、100条队列/游标、向量缓存、主人绑定、Pixiv/JM配置、定时任务SQLite均不需要因内核升级转换。
+
+停止旧进程后部署新版并启动即可。首次内核启动（或先运行到会话保留期清理）会执行 `src/feature/ai/dsh_upgrade.py`，在写入新内核数据之前备份 `dsh-home/sessions` 和 `qqbot-*.json` 到 `data/ai/.state/dsh-upgrades/<升级ID>/runtime/`。`snapshot.json`记录SHA-256校验值；复制、空间或校验失败就停止升级，保留源文件。临时命令文件与自动生成的profiles不属于会话状态，不复制。准备标记原子落盘，启动失败后重试复用已有完整备份；收到内核就绪回执才标记新版本已启用。依赖实际版本不符时明确报错，需执行npm ci，不会悄悄使用旧内核。
+
+备份不复制已过期会话，也不复制整份业务data。备份的到期时间取所含会话最早截止时间，避免把聊天原文保留超过原有期限；每分钟清理时删除到期备份。更新前自行保存整个data副本仍是完整回滚的保障。升级脚本不会自动用旧备份覆盖之后生成的新记忆或业务记录。
+
+需要回退时先停止服务，保留当前data副本，在备份仍有效且校验通过时，将该备份的runtime目录作为旧版本的整个dsh-home恢复，并将代码和npm锁文件一同回退；不要把两代会话日志混合。workspace和业务数据库无需替换。若要回到升级前的全部业务状态，应恢复自行保存的完整data备份。
+
+可在停机后提前执行 `python scripts/migrate_ai.py --root data/ai`，它同时执行旧架构迁移和本次内核备份准备。Docker重建沿用 `./data:/app/data`；原生部署需在dsh目录执行 `npm ci` 后重启服务。模型继续使用 `deepseek-flash`，无需修改现有Key或端点。联网搜索保留兼容的原生Messages搜索与HTTP抓取路径，本次没有自动切换到新独立搜索API。
+
+### 更早的AI架构迁移
+
 旧版本先停止，再部署新版本；不要让两个版本同时使用同一data目录。建议升级前自行保留整个data备份。首次构造AI服务会自动调用 `src/feature/ai/migrate.py`：
 
 1. 原样移动旧 `user/`、`common/` 到 `workspace/memory/`，旧 `raw/` 到 `workspace/memory/raw/legacy/`。
@@ -152,7 +170,7 @@ sudo systemctl enable --now myqqbot
 
 ### API兼容性
 
-模型固定使用 `deepseek-flash`，聊天、记忆整理、视觉和 `/short` 均使用这个官方别名。dsh从官方内置模型目录读取上下文能力，输出预算、空闲超时、重试与压缩采用官方默认策略；Python不再额外施加聊天总超时、轮数或Token限制，取消/关闭操作仍可中止任务。
+模型固定使用 `deepseek-flash`，聊天、记忆整理、视觉和 `/short` 均使用这个官方别名。dsh从官方内置模型目录读取上下文能力，输出预算、空闲超时、重试与压缩采用官方默认策略。Python保留现有回合超时和锁泄漏看门狗，防止服务过载后聊天队列永久阻塞；本次内核升级不改变这些设置，也不增加轮数或Token限制。
 
 密钥只从进程环境读取，优先 `DEEPSEEK_API_KEY`，兼容 `AI_API_KEY`。复制根目录 `.env.example` 为 `.env` 并填入密钥；Python本地启动会读取 `.env`，Docker Compose会把相关值注入容器。systemd可使用 `.env.host`。管理界面只显示“环境已配置/未配置”，不能读写密钥或模型连接参数。升级时会移除现有 `data/ai/config.yaml` 的密钥、模型及旧限额设置，升级前需先把密钥配置到环境；旧迁移备份不会被自动改写。
 

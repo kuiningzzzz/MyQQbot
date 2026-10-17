@@ -14,8 +14,8 @@ from pathlib import Path
 import httpx
 
 from .storage import atomic_write
+from .dsh_upgrade import DSH_VERSION, RuntimeUpgrade
 
-DSH_VERSION = "0.2.0-rc.2"
 logger = logging.getLogger(__name__)
 
 
@@ -34,6 +34,7 @@ class DshRuntime:
         self.last_error = ""
         self.home = feature.workspace.data_root / "dsh-home"
         self.code = Path(__file__).resolve().parents[3] / "dsh"
+        self.upgrade = RuntimeUpgrade(feature.workspace.data_root)
 
     async def _callback(self, reader, writer):
         try:
@@ -97,6 +98,10 @@ class DshRuntime:
             cli = self.code / "node_modules/@deepseek-ai/dsh/lib/bin.js"
             if not node or not cli.exists():
                 raise RuntimeError("dsh运行时缺失：请安装Node.js 24并在dsh目录执行npm ci")
+            installed = json.loads((cli.parents[1] / 'package.json').read_text('utf-8'))['version']
+            if installed != DSH_VERSION:
+                raise RuntimeError(f"dsh依赖版本不符：需要 {DSH_VERSION}，实际 {installed}；请在dsh目录执行npm ci")
+            self.upgrade.prepare()
             self.server = await asyncio.start_server(self._callback, "127.0.0.1", 0)
             callback = "http://127.0.0.1:" + str(self.server.sockets[0].getsockname()[1]) + "/tool"
             profile = self.home / "profiles/qqbot"
@@ -119,6 +124,7 @@ class DshRuntime:
                             raise RuntimeError("dsh启动失败：" + "\n".join(self.stderr[-8:]))
                         if line.startswith(b"QQBOT_READY "):
                             self.url = line.decode().strip().split(" ", 1)[1]
+                            self.upgrade.complete()
                             break
             except BaseException:
                 await self.stop()
@@ -310,6 +316,9 @@ class DshRuntime:
             logger.error('dsh 清理跳过：回合锁被占用')
             return
         async with self.turn_lock:
+            if not self.process or self.process.returncode is not None:
+                self.upgrade.prepare()
+            self.upgrade.prune()
             manifest = self.home / 'qqbot-sessions.json'
             retention = self.home / 'qqbot-retention.json'
             data = json.loads(manifest.read_text('utf-8')) if manifest.exists() else {}
