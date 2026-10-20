@@ -381,5 +381,31 @@ class MediaQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(self.f.media.job(2))
 
 
+    async def test_connection_errors_are_bounded_and_never_retry_forever(self):
+        """旧图片链接会永久失效：整段渲染抛 ConnectionError 时也必须有上限。"""
+        original = self.f._render
+        calls = {'n': 0}
+
+        async def render(*args, **kwargs):
+            calls['n'] += 1
+            if calls['n'] > 1:  # 第一次是 observe 的占位渲染，之后是队列的重试
+                raise ConnectionError('链接已失效')
+            return await original(*args, **kwargs)
+
+        self.f._render = render
+        await self.f.observe(self.ctx())
+        for attempt in range(1, 6):
+            await self.until(lambda: self.f.media.job(1)['attempts'] == attempt, timeout=20)
+            with self.f.media.connect() as db:
+                db.execute('UPDATE jobs SET due=0 WHERE seq=1')
+            self.f.media.wake.set()
+        await self.until(lambda: self.f.media.job(1)['status'] == 'failed', timeout=20)
+        self.assertEqual(self.f.media.job(1)['attempts'], 6)
+        self.assertEqual(self.f.media.job(1)['error'], 'ConnectionError')
+        # 放弃后要把原文里的“解析中”改成失败提示（写盘在状态更新之后，需轮询）。
+        await self.until(lambda: '媒体后台解析失败' in self.f.journal.load(self.f.journal.rows()[0]).get('rendered_content', ''), timeout=10)
+
+
 if __name__ == '__main__':
     unittest.main()
+
