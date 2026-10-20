@@ -107,6 +107,8 @@ class QQBot:
             await self.feature_manager.observe_system({"kind": "disconnect"})
 
     async def handle_event(self, event: dict[str, Any], ws: WebSocket):
+        if getattr(self.feature_manager, 'maintenance', False):
+            return
         if event.get("self_id"):
             self._self_ids[ws] = str(event["self_id"])
         if event.get("post_type") == "notice":

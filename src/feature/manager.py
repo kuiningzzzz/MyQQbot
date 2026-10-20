@@ -13,6 +13,7 @@ class FeatureManager:
         self.state_path = state_path
         self.features: dict[str, Feature] = {}
         self.enabled: dict[str, bool] = {}
+        self.maintenance = False
         for feature in features:
             self.register(feature)
 
@@ -90,6 +91,8 @@ class FeatureManager:
         ]
 
     async def handle_event(self, ctx: MessageContext) -> bool:
+        if self.maintenance:
+            return False
         for name, feature in self.features.items():
             try:
                 await feature.observe(ctx)
@@ -113,6 +116,8 @@ class FeatureManager:
         return False
 
     def observe_arrival(self, event: dict) -> None:
+        if self.maintenance:
+            return
         for feature in self.features.values():
             try:
                 feature.observe_arrival(event)

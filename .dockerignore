@@ -23,4 +23,8 @@ data/
 !src/feature/ai/skills/**/*.md
 !src/feature/ai/*.md
 !THIRD_PARTY_NOTICES.md
+!README.md
+!docs/**/*.md
+!memory_structure.md
+!tutorial.md
 .test_*

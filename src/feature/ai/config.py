@@ -10,7 +10,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .storage import atomic_write
 
-load_dotenv(Path(__file__).resolve().parents[3] / '.env', override=False)
+if not os.environ.get('MYQQBOT_BACKUP_SUPERVISED'):
+    # The managed launcher already loaded dotenv and applied restored settings.
+    # Loading it again would reintroduce variables intentionally absent there.
+    load_dotenv(Path(__file__).resolve().parents[3] / '.env', override=False)
 CONNECTION_FIELDS = {'api_url', 'dsh_api_url', 'api_key', 'model', 'vision_model'}
 
 

@@ -1,0 +1,44 @@
+<section id="view-backups" class="view" hidden>
+  <style>
+    .backup-card { background: white; border: 1px solid #e5e7eb; border-radius: 12px; padding: 22px; margin: 18px 0; }
+    .backup-card h2 { margin: 0 0 12px; font-size: 18px; }
+    .backup-card p { line-height: 1.8; }
+    .backup-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .backup-actions button { margin: 0; }
+    .backup-table-wrap { overflow-x: auto; }
+    .backup-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .backup-table th, .backup-table td { text-align: left; padding: 14px 10px; border-bottom: 1px solid #e5e7eb; vertical-align: top; }
+    .backup-table td:first-child { overflow-wrap: anywhere; min-width: 180px; }
+    #backup-progress { white-space: pre-wrap; line-height: 1.8; padding: 14px; background: #f1f5f9; border-radius: 8px; }
+    #backup-restore-confirm { max-width: 300px; }
+    #backup-preview { white-space: pre-wrap; line-height: 1.8; }
+  </style>
+  <div class="page-head"><div><h1>备份管理</h1><p class="hint">保存机器人在某个时间点的数据，并在需要时还原。</p></div></div>
+  <div class="backup-card">
+    <h2>生成备份</h2>
+    <p>包含全部项目数据、工作区与记忆、dsh 对话、定时任务、账号配置、有效环境变量和项目源码。备份包保存在 <code>data/backups/packages/</code>，请下载到另一台设备保存。</p>
+    <p class="hint">生成和还原时服务会暂停并自动重启；正在执行的 AI、下载或定时任务须先完成。备份包含 API 密钥、管理密码和聊天记录，请勿公开。系统软件、独立的 NapCat 登录环境及工作区外的服务器文件不在备份范围内。</p>
+    <div class="backup-actions"><button id="backup-create" type="button">生成当前时间的备份</button><button id="backup-refresh" type="button" class="secondary">刷新列表</button></div>
+    <p id="backup-progress" role="status" aria-live="polite">正在加载…</p>
+  </div>
+  <div class="backup-card">
+    <h2>导入备份包</h2>
+    <p class="hint">上传后先校验，确认后才会还原。只接受本项目生成的 ZIP 备份。较大的文件需要同步调整 HTTPS 反向代理的上传大小和超时。</p>
+    <div class="backup-actions"><input id="backup-upload" type="file" accept=".zip,application/zip" aria-label="选择备份包"><button id="backup-import" type="button">上传并校验</button></div>
+  </div>
+  <div class="backup-card">
+    <h2>已有备份包</h2>
+    <div class="backup-table-wrap"><table class="backup-table"><thead><tr><th>备份包</th><th>备份时间（北京时间）</th><th>大小</th><th>操作</th></tr></thead><tbody id="backup-list"></tbody></table></div>
+  </div>
+  <div id="backup-restore-panel" class="backup-card" hidden>
+    <h2>确认还原</h2>
+    <p id="backup-preview"></p>
+    <label for="backup-mode">还原模式</label>
+    <select id="backup-mode"><option value="incremental">增量还原：保留现有独有数据，冲突以备份为准</option><option value="overwrite">覆盖还原：删除现有项目数据，用备份完整替换</option></select>
+    <p class="hint">配置按字段、数据库按记录合并；同路径的普通文件、Markdown 和同一段对话日志以备份整个文件为准。向量索引会重建。不兼容的数据库拒绝增量合并。还原前自动保留一份原数据备份；备份列表本身不删除。当前程序代码不替换，需要旧版本代码时使用包内 project/ 离线部署。</p>
+    <p class="hint">管理密码会恢复为备份时的密码；旧聊天原文在启动后仍按 30 天保留规则清理。还原环境配置可能改变监听端口和访问地址。</p>
+    <label for="backup-restore-confirm">输入“增量还原”或“覆盖还原”以确认</label>
+    <input id="backup-restore-confirm" type="text" autocomplete="off">
+    <div class="backup-actions" style="margin-top: 14px"><button id="backup-restore" type="button" class="danger">执行还原并重启</button><button id="backup-cancel" type="button" class="secondary">取消</button></div>
+  </div>
+</section>

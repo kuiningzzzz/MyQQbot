@@ -1,7 +1,16 @@
+import sys
+
+# Keep the supervisor free of bot imports: those constructors create/open data.
+# Restore and crash recovery must finish before a single feature is initialized.
+if __name__ == '__main__' and '--runtime' not in sys.argv:
+    from src.backup.supervisor import run
+    raise SystemExit(run())
+
 import asyncio
 import logging
 import os
-from contextlib import asynccontextmanager
+import signal
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 
 import uvicorn
@@ -9,6 +18,8 @@ from fastapi import FastAPI, WebSocket
 from fastapi.staticfiles import StaticFiles
 
 from src.admin import create_admin_app
+from src.backup.control import BackupControl
+from src.backup.supervisor import MAINTENANCE_EXIT
 from src.bot import QQBot
 from src.feature.catalog import create_default_plugins
 from src.feature.manager import FeatureManager
@@ -37,6 +48,7 @@ feature_manager = FeatureManager(
 )
 feature_manager.load_state()
 bot = QQBot(feature_manager, master_service)
+backup_control = BackupControl(Path.cwd(), feature_manager)
 
 
 @asynccontextmanager
@@ -60,7 +72,7 @@ for plugin in plugins:
             StaticFiles(directory=resource.directory),
             name=resource.name,
         )
-admin_app = create_admin_app(feature_manager, master_service, plugins)
+admin_app = create_admin_app(feature_manager, master_service, plugins, backup_control=backup_control)
 
 
 @bot_app.websocket("/ws")
@@ -81,7 +93,17 @@ async def root():
 
 
 async def serve():
-    bot_server = uvicorn.Server(
+    class ManagedServer(uvicorn.Server):
+        # Both servers share one process. A signal must stop BOTH, rather than
+        # whichever server installed Uvicorn's handler last (0.27/newer APIs).
+        def install_signal_handlers(self):
+            pass
+
+        @contextmanager
+        def capture_signals(self):
+            yield
+
+    bot_server = ManagedServer(
         uvicorn.Config(
             bot_app,
             host=WS_HOST,
@@ -91,19 +113,32 @@ async def serve():
             ws_max_queue=4,
             log_level="info",
             log_config=None,
+            timeout_graceful_shutdown=15,
         )
     )
-    admin_server = uvicorn.Server(
+    admin_server = ManagedServer(
         uvicorn.Config(
             admin_app,
             host=ADMIN_HOST,
             port=ADMIN_PORT,
             log_level="info",
             log_config=None,
+            timeout_graceful_shutdown=15,
         )
     )
-    await asyncio.gather(bot_server.serve(), admin_server.serve())
+    def shutdown_for_backup():
+        bot_server.should_exit = admin_server.should_exit = True
+
+    backup_control.shutdown = shutdown_for_backup
+    previous = {sig: signal.signal(sig, lambda *_: shutdown_for_backup()) for sig in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        await asyncio.gather(bot_server.serve(), admin_server.serve())
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":
     asyncio.run(serve())
+    if backup_control.requested:
+        raise SystemExit(MAINTENANCE_EXIT)

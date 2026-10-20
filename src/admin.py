@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from collections.abc import Iterable
 
 from fastapi import FastAPI, HTTPException, Request
@@ -6,6 +7,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from src.admin_auth import AdminAuth, COOKIE_NAME, SESSION_TTL_SECONDS
+from src.backup import admin as backup_admin
+from src.backup.control import BackupControl
 from src.feature.atom import FeaturePlugin
 from src.feature.manager import FeatureManager
 from src.logging_service import application_logs
@@ -25,9 +28,12 @@ def create_admin_app(
     feature_manager: FeatureManager,
     master_service: MasterService,
     plugins: Iterable[FeaturePlugin] = (),
+    *, backup_control=None,
 ) -> FastAPI:
     plugins = list(plugins)
     app = FastAPI(title="MyQQbot Admin")
+    backup_control = backup_control or BackupControl(Path.cwd(), feature_manager)
+    backup_admin.register(app, backup_control)
     master_admin = MasterAdmin(master_service)
     master_admin.register_routes(app)
 
@@ -53,6 +59,8 @@ def create_admin_app(
             return await call_next(request)
         if not cookie_is_valid(request):
             return JSONResponse(status_code=401, content={"detail": "未登录或会话已过期"})
+        if backup_control.requested and request.method not in {'GET', 'HEAD'}:
+            return JSONResponse(status_code=503, content={"detail": "正在备份或还原，请等待服务重新启动"})
         return await call_next(request)
 
     @app.post("/api/login")
@@ -98,6 +106,8 @@ def create_admin_app(
             .replace("<!-- FEATURE_PANELS -->", panels)
             .replace("/* FEATURE_SCRIPTS */", scripts)
             .replace("/* MASTER_SCRIPT */", master_admin.javascript)
+            .replace("<!-- BACKUP_VIEW -->", backup_admin.view_html())
+            .replace("/* BACKUP_SCRIPT */", backup_admin.javascript())
         )
 
     @app.get("/api/features")
@@ -250,6 +260,9 @@ HTML = """
     .login-error { color: #b42318; font-size: 13px; min-height: 18px; margin-top: 10px; }
     .logout-button { background: #667085; margin-left: auto; }
     @media (max-width: 720px) {
+      .topbar { flex-wrap: wrap; }
+      .brand { padding-top: 12px; }
+      nav { order: 3; width: 100%; min-height: 46px; overflow-x: auto; }
       .topbar { gap: 10px; padding: 0 12px; }
       nav a { padding: 0 10px; }
       .feature-head { align-items: flex-start; }
@@ -274,6 +287,7 @@ HTML = """
       <a href="#features" data-view-link="features">功能管理</a>
       <a href="#logs" data-view-link="logs">实时日志</a>
       <a href="#master" data-view-link="master">主人管理</a>
+      <a href="#backups" data-view-link="backups">备份管理</a>
     </nav>
     <button id="logout-button" class="logout-button" type="button">退出登录</button>
   </header>
@@ -294,6 +308,7 @@ HTML = """
       <div id="log-console" class="log-console" role="log" aria-live="polite"></div>
     </section>
     <!-- MASTER_VIEW -->
+    <!-- BACKUP_VIEW -->
     <div id="error" class="error"></div>
   </main>
   <!-- FEATURE_PANELS -->
@@ -301,6 +316,7 @@ HTML = """
     const featureAdminControls = {};
     /* FEATURE_SCRIPTS */
     /* MASTER_SCRIPT */
+    /* BACKUP_SCRIPT */
 
     const featuresEl = document.querySelector("#features");
     const errorEl = document.querySelector("#error");
@@ -440,13 +456,15 @@ HTML = """
     }
 
     function showView(name) {
-      const view = ["logs", "master"].includes(name) ? name : "features";
+      const view = ["logs", "master", "backups"].includes(name) ? name : "features";
+      stopBackupPolling();
       document.querySelectorAll(".view").forEach(el => { el.hidden = el.id !== `view-${view}`; });
       document.querySelectorAll("[data-view-link]").forEach(link => link.classList.toggle("active", link.dataset.viewLink === view));
       if (view === "logs") startLogs().catch(error => { errorEl.textContent = error.message; });
       else {
         stopLogs();
         if (view === "master") initMasterView().catch(error => { errorEl.textContent = error.message; });
+        if (view === "backups") initBackupView().catch(error => { errorEl.textContent = error.message; });
       }
     }
 
@@ -465,6 +483,7 @@ HTML = """
 
     function showLogin(message) {
       stopLogs();
+      stopBackupPolling();
       document.querySelectorAll(".view").forEach(el => { el.hidden = true; });
       loginMask.hidden = false;
       loginError.textContent = message || "";
