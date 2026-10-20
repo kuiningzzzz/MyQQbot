@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -26,6 +27,7 @@ from .runtime import MemoryRuntime
 from .storage import Workspace
 from .workfiles import WorkFiles
 from .media import IMAGE_SUFFIXES
+from .media_queue import MediaQueue, needs_media, PENDING
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,7 @@ class AiFeature(Feature):
         self.sandbox = LocalWorkspace(self.workspace.root)
         self.files = MediaReader(self.config, self.client, self.identity, self.sandbox)
         self.workfiles = WorkFiles(self)
+        self.media = MediaQueue(self)
         self.dsh = DshRuntime(self)
         self.runtime = MemoryRuntime(self)
         self.install_memory_skill()
@@ -90,12 +93,7 @@ class AiFeature(Feature):
         settings = self.config.load()
         is_self = str(qq) in self.identity.ids or outgoing
         if message_type in {"image", "file"}:
-            try:
-                description = await self.files.understand(str(file_data or ""), message_type, filename)
-                content += f"[{'图片' if message_type == 'image' else '文件'}: {description}]"
-            except Exception as exc:
-                logger.warning("文件理解失败：%s", exc)
-                content += f"[{'图片' if message_type == 'image' else '文件'}: 无法解析，{str(exc)}]"
+            raw_event = raw_event or {'message': ([{'type': 'text', 'data': {'text': content}}] if content else []) + [{'type': message_type, 'data': {'url': str(file_data or ''), 'name': filename or ('image.png' if message_type == 'image' else 'attachment.bin')}}]}
         now = datetime.now(ZoneInfo(settings.timezone))
         record = {"id": str(message_id or uuid.uuid4()), "scene_type": scene_type, "scene_id": str(scene_id), "qq": str(qq), "nickname": nickname, "content": content, "is_self": is_self, "timestamp": timestamp or now.isoformat()}
         async with self._record_lock:
@@ -121,6 +119,10 @@ class AiFeature(Feature):
                     self._message_ids = {identity}
             if outgoing:
                 self._sent.append((clock, scene_type, str(scene_id), content))
+        if message_type in {'image', 'file'}:
+            ctx = MessageContext(bot=self.media.bot, websocket=None, event={**raw_event, 'message_id': record['id']}, msg='',
+                message_type=scene_type, user_id=int(qq), group_id=int(scene_id) if scene_type == 'group' else None)
+            await self._capture_media(ctx, result)
         if not defer_trigger:
             self.runtime.trigger()
         return result
@@ -144,24 +146,42 @@ class AiFeature(Feature):
         result = await self.record(ctx.message_type, str(ctx.group_id if ctx.message_type == "group" else ctx.user_id), str(ctx.user_id), str(sender.get("card") or sender.get("nickname") or ctx.user_id), str(text), timestamp=timestamp, message_id=ctx.event.get("message_id"), raw_event=original, defer_trigger=True)
         if result.get('duplicate'):
             return
+        ctx.event.setdefault('message_id', result['id'])
+        await self._capture_media(ctx, result)
+
+    async def _capture_media(self, ctx, result):
+        segments = ctx.event.get('message') or []
         try:
-            content = await self._render(segments, ctx)
+            content = await self._render(segments, ctx, pending=True, sequence=result['seq'])
+            self.workfiles.flush()
             await asyncio.to_thread(self.journal.annotate, result['seq'], content)
             await self.context.update_content(self.scene_key(ctx), str(ctx.event.get('message_id') or result['id']), content)
+            if needs_media(segments):
+                if ctx.bot:
+                    self.media.bind(ctx)
+                self.media.enqueue(result['seq'], bool(ctx.event.get('_ai_arrival_forced')))
         finally:
             self.runtime.trigger()
 
-    async def _render(self, segments, ctx, depth=0) -> str:
+    async def _render(self, segments, ctx, depth=0, *, pending=False, sequence=None, trail='') -> str:
         if isinstance(segments, str):
             return segments
         if not isinstance(segments, list) or depth > 8:
             return "[转发内容层级过深或格式无效]"
         result = []
-        for segment in segments:
+        for index, segment in enumerate(segments):
+            # Cached emoji / large forwards must also yield to incoming QQ work.
+            await asyncio.sleep(0)
+            if sequence is not None and not pending and not self.enabled:
+                raise ConnectionError('媒体解析已暂停')
+            source = self.media._source(sequence) if sequence is not None and not pending else None
+            if sequence is not None and not pending and source is None:
+                raise ConnectionError('媒体原文已过保留期')
             if not isinstance(segment, dict):
                 continue
             data = segment.get("data") or {}
             kind = segment.get("type")
+            position = trail + '/' + str(index)
             if kind == "text":
                 result.append(str(data.get("text") or ""))
             elif kind == "at":
@@ -169,38 +189,59 @@ class AiFeature(Feature):
             elif kind == "reply":
                 result.append(f"[引用消息ID:{data.get('id', '')}]")
             elif kind in {"image", "file"}:
-                identifier, item = self.workfiles.register(ctx, kind, data)
+                identifier, item = self.workfiles.register(ctx, kind, data, position=position, persist=not pending)
                 label = f"[{'图片' if kind == 'image' else '文件'}: {item['name']}；大小:{item['size'] or '未知'}；附件ID:{identifier}]"
                 result.append(label)
                 if kind == "image" or Path(item["name"]).suffix.casefold() in IMAGE_SUFFIXES | {".pdf"}:
+                    if pending:
+                        result.append(f'[{PENDING}；用read_media读取结果，禁止声称已看过]')
+                        continue
                     try:
-                        url = await self.workfiles.resolve(ctx, item)
-                        description = await self.files.understand(url, kind, item["name"])
+                        previous = json.loads(self.media.job(sequence)['results']).get(identifier) if sequence else None
+                        if previous and previous['status'] == 'completed':
+                            description = previous['description']
+                        else:
+                            url = await self.workfiles.resolve(ctx, item)
+                            async with asyncio.timeout(240):
+                                description = await self.files.understand(url, kind, item["name"], expires_at=source['timestamp'] + 30 * 86400 if source else None)
                         result.append(description)
+                        if sequence:
+                            self.media.partial(sequence, identifier, description, getattr(description, 'complete', True))
                     except Exception as exc:
                         logger.warning("QQ附件解析失败：%s", exc)
-                        result.append("[附件内容未能解析，可在用户要求时下载处理]")
+                        description = '[附件内容未能解析，可在用户要求时下载处理]'
+                        result.append(description)
+                        if sequence:
+                            self.media.partial(sequence, identifier, description, False)
             elif kind in {"forward", "node"}:
+                if pending:
+                    result.append(f'[转发聊天记录；{PENDING}；消息ID:{ctx.event.get("message_id")}；可用read_media读取展开结果]')
+                    continue
                 children = data.get("content") or data.get("messages")
                 if children is None and data.get("id"):
                     try:
-                        reply = await ctx.bot.call_action("get_forward_msg", {"message_id": data["id"]}, ctx.websocket)
-                        children = reply.get("messages", [])
+                        if sequence:
+                            children = await self.media.forward(sequence, str(data['id']), ctx)
+                        else:
+                            reply = await ctx.bot.call_action("get_forward_msg", {"message_id": data["id"]}, ctx.websocket)
+                            children = reply.get("messages", [])
                     except Exception:
                         logger.exception("获取合并转发失败")
+                        if sequence:
+                            self.media.errors.add(sequence)
                 if kind == "node":
-                    rendered = await self._render(children or [], ctx, depth + 1)
+                    rendered = await self._render(children or [], ctx, depth + 1, sequence=sequence, trail=position)
                     result.append(f"[转发 QQ:{data.get('uin', '?')} 昵称:{data.get('name', '?')}] {rendered}")
                 else:
                     result.append("[转发聊天记录]")
-                    for child in children or []:
+                    for child_index, child in enumerate(children or []):
                         if not isinstance(child, dict):
                             continue
                         if child.get("type") == "node":
-                            result.append("  " + await self._render([child], ctx, depth + 1))
+                            result.append("  " + await self._render([child], ctx, depth + 1, sequence=sequence, trail=position + '/' + str(child_index)))
                         else:
                             sender = child.get("sender") or {}
-                            rendered = await self._render(child.get("message") or child.get("content") or [], ctx, depth + 1)
+                            rendered = await self._render(child.get("message") or child.get("content") or [], ctx, depth + 1, sequence=sequence, trail=position + '/' + str(child_index))
                             result.append(f"  [转发 QQ:{sender.get('user_id', '?')} 昵称:{sender.get('nickname', '?')}] {rendered}")
             else:
                 result.append(f"[{kind or '未知消息'}]")
@@ -256,6 +297,7 @@ class AiFeature(Feature):
 
     async def start(self, bot):
         await self.runtime.start()
+        await self.media.start(bot)
         if not self.config.load().vector_index_enabled:
             return
         ok, error = await asyncio.to_thread(self.index.preload)
@@ -265,6 +307,7 @@ class AiFeature(Feature):
             logger.warning("AI 向量索引预加载失败：%s（记忆检索已降级为纯文本检索，每 %s 秒自动重试）", error, self.index.MODEL_RETRY_SECONDS)
 
     async def stop(self):
+        await self.media.stop()
         await self.engine.stop()
         await self.runtime.stop()
         await self.dsh.stop()
@@ -321,6 +364,6 @@ class AiFeature(Feature):
         record = data['record']
         scene = record['scene_type'] + ':' + record['scene_id']
         cached = next((r for r in self.context.scenes.get(scene, {}).get('recent_messages', []) if r['id'] == record['id']), None)
-        if cached:
+        if cached and 'rendered_content' not in data:
             data['rendered_content'] = cached['content']
         return data

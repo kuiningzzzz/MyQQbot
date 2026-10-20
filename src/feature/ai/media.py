@@ -10,21 +10,43 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from .local_workspace import LocalWorkspace
+from .media_cache import MediaCache
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+
+
+class MediaDescription(str):
+    def __new__(cls, value, complete=True):
+        result = super().__new__(cls, value)
+        result.complete = complete
+        return result
 
 
 class MediaReader:
     def __init__(self, config, client, identity, sandbox=None):
         self.config, self.client, self.identity = config, client, identity
         self.sandbox = sandbox or LocalWorkspace(config.root / "workspace")
+        self.cache = MediaCache(config.root)
 
-    async def understand(self, file_url: str, file_type: str = "image", filename: str = "") -> str:
+    async def understand(self, file_url: str, file_type: str = "image", filename: str = "", *, expires_at=None) -> str:
         suffix = PurePosixPath(filename or urlparse(file_url).path).suffix.casefold()
         pdf = suffix == ".pdf"
         if file_type != "image" and suffix not in IMAGE_SUFFIXES and not pdf:
             return f"收到文件：{filename or '未命名文件'}；尚未读取内容，可在用户要求处理时下载到工作区。"
         data = await self._download(file_url)
+        settings = self.config.load()
+        key = self.cache.key(data, settings, self.identity.prompt(), pdf)
+        async with self.cache.singleflight(key):
+            cached = await asyncio.to_thread(self.cache.get, key)
+            if cached is not None:
+                return MediaDescription(cached)
+            result = await self._describe(data, pdf)
+            if result.complete:
+                import time
+                await asyncio.to_thread(self.cache.put, key, result, min(expires_at or time.time() + 30 * 86400, time.time() + 30 * 86400))
+            return result
+
+    async def _describe(self, data, pdf):
         warning = ""
         try:
             if not self.config.load().ocr_enabled:
@@ -35,10 +57,12 @@ class MediaReader:
         except Exception as exc:
             warning = f"OCR未完成：{exc}"
             if pdf:
-                return f"收到PDF：{filename}；{warning}。未能提取正文，可按需下载到工作区处理。"
+                return MediaDescription(f"收到PDF；{warning}。未能提取正文，可按需下载到工作区处理。", False)
             mime = "image/jpeg" if data.startswith(b"\xff\xd8") else "image/gif" if data.startswith(b"GIF8") else "image/webp" if data[8:12] == b"WEBP" else "image/png"
             extracted = {"pages": [{"page": 1, "text": "", "image": f"data:{mime};base64," + base64.b64encode(data).decode()}]}
-        content = [{"type": "text", "text": f"请详细转述此{'PDF' if pdf else '图片'}，供聊天与记忆整理对话理解。文件名：{filename}。{warning}"}]
+        # Content-only descriptions are reusable across QQ attachments. Filenames
+        # remain in each message's metadata, never leak through a shared cache.
+        content = [{"type": "text", "text": f"请详细转述此{'PDF' if pdf else '图片'}，供聊天与记忆整理对话理解。{warning}"}]
         raw_text = []
         for page in extracted.get("pages", []):
             text = str(page.get("text") or "")[:20000]
@@ -57,14 +81,16 @@ class MediaReader:
         try:
             result = await self.client.turn(self.config.load(), messages, model=self.config.load().vision_model)
             description = str(result.get("content") or "未生成描述")
+            complete = bool(result.get('content')) and (not warning or not self.config.load().ocr_enabled)
         except Exception as exc:
+            complete = False
             description = f"视觉转述失败：{exc}；以下保留已取得的OCR/文本结果。"
         # Preserve OCR evidence alongside the model paraphrase.
         ocr = "\n".join(raw_text)
         evidence = ocr[:12000]
         if len(ocr) > 12000:
             evidence += "\n[OCR文本已截断；完整内容可按需下载后处理]"
-        return description + (f"\n【OCR/文本原文】\n{evidence}" if ocr.strip() else "") + (f"\n【范围】{limits}" if limits else "") + (f"\n【状态】{warning}" if warning else "")
+        return MediaDescription(description + (f"\n【OCR/文本原文】\n{evidence}" if ocr.strip() else "") + (f"\n【范围】{limits}" if limits else "") + (f"\n【状态】{warning}" if warning else ""), complete)
 
     async def _download(self, url: str) -> bytes:
         limit = 20 * 1024 * 1024

@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryRuntime:
+    MEDIA_DEBOUNCE_SECONDS = 10
+
     def __init__(self, feature):
         self.feature = feature
         self.workspace = feature.workspace
@@ -27,12 +29,21 @@ class MemoryRuntime:
 
     def trigger(self):
         settings = self.feature.config.load()
-        if self.running and self.enabled and settings.memory_enabled and settings.memory_auto_learn and self.feature.journal.pending_count() >= 100 and (not self.worker or self.worker.done()):
+        if self.running and self.enabled and settings.memory_enabled and settings.memory_auto_learn and self.ready() and (not self.worker or self.worker.done()):
             self.worker = asyncio.create_task(self._drain())
+
+    def ready(self):
+        return self.feature.journal.pending_count() >= 100 or self.feature.journal.pending_media_count() > 0
 
     async def _drain(self):
         try:
-            while self.running and self.enabled and self.feature.config.load().memory_auto_learn and self.feature.journal.pending_count() >= 100:
+            while self.running and self.enabled and self.feature.config.load().memory_auto_learn and self.ready():
+                if self.feature.journal.pending_count() < 100 and self.feature.journal.pending_media_count() < 100:
+                    # Coalesce late results rather than paying for one memory
+                    # model turn per emoji. Manual full() does not wait here.
+                    await asyncio.sleep(self.MEDIA_DEBOUNCE_SECONDS)
+                    if not self.running or not self.enabled or not self.feature.config.load().memory_auto_learn:
+                        break
                 await self.full()
         except asyncio.CancelledError:
             raise
@@ -49,19 +60,31 @@ class MemoryRuntime:
             if not allowed():
                 raise PermissionError('记忆整理已取消或关闭')
             rows = f.journal.rows(pending=True, limit=100)
+            supplements = f.journal.media_rows(pending=True, limit=100)
+            media_only = bool(supplements and len(rows) < 100)
+            if media_only:
+                rows = supplements
             if not rows:
                 return {'success': True, 'processed': 0, 'updated_files': []}
             batch = f"{rows[0]['seq']}-{rows[-1]['seq']}"
+            # Capture revisions before reading content. A result arriving during
+            # this transaction remains pending after its old revision is acked.
+            revisions = {r['seq']: f.journal.media_revision(r['seq']) for r in rows}
+            if any(revisions.values()) or media_only:
+                from .storage import digest
+                batch += '-media-' + digest(json.dumps(revisions, sort_keys=True))[:16]
+            processed = 0 if media_only else len(rows)
+            media_updated = len(rows) if media_only else 0
             receipt = self.workspace.load_state('memory-batch-receipt', {})
             if receipt.get('batch') == batch:
-                f.journal.acknowledge([r['seq'] for r in rows])
-                return {'success': True, 'processed': len(rows), **receipt}
+                f.journal.acknowledge([] if media_only else [r['seq'] for r in rows], revisions)
+                return {'success': True, **receipt, 'processed': processed, 'media_updated': media_updated}
             transaction = MemoryTransaction(self.workspace, batch, f.identity.ids)
             try:
                 payload = []
                 for row in rows:
                     data = f.journal_record(row)
-                    payload.append({'source': str(self.workspace.memory_root / row['path']), 'record': data['record'], 'rendered_content': data.get('rendered_content', ''), 'note': '原始QQ事件完整保存在source；长消息应按需read原文'})
+                    payload.append({'source': str(self.workspace.memory_root / row['path']), 'record': data['record'], 'rendered_content': data.get('rendered_content', ''), 'media_supplement': media_only, 'note': '媒体解析补充，不是新的用户发言；只补充原消息的可验证信息，表情包不等于长期偏好。' if media_only else '原始QQ事件完整保存在source；媒体后台解析未完成不应猜测，完成后会另行补充；长消息应按需read原文'})
                 atomic_write(transaction.root / 'batch.json', json.dumps(payload, ensure_ascii=False))
                 system = f.identity.prompt() + '''\n你负责另一个独立的记忆整理对话。只处理当前batch，历史批次仅作参考。
 先读取memory-management SKILL，再读batch.json及相关暂存记忆。覆盖本批所有人及群聊的可记忆事实，按SKILL中的分类和目录规范组织记忆。
@@ -77,7 +100,7 @@ class MemoryRuntime:
                     return await f.query_memory(**args)
                 result = await f.dsh.run('memory', prompt, task_id=uuid.uuid4().hex, handler=handler,
                     current=allowed, cwd=transaction.root, system=system,
-                    expires_at=rows[0]['timestamp'] + 30 * 86400)
+                    expires_at=min(row['timestamp'] for row in rows) + 30 * 86400)
                 if result.get('cancelled') or result.get('finish_reason') != 'completed':
                     raise RuntimeError('dsh整理未完成：' + str(result.get('error') or result.get('finish_reason')))
                 output = result.get('final_response', '').strip()
@@ -90,16 +113,17 @@ class MemoryRuntime:
                     if file.name in f.identity.ids:
                         raise ValueError('整理尝试建立机器人自身画像')
                 changed = transaction.commit()
-                f.journal.acknowledge([r['seq'] for r in rows])
+                f.journal.acknowledge([] if media_only else [r['seq'] for r in rows], revisions)
                 self.workspace.save_state('index', {'dirty': True})
                 self.last_error = ''
-                return {'success': True, 'processed': len(rows), 'batch': batch, 'updated_files': changed}
+                return {'success': True, 'processed': processed, 'media_updated': media_updated, 'batch': batch, 'updated_files': changed}
             finally:
                 transaction.close()
 
     async def tick(self):
         await asyncio.to_thread(self.feature.journal.prune)
         await self.feature.context.prune(time.time() - 30 * 86400)
+        await self.feature.media.prune()
         await self.feature.dsh.prune()
         self.trigger()
 

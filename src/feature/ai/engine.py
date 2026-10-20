@@ -18,7 +18,7 @@ CHAT_RULES = '''你是主对话，只理解、聊天、澄清和分派；所有�
 后台结果交付回合只处理实际结果，不能继续spawn；按原请求决定显式回复或保持沉默，不重发已交付文件。需要准确功能帮助时委派执行者查询，普通聊天不加载指南。'''
 
 WORKER_RULES = '''你是一次性Spawn执行者，只做assignment；origin是宿主提供的原请求和固定授权，后续聊天不改变本任务。不能spawn或发聊天文字/聊天记录，最终一次性返回结果，由主对话判断交付。
-优先使用dsh原生工具；记忆操作先读memory-management，功能细节按需读bot_guide，实时帮助用get_bot_help。文件写入origin.files_directory并用send_file实际交付，不能只返回路径。报告已完成、回执、失败及未完成事项。'''
+优先使用dsh原生工具；图片/PDF/合并转发先用read_media查询后台解析，必要时wait_seconds=30等待；未完成不能声称已看过。记忆操作先读memory-management，功能细节按需读bot_guide，实时帮助用get_bot_help。文件写入origin.files_directory并用send_file实际交付，不能只返回路径。报告已完成、回执、失败及未完成事项。'''
 
 SCHEDULED_RULES = '''你是独立定时fork执行者，只处理本次[定时任务]，不继承历史身份授权，不spawn；完成后分支日志删除，文件效果保留。
 你可直接使用send_message/send_forward_message交付，不受普通Spawn禁止聊天发送的限制。delivery=silent仍禁止所有QQ发送；message必须有显式发送成功回执；auto依提示决定。
@@ -191,15 +191,26 @@ class ChatEngine:
             rows.extend(page)
             if len(page) < 500:
                 break
+        media_cursor = f.workspace.load_state('chat-media-cursor', {}).get('id', 0) if cursor else 0
+        media_rows = []
+        while completion is None:
+            page = f.journal.media_rows(after=media_rows[-1]['media_update_id'] if media_rows else media_cursor, limit=500)
+            media_rows.extend(page)
+            if len(page) < 500:
+                break
+        new_sequences = {r['seq'] for r in rows}
+        source_rows = rows + [row for row in media_rows if row['seq'] not in new_sequences]
         # Backlog is a file, not an unbounded model request. No accepted event is silently discarded.
         feed = f.workspace.root / 'tmp' / ('chat-' + task['id'] + '.json')
         from .storage import atomic_write
         records = [{**(data := f.journal_record(row))['record'], **({'rendered_content': data['rendered_content']} if 'rendered_content' in data else {}), 'raw_path': str(f.workspace.memory_root / row['path'])} for row in rows]
+        records.extend([{**(data := f.journal_record(row))['record'], 'rendered_content': data.get('rendered_content', ''),
+            'media_supplement': True, 'raw_path': str(f.workspace.memory_root / row['path'])} for row in media_rows if row['seq'] not in new_sequences])
         atomic_write(feed, json.dumps(records, ensure_ascii=False))
         prompt = json.dumps({'current_scene': key, 'requester_qq': str(ctx.user_id), 'owner': owner, 'explicit_request': forced,
             'request': ctx.msg[:12000], 'message_id': ctx.event.get('message_id'), 'reply_ids': [s.get('data', {}).get('id') for s in ctx.event.get('message', []) if isinstance(s, dict) and s.get('type') == 'reply'],
-            'files_directory': str(directory), 'new_messages_file': str(feed), 'new_message_count': len(rows),
-            'recent_context': [{**r, 'content': r['content'][:4000], 'rendered_content': r.get('rendered_content', '')[:4000]} for r in records[-30:]], 'preview_notice': '预览可能截断，完整原文用read读取raw_path；所有新消息见new_messages_file'}, ensure_ascii=False)
+            'files_directory': str(directory), 'new_messages_file': str(feed), 'new_message_count': len(rows), 'media_update_count': len(media_rows),
+            'recent_context': [{**r, 'content': r['content'][:4000], 'rendered_content': r.get('rendered_content', '')[:4000]} for r in records[-30:]], 'preview_notice': '预览可能截断，完整原文用read读取raw_path；所有新消息及媒体补充见new_messages_file。media_supplement不是新发言，不必主动回复；未解析图片由执行者用read_media读取'}, ensure_ascii=False)
         system = (f.workspace.root / 'AGENT.md').read_text('utf-8') + '\n' + f.identity.prompt() + '\n' + CHAT_RULES
         system += '\n' + self_context(f, 'chat', scene=key, requester=ctx.user_id, owner=owner,
             explicit=forced, files_directory=directory)
@@ -217,7 +228,7 @@ class ChatEngine:
                 raise PermissionError('当前轮不能启动后台任务')
             child = {'id': identifier, 'key': key, 'qq': str(ctx.user_id), 'owner': owner, 'valid': True,
                 'attempts': {}, 'sent': 0, 'unknown': set(), 'worker': True}
-            deadline = min((r['timestamp'] for r in rows), default=time.time()) + 30 * 86400
+            deadline = min((r['timestamp'] for r in source_rows), default=time.time()) + 30 * 86400
             valid = lambda: child['valid'] and f.enabled and f.config.load().chat_enabled and time.time() < deadline
             child_feed = feed.with_name('worker-' + identifier + '.json')
             atomic_write(child_feed, feed.read_text('utf-8'))
@@ -243,13 +254,15 @@ class ChatEngine:
 
         try:
             result = await f.dsh.run('chat', prompt, task_id=task['id'], handler=handler, current=current, owner=owner, qq=str(ctx.user_id), system=system, scene_dir=directory.name, group_id=str(ctx.group_id) if ctx.message_type == 'group' else '',
-                expires_at=min((r['timestamp'] for r in rows), default=time.time()) + 30 * 86400,
+                expires_at=min((r['timestamp'] for r in source_rows), default=time.time()) + 30 * 86400,
                 worker_system=worker_system, spawn=spawn, delivery=completion is not None)
             if current() and not result.get('cancelled') and result.get('finish_reason') != 'completed':
                 raise RuntimeError('dsh本轮未完成：' + str(result.get('error') or result.get('finish_reason')))
             if current() and not result.get('cancelled') and result.get('finish_reason') == 'completed':
                 if rows:
                     f.workspace.save_state('chat-cursor', {'seq': rows[-1]['seq']})
+                if media_rows:
+                    f.workspace.save_state('chat-media-cursor', {'id': media_rows[-1]['media_update_id']})
                 f.workspace.save_state('index', {'dirty': True})
                 if not task['attempts']:
                     logger.debug('dsh聊天回合零发送：scene=%s task=%s delivery=%s', key, task['id'], completion is not None)
@@ -289,15 +302,16 @@ class ChatEngine:
                     batches = args.get('batches', 1)
                     if not isinstance(batches, int) or not 1 <= batches <= 20:
                         raise ValueError('batches须为1至20')
-                    processed = 0
+                    processed = media_updated = 0
                     for _ in range(batches):
                         if not current():
                             return {'success': False, 'code': 'cancelled'}
                         result = await f.runtime.full(current=current)
                         processed += result['processed']
-                        if not result['processed']:
+                        media_updated += result.get('media_updated', 0)
+                        if not result['processed'] and not result.get('media_updated'):
                             break
-                    return {'success': True, 'processed': processed, 'pending': f.journal.pending_count()}
+                    return {'success': True, 'processed': processed, 'media_updated': media_updated, 'pending': f.journal.pending_count(), 'pending_media': f.journal.pending_media_count()}
                 if name == 'send_message':
                     message = args.get('message')
                     if not isinstance(message, str) or not message.strip() or len(message) > 4000:
@@ -310,6 +324,8 @@ class ChatEngine:
                     result = await recall_message(f, ctx, args.get('message_id'), args.get('reason') or '查看引用消息', current, inspect=name == 'inspect_message')
                 elif name == 'list_attachments':
                     result = {'success': True, 'attachments': f.workfiles.list(key)}
+                elif name == 'read_media':
+                    result = await f.media.read(ctx, **args)
                 elif name in {'download_attachment', 'send_file'}:
                     if not f.config.load().workspace_enabled or not forced:
                         return {'success': False, 'code': 'explicit_request_required'}

@@ -46,7 +46,7 @@ test('owner status belongs only to current task and expired tasks never run', ()
   assert.match(check('read', '../secret'), /OWNER_REQUIRED/);
 });
 test('scheduled forks can execute and deliver, but do not inherit owner or spawn authority', () => {
-  for (const name of ['send_message','send_file','web_search','get_bot_help','schedule_create','schedule_list','schedule_update','schedule_delete','integrate_memory']) {
+  for (const name of ['send_message','send_file','read_media','web_search','get_bot_help','schedule_create','schedule_list','schedule_update','schedule_delete','integrate_memory']) {
     assert.equal(check(name, '.', {role:'scheduled'}), undefined);
     assert.match(check(name, '.', {kind:'memory',role:'memory'}), /PERMISSION_DENIED/);
     if (name === 'send_message') assert.equal(check(name, '.', {role:'main',owner:true}), undefined);

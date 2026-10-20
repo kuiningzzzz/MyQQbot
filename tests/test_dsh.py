@@ -140,7 +140,7 @@ class StateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_immutable_event_precedes_ocr_and_restart_queue_deduplicates(self):
         original = {'message_id': 1, 'self_id': 999, 'message': [{'type': 'image', 'data': {'url': 'https://example.org/a.png'}}]}
-        async def render(*args):
+        async def render(*args, **kwargs):
             self.assertEqual(self.f.journal.pending_count(), 1)
             self.assertEqual(self.f.journal.load(self.f.journal.rows()[0])['event'], original)
             return 'OCR原文与详细描述'
@@ -710,6 +710,53 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([name for name, _ in results], ['schedule_create','schedule_update','schedule_list','schedule_delete'])
         self.assertEqual(results[2][1]['tasks'][0]['content'], '带钥匙\n[CQ:at,qq=789] 新正文')
         self.assertEqual(timing.store.list(), [])
+
+    async def test_spawn_can_wait_for_background_media_without_holding_main(self):
+        vision_started, release, worker_started, finished = (asyncio.Event() for _ in range(4))
+        async def understand(*args, **kwargs):
+            vision_started.set()
+            await release.wait()
+            return '后台图片OCR结果'
+        self.f.files.understand = understand
+        bot = SimpleNamespace(reply=AsyncMock(), call_action=AsyncMock())
+        ctx = MessageContext(bot=bot, websocket=None, event={'message_id': 42, 'self_id': 999,
+            'message': [{'type': 'image', 'data': {'url': 'data:image/png;base64,eA=='}}]},
+            msg='分析图片', message_type='group', user_id=123, group_id=12)
+        await self.f.observe(ctx)
+        await asyncio.wait_for(vision_started.wait(), 5)
+        main_calls = worker_calls = 0
+        async def respond(request):
+            nonlocal main_calls, worker_calls
+            names = {t['name'] for t in request.get('tools', [])}
+            if 'read_media' in names:
+                worker_calls += 1
+                if worker_calls == 1:
+                    worker_started.set()
+                    return self.tool('read_media', message_id='42', wait_seconds=5)
+                self.assertIn('后台图片OCR结果', json.dumps(request, ensure_ascii=False))
+                return '已读取图片结果'
+            main_calls += 1
+            return self.tool('spawn_task', title='读取图片', prompt='等待图片解析结果') if main_calls == 1 else '主对话继续'
+        self.dispatcher = respond
+        task = {'worker': True, 'attempts': {}, 'sent': 0, 'unknown': set()}
+        async def finish(result):
+            self.assertEqual(result['state'], 'completed')
+            finished.set()
+        async def spawn(identifier, title):
+            return {'handler': self.f.engine.make_handler(ctx, 'group:12', True, task, lambda: True),
+                    'current': lambda: True, 'finish': finish, 'context': {}}
+        try:
+            result = await self.native(role='main', spawn=spawn)
+            self.assertEqual(result['finish_reason'], 'completed')
+            await asyncio.wait_for(worker_started.wait(), 5)
+            self.assertFalse(finished.is_set())
+            later = await asyncio.wait_for(self.native(role='main', task_id='media-next-chat'), 5)
+            self.assertEqual(later['finish_reason'], 'completed')
+            release.set()
+            await asyncio.wait_for(finished.wait(), 10)
+            bot.reply.assert_not_awaited()
+        finally:
+            release.set()
 
     async def test_scheduled_native_fork_inherits_history_without_blocking_and_deletes_logs(self):
         self.responses = ['父对话已完成标记']

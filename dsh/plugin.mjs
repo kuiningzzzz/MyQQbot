@@ -30,6 +30,7 @@ const definitions = {
   recall_message: ['撤回当前会话真实消息。本人申请撤回自己的消息直接批准；第三方申请结合误发、隐私、骚扰等上下文判断，不限申请者角色。对象不明先inspect_message；reason写判断依据。permission_denied是机器人QQ权限不足', {message_id: {type: 'string', required: true}, reason: {type: 'string', required: true}}],
   get_bot_help: ['按需获取最新admin帮助全文、模块用法与开关；主人帮助仅返回宿主确认的主人任务。了解模块不代表可调用其业务队列', {}],
   list_attachments: ['列出当前QQ会话收到的附件', {}],
+  read_media: ['读取当前会话图片/PDF/合并转发的后台解析结果，按message_id或attachment_id查询；可wait_seconds=0至30等待，未完成则返回状态；长结果用next_offset继续读取；retry=true仅明确重试失败解析。主对话须委派执行者使用，未完成前不能声称已看过图片', {message_id:{type:'string'},attachment_id:{type:'string'},wait_seconds:{type:'integer'},retry:{type:'boolean'},offset:{type:'integer'}}],
   download_attachment: ['先发简短确认后下载附件到当前会话files目录', {attachment_id: {type: 'string', required: true}, path: {type: 'string'}}],
   send_file: ['将files_directory内已创建、下载或修改的文件发送为当前群的群文件或当前私聊文件；path为文件路径，name为可选显示文件名；单文件最多20MiB，等待NapCat回执。需文件开关开启且当前为明确请求', {path: {type: 'string', required: true}, name: {type: 'string'}}],
   search_memory: ['本地向量与文本检索；scope为auto/user/group/common，auto搜索全部正式记忆。target_qq仅筛选用户记忆，target_group仅筛选群记忆；只查指定群时用scope=group和target_group。也可原生grep/read', {query: {type: 'string', required: true}, target_qq: {type: 'string'}, target_group: {type: 'string'}, scope: {type: 'string'}}],

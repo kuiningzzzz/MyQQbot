@@ -51,7 +51,8 @@ featureAdminControls.ai = async function (row) {
   function renderRuntime(data) {
     $('[data-ai-pending]').textContent=data.pending_messages;
     const container=$('[data-ai-runtime]');container.replaceChildren();
-    for(const [label,value] of [['模型','deepseek-flash'],['API Key',data.api_key_configured?'环境已配置':'环境未配置：请设置 DEEPSEEK_API_KEY'],['联网搜索','DeepSeek 原生搜索'],['dsh版本',data.dsh_version],['机器人账号',data.observed_self_ids.join('、')||'尚未连接'],['工作区',data.workspace_path],['记忆规则',data.memory_skill_path]]){
+    const media=data.media_queue||{};
+    for(const [label,value] of [['模型','deepseek-flash'],['API Key',data.api_key_configured?'环境已配置':'环境未配置：请设置 DEEPSEEK_API_KEY'],['联网搜索','DeepSeek 原生搜索'],['dsh版本',data.dsh_version],['媒体后台解析',`等待 ${media.queued||0} · 重试 ${media.retry||0} · 进行中 ${media.running||0} · 失败 ${media.failed||0}`],['待整理媒体补充',data.pending_media_memory||0],['机器人账号',data.observed_self_ids.join('、')||'尚未连接'],['工作区',data.workspace_path],['记忆规则',data.memory_skill_path]]){
       const dt=document.createElement('dt'),dd=document.createElement('dd');dt.textContent=label;dd.textContent=value;container.append(dt,dd);
     }
   }

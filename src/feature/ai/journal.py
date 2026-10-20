@@ -21,6 +21,10 @@ class Journal:
                   timestamp REAL NOT NULL, path TEXT NOT NULL, human INTEGER NOT NULL,
                   processed INTEGER NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS queue ON messages(processed,human,seq);
+                CREATE TABLE IF NOT EXISTS media_updates (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT, seq INTEGER UNIQUE NOT NULL,
+                  revision INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0,
+                  FOREIGN KEY(seq) REFERENCES messages(seq) ON DELETE CASCADE);
             """)
 
         # Recover files published just before a crash interrupted SQLite commit.
@@ -35,6 +39,7 @@ class Journal:
     def connect(self):
         db = sqlite3.connect(self.path, timeout=30)
         db.row_factory = sqlite3.Row
+        db.execute('PRAGMA foreign_keys=ON')
         try:
             with db:
                 yield db
@@ -77,16 +82,46 @@ class Journal:
             data['rendered_content'] = rendered.read_text('utf-8')
         return data
 
-    def annotate(self, sequence, content):
+    def annotate(self, sequence, content, *, media_update=False):
         with self.connect() as db:
-            row = db.execute('SELECT path FROM messages WHERE seq=?', (sequence,)).fetchone()
-        if row:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT path,timestamp FROM messages WHERE seq=?', (sequence,)).fetchone()
+            if not row or row['timestamp'] <= time.time() - 30 * 86400:
+                return False
             path = self.workspace.memory_root / row['path']
-            atomic_write(path.with_suffix('.rendered.txt'), content)
+            if not path.exists():
+                return False
+            rendered = path.with_suffix('.rendered.txt')
+            if media_update and rendered.exists() and rendered.read_text('utf-8') == content and db.execute('SELECT 1 FROM media_updates WHERE seq=?', (sequence,)).fetchone():
+                return True
+            atomic_write(rendered, content)
+            if media_update:
+                db.execute('''INSERT INTO media_updates(seq,revision) VALUES (?,1) ON CONFLICT(seq) DO UPDATE
+                    SET id=(SELECT coalesce(max(id),0)+1 FROM media_updates), revision=revision+1''', (sequence,))
+            return True
 
-    def acknowledge(self, sequences):
+    def media_revision(self, sequence):
+        with self.connect() as db:
+            row = db.execute('SELECT revision FROM media_updates WHERE seq=?', (sequence,)).fetchone()
+            return row[0] if row else 0
+
+    def media_rows(self, *, pending=False, after=0, limit=100):
+        where = 'AND m.human=1 AND m.processed=1 AND u.revision>u.consumed' if pending else ''
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(f'''SELECT m.*,u.id AS media_update_id,u.revision AS media_revision
+                FROM media_updates u JOIN messages m ON m.seq=u.seq
+                WHERE u.id>? {where} ORDER BY u.id LIMIT ?''', (after, limit))]
+
+    def pending_media_count(self):
+        with self.connect() as db:
+            return db.execute('''SELECT count(*) FROM media_updates u JOIN messages m ON m.seq=u.seq
+                WHERE m.human=1 AND m.processed=1 AND u.revision>u.consumed''').fetchone()[0]
+
+    def acknowledge(self, sequences, media_revisions=None):
         with self.connect() as db:
             db.executemany("UPDATE messages SET processed=1 WHERE seq=?", [(seq,) for seq in sequences])
+            for sequence, revision in (media_revisions or {}).items():
+                db.execute('UPDATE media_updates SET consumed=max(consumed,?) WHERE seq=?', (revision, sequence))
 
     def pending_count(self):
         with self.connect() as db:

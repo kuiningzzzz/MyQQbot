@@ -13,20 +13,34 @@ class WorkFiles:
         self.feature = feature
         self.attachments = feature.workspace.load_state("attachments", {})
 
-    def register(self, ctx, kind, data):
+    @staticmethod
+    def attachment_name(kind, data):
+        name = str(data.get('name') or data.get('file_name') or data.get('file') or ('image.png' if kind == 'image' else 'attachment.bin'))
+        if name.startswith(('http:', 'https:', 'data:', 'base64:')):
+            name = 'image.png' if kind == 'image' else 'attachment.bin'
+        return PurePosixPath(name.replace('\\', '/')).name[:180]
+
+    def register(self, ctx, kind, data, *, position=None, persist=True):
         now = time.time()
         self.attachments = {key: item for key, item in self.attachments.items() if now - item["created"] < 7 * 86400}
-        identifier = uuid.uuid4().hex[:16]
-        name = str(data.get("name") or data.get("file_name") or data.get("file") or ("image.png" if kind == "image" else "attachment.bin"))
-        if name.startswith(("http:", "https:", "data:", "base64:")):
-            name = "image.png" if kind == "image" else "attachment.bin"
-        name = PurePosixPath(name.replace("\\", "/")).name[:180]
+        if position is not None:
+            import hashlib
+            identifier = hashlib.sha256(f'{self.feature.scene_key(ctx)}:{ctx.event.get("message_id")}:{position}'.encode()).hexdigest()[:24]
+            if identifier in self.attachments:
+                return identifier, self.attachments[identifier]
+        else:
+            identifier = uuid.uuid4().hex[:16]
+        name = self.attachment_name(kind, data)
         item = {"scene": self.feature.scene_key(ctx), "sender_qq": str(ctx.user_id), "message_id": str(ctx.event.get("message_id", "")), "kind": kind, "name": name, "size": data.get("file_size", data.get("size")), "created": now, "data": {key: data[key] for key in ("url", "file", "file_id") if key in data}}
         self.attachments[identifier] = item
         while len(self.attachments) > 300 or len(json.dumps(self.attachments)) > 3 * 1024 * 1024:
             self.attachments.pop(next(iter(self.attachments)))
-        self.feature.workspace.save_state("attachments", self.attachments)
+        if persist:
+            self.flush()
         return identifier, item
+
+    def flush(self):
+        self.feature.workspace.save_state('attachments', self.attachments)
 
     def list(self, scene):
         return [{"attachment_id": key, **{k: v for k, v in item.items() if k not in {"data", "scene"}}} for key, item in self.attachments.items() if item["scene"] == scene and time.time() - item["created"] < 7 * 86400][-50:]

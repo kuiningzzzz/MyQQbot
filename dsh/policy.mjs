@@ -32,6 +32,7 @@ export function denial(task, name, args, workspace) {
   if (task.owner) return;
   const fileTools = new Set(['read', 'write', 'edit', 'glob', 'grep']);
   const qqTools = new Set(['send_message', 'send_forward_message', 'recall_message', 'inspect_message', 'get_bot_help', 'list_attachments', 'download_attachment', 'send_file', 'web_search', 'web_fetch', 'search_memory', 'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'integrate_memory']);
+  if (name === 'read_media') return task.kind === 'chat' ? undefined : 'PERMISSION_DENIED: 记忆整理只能读取已完成的媒体补充';
   if (name === 'skill' || name === 'search_memory') return;
   if (qqTools.has(name)) {
     if (task.kind !== 'chat') return 'PERMISSION_DENIED: 记忆整理对话不能使用QQ或网络工具';
