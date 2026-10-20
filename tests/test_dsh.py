@@ -765,6 +765,77 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
                 branch.cancel()
             await asyncio.gather(branch, return_exceptions=True)
 
+    async def test_scheduled_fork_after_restart_from_delivery_only_parent_can_send(self):
+        self.responses = ['主对话历史']
+        await self.native(role='main', prompt='PRE_RESTART_CHAT')
+        self.responses = ['后台结果已处理']
+        await self.native(role='main', delivery=True, prompt='PRE_RESTART_DELIVERY')
+        self.assertEqual({tool['name'] for tool in self.requests[-1]['tools']},
+                         {'send_message', 'send_forward_message'})
+        await self.f.dsh.stop()
+        start = len(self.requests)
+        handler = AsyncMock(return_value={'success': True, 'message_id': 'news-forward'})
+        self.responses = [self.tool('send_forward_message', messages=['本地模拟新闻播报']), '已发送']
+        result = await asyncio.wait_for(self.native(role='scheduled', owner=True,
+            task_id='first-schedule-after-restart', prompt='[定时任务] POST_RESTART_NEWS', handler=handler), 15)
+        self.assertEqual(result['finish_reason'], 'completed')
+        for request in self.requests[start:]:
+            names = {tool['name'] for tool in request.get('tools', [])}
+            self.assertTrue({'send_message', 'send_forward_message', 'send_file', 'read', 'write'} <= names, names)
+            self.assertNotIn('spawn_task', names)
+            instructions = model_instructions(request)
+            self.assertIn('PRE_RESTART_CHAT', instructions)
+            self.assertIn('PRE_RESTART_DELIVERY', instructions)
+            self.assertIn('POST_RESTART_NEWS', instructions)
+        handler.assert_awaited_once_with('send_forward_message', {'messages': ['本地模拟新闻播报']})
+        self.assertEqual(json.loads((self.f.dsh.home / 'qqbot-branches.json').read_text('utf-8')), {})
+
+    async def test_scheduled_fork_has_send_tools_while_main_is_busy(self):
+        audit = self.enterContext(patch('src.feature.ai.dsh_runtime.logger.info'))
+        began, release = asyncio.Event(), asyncio.Event()
+        calls = []
+        async def respond(request):
+            # Identify the branch by its own input rather than by the tool set
+            # whose correctness this test is intended to verify.
+            if 'BUSY_PARENT_SCHEDULE' in model_instructions(request):
+                calls.append(request)
+                if len(calls) == 1:
+                    return self.tool('send_message', message='并发定时消息')
+                return '定时发送完成'
+            began.set()
+            await release.wait()
+            return '主对话完成'
+        self.dispatcher = respond
+        main = asyncio.create_task(self.native(role='main', task_id='busy-main', prompt='BUSY_PARENT_CHAT'))
+        branch = None
+        handler = AsyncMock(return_value={'success': True})
+        try:
+            await asyncio.wait_for(began.wait(), 15)
+            branch = asyncio.create_task(self.native(role='scheduled', task_id='busy-schedule',
+                prompt='[定时任务] BUSY_PARENT_SCHEDULE', handler=handler))
+            result = await asyncio.wait_for(branch, 15)
+            self.assertEqual(result['finish_reason'], 'completed')
+            self.assertFalse(main.done())
+            self.assertTrue(calls)
+            for request in calls:
+                names = {tool['name'] for tool in request.get('tools', [])}
+                self.assertTrue({'send_message', 'send_forward_message', 'send_file', 'read', 'write', 'schedule_create'} <= names, names)
+                self.assertNotIn('spawn_task', names)
+            handler.assert_awaited_once_with('send_message', {'message': '并发定时消息'})
+            logged = [json.loads(call.args[1]) for call in audit.call_args_list if call.args[0] == 'dsh工具注入：%s']
+            surfaces = {entry['role']: entry for entry in logged}
+            self.assertEqual(set(surfaces), {'main', 'scheduled'})
+            self.assertEqual(set(surfaces['main']['tools']), {'send_message', 'send_forward_message', 'spawn_task', 'task_status', 'cancel_task'})
+            self.assertIn('send_message', surfaces['scheduled']['tools'])
+            self.assertNotIn('BUSY_PARENT_SCHEDULE', json.dumps(logged))
+            self.assertNotIn('local-test-key', json.dumps(logged))
+        finally:
+            release.set()
+            for task in [main, branch]:
+                if task and not task.done():
+                    task.cancel()
+            await asyncio.gather(*(task for task in [main, branch] if task), return_exceptions=True)
+
     async def test_scheduled_fork_cancellation_deletes_branch(self):
         began, release = asyncio.Event(), asyncio.Event()
         async def respond(request):
@@ -784,6 +855,34 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             if not branch.done():
                 branch.cancel()
             await asyncio.gather(branch, return_exceptions=True)
+
+    async def test_scheduled_missing_send_tool_fails_before_model_and_reports_reason(self):
+        # Simulate an extra native restriction, using only a temporary profile.
+        # The production profile, dependencies and data remain untouched.
+        mask = Path(self.temp.name) / 'mask-send.mjs'
+        mask.write_text("""export const inject = ['agents', 'tools'];
+export function apply(ctx) {
+  ctx.on('agent/created', ({agent}) => {
+    if (agent.session.header.origin === 'subagent') agent.ctx.tools.restrict({deny:['send_message']});
+  });
+}
+""", encoding='utf-8')
+        profile = Path(self.temp.name) / 'masked-profile.yml'
+        original = (self.f.dsh.code / 'profile.yml').read_text('utf-8')
+        original = original.replace('name: ./plugin.mjs', 'name: ' + json.dumps((self.f.dsh.code / 'plugin.mjs').as_posix()))
+        profile.write_text(original + '\n    - id: mask-send\n      name: ' + json.dumps(mask.as_posix()) + '\n', encoding='utf-8')
+        launch = asyncio.create_subprocess_exec
+        async def launch_masked(*args, **kwargs):
+            args = list(args)
+            if '--patch' in args:
+                args[args.index('--patch') + 1] = str(profile)
+            return await launch(*args, **kwargs)
+        with patch('src.feature.ai.dsh_runtime.asyncio.create_subprocess_exec', side_effect=launch_masked):
+            with self.assertRaisesRegex(RuntimeError, 'SEND_TOOLS_MISSING.*send_message'):
+                await asyncio.wait_for(self.native(role='scheduled', task_id='missing-send', prompt='[定时任务] 必须发送'), 15)
+        self.assertEqual(self.requests, [])
+        self.assertEqual(json.loads((self.f.dsh.home / 'qqbot-branches.json').read_text('utf-8')), {})
+        self.assertEqual(self.f.dsh.active, {})
 
     async def test_scheduled_integrates_pending_memory_without_blocking_main(self):
         from src.feature.timing.feature import TimingFeature

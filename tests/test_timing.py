@@ -379,6 +379,37 @@ class TimingTests(unittest.IsolatedAsyncioTestCase):
             r=await client.post('/api/timing/tasks',json={**data,'kind':'ai','prompt':'维护','owner_grant':True,'requester':'456'})
             self.assertEqual(r.status_code,400)
 
+    async def test_delivery_choices_preserved_across_partial_edit_and_reopen(self):
+        # Existing auto tasks remain auto, including the compatibility default;
+        # UI guidance must not silently change the saved execution contract.
+        choices = [('default', None), ('auto', 'auto'), ('message', 'message'), ('silent', 'silent')]
+        tasks = []
+        for label, delivery in choices:
+            args = {'flag': '-d', 'time': '08-00-00', 'prompt': label}
+            if delivery is not None:
+                args['delivery'] = delivery
+            created = await self.f.tool(self.ctx(), 'schedule_create', args)
+            self.assertTrue(created['success'], created)
+            original = created['task']
+            mode = delivery or 'auto'
+            self.assertEqual(original['delivery'], mode)
+            result = await self.f.tool(self.ctx(), 'schedule_update',
+                {'task_id': original['id'], 'time': '09-00-00'})
+            self.assertTrue(result['success'], result)
+            self.assertEqual(result['task']['delivery'], mode)
+            tasks.append(result['task'])
+        self.f.store = TaskStore(self.f.store.path)
+        for saved in tasks:
+            restored = self.f.store.get(saved['id'])
+            self.assertEqual(restored['delivery'], saved['delivery'])
+            self.assertEqual(restored['revision'], saved['revision'])
+            self.assertEqual(restored['prompt'], saved['prompt'])
+        # Changing an old news task is explicit and does not migrate its peers.
+        changed = await self.f.tool(self.ctx(), 'schedule_update',
+            {'task_id': tasks[0]['id'], 'delivery': 'message'})
+        self.assertEqual(changed['task']['delivery'], 'message')
+        self.assertEqual(self.f.store.get(tasks[1]['id'])['delivery'], 'auto')
+
     async def test_scheduled_prompt_silent_and_memory_bridge(self):
         captured={}
         async def run(kind,prompt,**kw):

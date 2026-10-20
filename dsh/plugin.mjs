@@ -9,6 +9,11 @@ export const name = 'myqqbot-bridge';
 export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt', 'sessionPersistence', 'fs', 'compaction', 'subagents', 'workingDirectory'];
 
 const text = value => [{type: 'text', text: value}];
+export function validateScheduledTools(task, names) {
+  if (task.role !== 'scheduled') return;
+  const missing = ['send_message', 'send_forward_message', 'send_file'].filter(name => !names.includes(name));
+  if (missing.length) throw new Error('SEND_TOOLS_MISSING: 定时分支缺少发送工具：' + missing.join(', '));
+}
 function writeJSON(file, value) {
   const temporary = file + '.' + randomUUID() + '.tmp';
   try {
@@ -31,9 +36,9 @@ const definitions = {
   spawn_task: ['启动一次性后台执行者，立即返回内部task_id；prompt写目标、必要上下文和交付要求。结果自动回主对话，文字由主对话交付、文件由执行者send_file；不自动发受理回执，不继承后续请求，不提升权限', {title: {type: 'string', required: true}, prompt: {type: 'string', required: true}}],
   task_status: ['查询当前请求者在当前QQ会话的后台任务状态，省略task_id列出最近任务', {task_id: {type: 'string'}}],
   cancel_task: ['取消当前请求者在当前QQ会话的指定后台任务；文件修改不回滚', {task_id: {type: 'string', required: true}}],
-  schedule_create: ['建立当前会话任务：固定原文kind=fixed/content，动态生成或工作kind=ai/prompt（默认ai）。北京时间；-y 月-日-时-分-秒，-m 日-时-分-秒，-w 星期1至7-时-分-秒，-d 时-分-秒，-o 年-月-日-时-分-秒。农历加-cn，个位数无需补零；循环取下一次，一次性过去时间拒绝。content保留空白，群艾特用[CQ:at,qq=QQ号]；delivery仅AI可用auto/message/silent。闰月等细则见qqbot-guide', {kind:{type:'string'},flag:{type:'string',required:true},time:{type:'string',required:true},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string'}}],
+  schedule_create: ['建立当前会话任务：固定原文kind=fixed/content，动态生成或工作kind=ai/prompt（默认ai）。AI须显式选择delivery：播报、提醒、交付结果用message；允许按条件静默用auto；内部维护用silent。北京时间；-y 月-日-时-分-秒，-m 日-时-分-秒，-w 星期1至7-时-分-秒，-d 时-分-秒，-o 年-月-日-时-分-秒。农历加-cn，个位数无需补零；循环取下一次，一次性过去时间拒绝。content保留空白，群艾特用[CQ:at,qq=QQ号]；fixed不能传delivery。闰月等细则见qqbot-guide', {kind:{type:'string'},flag:{type:'string',required:true},time:{type:'string',required:true},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string',enum:['message','auto','silent']}}],
   schedule_list: ['列出当前QQ会话定时任务、类型、内容、唯一ID和下次时间；省略kind列出固定消息和AI两类，可传fixed或ai筛选。不能查看其他会话', {kind:{type:'string'}}],
-  schedule_update: ['修改当前会话任务，只传变化字段；task_id来自list，保持原类型。fixed用content、ai用prompt，时间格式同create，delivery仅AI可用。enabled暂停/启用；授权按当前请求者重算，不能跨会话', {task_id:{type:'string',required:true},flag:{type:'string'},time:{type:'string'},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string'},enabled:{type:'boolean'}}],
+  schedule_update: ['修改当前会话任务，只传变化字段；task_id来自list，保持原类型。fixed用content、ai用prompt，时间格式同create。AI的delivery：明确要求播报/交付用message，允许按条件静默用auto，内部维护用silent；仅改时间等字段时保留原模式。enabled暂停/启用；授权按当前请求者重算，不能跨会话', {task_id:{type:'string',required:true},flag:{type:'string'},time:{type:'string'},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string',enum:['message','auto','silent']},enabled:{type:'boolean'}}],
   schedule_delete: ['按task_id删除当前QQ会话的固定消息或AI定时任务，不能操作其他群或私聊', {task_id:{type:'string',required:true}}],
   integrate_memory: ['整理新增记忆队列，复用宿主100条批次的暂存、校验与冲突保护。无需逐个编辑他人画像；batches可选1至20，返回数量，不泄露其他会话内容', {batches:{type:'integer'}}],
 };
@@ -73,6 +78,28 @@ export async function apply(ctx) {
   // A crash leaves a cleanup receipt, never an orphaned retained fork.
   for (const id of Object.keys(branches)) removeBranch(id);
   const currentTask = agent => tasks.get(agent?.id);
+  // Inspect the effective agent scope, not the global registry or the parent's
+  // persisted request/header. Run at every model step, including after tools
+  // and compaction; only log the first surface or a subsequent change.
+  ctx.on('agent/pre-step', ({agent}, next) => {
+    const task = currentTask(agent);
+    if (task) {
+      const names = ctx.tools.schemas(agent).map(tool => tool.name).sort();
+      const signature = JSON.stringify(names);
+      if (task.tool_surface !== signature) {
+        task.tool_surface = signature;
+        process.stderr.write('QQBOT_TOOL_SURFACE ' + JSON.stringify({task_id: task.task_id,
+          agent_id: agent.id, role: task.role, kind: task.kind,
+          background_delivery: !!task.delivery, tools: names}) + '\n');
+      }
+      try { validateScheduledTools(task, names); }
+      catch (error) {
+        task.tool_surface_error = error.message;
+        throw error;
+      }
+    }
+    return next();
+  });
   ctx.tools.guard(exec => denial(currentTask(exec.agent), exec.name, exec.arguments, workspace));
   async function callback(task, toolName, args, signal) {
     const response = await fetch(process.env.QQBOT_CALLBACK, {method: 'POST', headers: {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}, body: JSON.stringify({task_id: task.task_id, name: toolName, arguments: args}), signal});
@@ -304,6 +331,9 @@ export async function apply(ctx) {
       job.run = await start;
       job.timer = setTimeout(() => cancel(job), Math.max(1, task.expires_at-Date.now()));
       const result = await job.run.result;
+      // The native activation reports a stop reason without the original
+      // exception. Preserve this diagnostic for the scheduler/admin run log.
+      if (task.tool_surface_error) throw new Error(task.tool_surface_error);
       return {cancelled:task.cancelled,finish_reason:result.stopReason,
         final_response:(result.output||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n')};
     } finally {

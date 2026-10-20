@@ -21,8 +21,9 @@ WORKER_RULES = '''你是一次性Spawn执行者，只做assignment；origin是�
 优先使用dsh原生工具；记忆操作先读memory-management，功能细节按需读bot_guide，实时帮助用get_bot_help。文件写入origin.files_directory并用send_file实际交付，不能只返回路径。报告已完成、回执、失败及未完成事项。'''
 
 SCHEDULED_RULES = '''你是独立定时fork执行者，只处理本次[定时任务]，不继承历史身份授权，不spawn；完成后分支日志删除，文件效果保留。
-delivery=silent禁止所有QQ发送；message必须有显式发送成功回执；auto依提示决定。定时管理仅限current_scene，固定原文用kind=fixed/content，动态生成或执行用kind=ai/prompt；用法按工具和bot_guide，新增记忆整理用integrate_memory。
-播报新闻先联网核实日期、来源并附链接，兴趣仅用本场景公开资料；失败不编造。最终返回实际执行结果。'''
+你可直接使用send_message/send_forward_message交付，不受普通Spawn禁止聊天发送的限制。delivery=silent仍禁止所有QQ发送；message必须有显式发送成功回执；auto依提示决定。
+定时管理仅限current_scene，固定原文用kind=fixed/content，动态生成或执行用kind=ai/prompt；用法按工具和bot_guide，新增记忆整理用integrate_memory。
+新闻播报先读bot_guide的播报记账规则；联网核实日期、来源并附链接，兴趣仅用本场景公开资料。发送成功回执后才能写为已播报；失败只保存待发送草稿，unknown不自动重发，不编造回执。最终返回实际执行结果。'''
 
 
 class ChatEngine:
@@ -369,6 +370,11 @@ class ChatEngine:
             return {**result, 'delivery_unknown': bool(task['unknown']), 'delivery_error': delivery_error}
         finally:
             task['valid'] = False
+            # Fork logs are removed on completion. Preserve host-side delivery
+            # counters even for auto/silent or failed runs, without message text.
+            logger.info('AI定时任务发送统计：task=%s run=%s scene=%s delivery=%s attempts=%s sent=%s unknown=%s',
+                        job['id'], job['run_id'], key, job.get('delivery', 'auto'),
+                        json.dumps(task['attempts'], sort_keys=True), task['sent'], sorted(task['unknown']))
 
     async def stop(self):
         self.reset_transient()

@@ -34,12 +34,12 @@
         <label>历法与循环<select name="flag"><optgroup label="公历"><option value="-d">每天</option><option value="-w">每周</option><option value="-m">每公历月</option><option value="-y">每公历年</option><option value="-o">公历日期，仅一次</option></optgroup><optgroup label="中国农历（-cn）"><option value="-y-cn">每农历年（如农历生日）</option><option value="-m-cn">每农历月（含闰月）</option><option value="-o-cn">农历日期，仅一次</option><option value="-w-cn">每周（与公历相同）</option><option value="-d-cn">每天（与公历相同）</option></optgroup></select></label>
         <label><span class="timing-time-label">公历日期 / 北京时间</span><input name="time" required><small class="timing-format"></small></label>
         <label>请求者QQ（可选，普通权限默认0）<input name="requester" pattern="[0-9]{1,20}" inputmode="numeric"></label>
-        <label>AI发送方式<select name="delivery"><option value="auto">按提示词决定：播报发送，维护可静默</option><option value="message">完成后向本会话发送结果</option><option value="silent">静默执行，禁止向QQ发送</option></select></label>
+        <label>AI发送方式<select name="delivery"><option value="message">必须发送成功（播报、提醒、结果交付）</option><option value="auto">按条件决定（允许不发送也正常结束）</option><option value="silent">静默维护（禁止向QQ发送）</option></select><small class="timing-delivery-help"></small></label>
       </div>
       <label class="timing-check"><input name="enabled" type="checkbox" checked>启用任务</label>
       <label class="timing-check"><input name="owner_grant" type="checkbox">允许主人越界操作（请求者须为当前绑定的主人QQ）</label>
       <p class="timing-meta">AI任务每次从主对话 fork，独立执行后删除分支日志。历史中的主人身份不会继承。普通群友修改任务会按修改者重新计算权限。</p>
-      <label>消息内容 / AI提示词<textarea name="content" required placeholder="固定消息可用 [CQ:at,qq=123456] 艾特；AI可填写：整理新增记忆，不需要发送消息。"></textarea></label>
+      <label>消息内容 / AI提示词<textarea name="content" required placeholder="固定消息可用 [CQ:at,qq=123456] 艾特；AI如：核实本群关注的今日新闻，附来源链接并发送。内部维护请选择静默模式。"></textarea></label>
       <div class="timing-actions"><button type="submit" class="timing-save">保存任务</button><button type="button" class="secondary timing-cancel">取消编辑</button><span class="timing-form-status" role="status"></span></div>
     </form>
     <div class="timing-list"></div>

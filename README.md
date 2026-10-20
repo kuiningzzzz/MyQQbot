@@ -78,6 +78,8 @@ data/ai/workspace/memory/
 /timing-task del <任务ID>
 ```
 
+新闻播报等需要实际交付的 AI 任务，请在 admin 选择“必须发送成功”（message），或让 Agent 按此模式创建。旧 QQ 指令保留 auto 默认值，允许零发送；completed 只表示执行结束。静默维护可选择 silent。新闻只有获得成功回执后才应记入已播报台账。
+
 | 选项 | 周期 | 时间格式 |
 | --- | --- | --- |
 | `-y` | 每年 | `月-日-时-分-秒` |

@@ -137,7 +137,12 @@ class DshRuntime:
             if not line:
                 break
             # Keep bounded diagnostics, never print model requests or credentials.
-            self.stderr = (self.stderr + [line.decode(errors="replace").strip()])[-20:]
+            entry = line.decode(errors="replace").strip()
+            self.stderr = (self.stderr + [entry])[-20:]
+            if entry.startswith('QQBOT_TOOL_SURFACE '):
+                # Names and host-issued identifiers only; never log prompts,
+                # tool arguments, chat content or model credentials here.
+                logger.info('dsh工具注入：%s', entry.removeprefix('QQBOT_TOOL_SURFACE '))
         if process:
             await process.wait()
         if self.process is process:
