@@ -26,6 +26,9 @@ class BackupControl:
             if feature.name == 'ai':
                 engine = feature.engine
                 memory = feature.runtime.worker
+                stickers = getattr(feature, 'stickers', None)
+                if stickers and stickers.busy:
+                    raise BackupError('表情收藏正在同步或修改，请完成后再备份或还原')
                 if feature.dsh.active or engine.current or not engine.pending.empty() or engine.background or (memory and not memory.done()):
                     raise BackupError('AI 正在聊天、执行任务或整理记忆，请完成后再备份或还原')
             if feature.name == 'timing' and feature.running:

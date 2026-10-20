@@ -140,8 +140,8 @@ class QQBot:
             return
         await self.feature_manager.handle_event(ctx)
 
-    async def call_action(self, action: str, params: dict, ws: WebSocket) -> dict:
-        if action not in {"get_forward_msg", "get_file", "get_group_file_url", "get_private_file_url", "get_msg", "get_group_member_info", "delete_msg", "send_group_msg", "send_private_msg", "upload_group_file", "upload_private_file", "send_group_forward_msg", "send_private_forward_msg"}:
+    async def call_action(self, action: str, params: dict, ws: WebSocket) -> dict | list:
+        if action not in {"get_forward_msg", "get_file", "get_group_file_url", "get_private_file_url", "get_msg", "get_group_member_info", "delete_msg", "send_group_msg", "send_private_msg", "upload_group_file", "upload_private_file", "send_group_forward_msg", "send_private_forward_msg", "fetch_custom_face_detail", "fetch_custom_face", "add_custom_face", "delete_custom_face", "set_custom_face_desc", "download_file"}:
             raise ValueError("不允许的动作")
         echo = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
@@ -151,7 +151,8 @@ class QQBot:
             result = await asyncio.wait_for(future, timeout=120 if action in {"upload_group_file", "upload_private_file", "send_group_forward_msg", "send_private_forward_msg"} else 20)
             if result.get("status") == "failed" or result.get("retcode", 0) != 0:
                 raise OneBotError(action, result)
-            return result.get("data") or {}
+            data = result.get("data")
+            return data if data is not None else {}
         finally:
             self._responses.pop(echo, None)
 

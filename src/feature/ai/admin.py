@@ -69,6 +69,8 @@ class AiAdmin:
 
     def register_routes(self, app: FastAPI):
         f = self.feature
+        from . import sticker_admin
+        sticker_admin.register(app, f)
 
         @app.get("/api/ai/workspace/status")
         async def workspace_status():
@@ -232,8 +234,10 @@ class AiAdmin:
 
     @property
     def panel_html(self):
-        return Path(__file__).with_name("panel.html").read_text("utf-8")
+        from . import sticker_admin
+        return Path(__file__).with_name("panel.html").read_text("utf-8").replace('<!-- STICKER_PANEL -->', sticker_admin.panel_html())
 
     @property
     def javascript(self):
-        return Path(__file__).with_name("panel.js").read_text("utf-8")
+        from . import sticker_admin
+        return Path(__file__).with_name("panel.js").read_text("utf-8") + '\n' + sticker_admin.javascript()

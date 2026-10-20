@@ -24,6 +24,7 @@ featureAdminControls.ai = async function (row) {
   function tab(name) {
     $$('[data-ai-tab]').forEach(button=>{const selected=button.dataset.aiTab===name;button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;});
     $$('[data-ai-view]').forEach(view=>view.hidden=view.dataset.aiView!==name);
+    row.dispatchEvent(new CustomEvent('ai-tab-open', {detail:name}));
   }
   const tabs=$$('[data-ai-tab]');
   tabs.forEach((button,index)=>{
@@ -44,6 +45,8 @@ featureAdminControls.ai = async function (row) {
     parent.append(wrapper);fields[key]=input;
   }
   const config=await request('/api/ai/config');
+  field($('[data-ai-switches]'),'stickers_enabled','启用表情库自动同步、后台理解与Agent发送',config.stickers_enabled);
+  initStickerPanel(row);
   for(const [key,label] of Object.entries({bot_qq:'机器人QQ号',nickname:'网名／唤醒姓名',account_description:'账号身份说明'}))field($('[data-ai-identity]'),key,label,config[key]);
   for(const [key,label] of Object.entries({chat_enabled:'启用聊天',summary_enabled:'启用群聊总结',memory_enabled:'启用长时记忆',memory_auto_learn:'自动整理消息队列',workspace_enabled:'启用文件下载与发送',ocr_enabled:'启用图片／PDF OCR',vector_index_enabled:'启用本地向量检索'}))field($('[data-ai-switches]'),key,label,config[key]);
   for(const [key,label] of Object.entries({embedding_model:'嵌入模型名称或本地目录',timezone:'时间显示时区'}))field($('[data-ai-memory]'),key,label,config[key]);

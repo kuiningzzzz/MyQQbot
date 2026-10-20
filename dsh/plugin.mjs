@@ -11,7 +11,7 @@ export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt
 const text = value => [{type: 'text', text: value}];
 export function validateScheduledTools(task, names) {
   if (task.role !== 'scheduled') return;
-  const missing = ['send_message', 'send_forward_message', 'send_file'].filter(name => !names.includes(name));
+  const missing = ['send_message', 'send_forward_message', 'send_file', 'send_sticker'].filter(name => !names.includes(name));
   if (missing.length) throw new Error('SEND_TOOLS_MISSING: 定时分支缺少发送工具：' + missing.join(', '));
 }
 function writeJSON(file, value) {
@@ -24,6 +24,8 @@ function writeJSON(file, value) {
   }
 }
 const definitions = {
+  find_sticker: ['按情绪、用途或名称从当前机器人账号的本地表情库查找少量候选；不调用视觉模型，不等后台解析。主对话可直接查询；目录未就绪时不要猜ID', {query: {type:'string'}, limit:{type:'integer'}}],
+  send_sticker: ['按find_sticker返回的sticker_id向当前QQ会话发送一张表情，本轮最多1张、会话冷却10秒；静默任务禁止发送，结果unknown不重发。增删改委派主人执行者读sticker-management SKILL', {sticker_id:{type:'string',required:true}}],
   send_message: ['向current_scene发文字，1至4000字符，本轮最多4次；检查回执', {message: {type: 'string', required: true}}],
   send_forward_message: ['向当前会话发机器人身份的聊天记录卡片；messages顺序文本1至20条，各1至4000字符、总计最多20000，本轮最多1次。长文或用户要求时使用，成功后不重复正文，不冒充他人', {messages: {type: 'array', items: {type: 'string'}, required: true}}],
   inspect_message: ['读取当前会话中已知或引用消息的真实发送者', {message_id: {type: 'string', required: true}}],
@@ -125,7 +127,7 @@ export async function apply(ctx) {
     // rc.2 removed request.toolFilter. Bind the child scope before its first
     // model step, independently of the changing shared parent's authority.
     agent.ctx.tools.restrict({deny: task.role === 'worker'
-      ? ['spawn_task', 'task_status', 'cancel_task', 'send_message', 'send_forward_message']
+      ? ['spawn_task', 'task_status', 'cancel_task', 'send_message', 'send_forward_message', 'send_sticker']
       : ['spawn_task', 'task_status', 'cancel_task']});
     if (task.role === 'scheduled') {
       branches[agent.id] = true;
@@ -299,7 +301,7 @@ export async function apply(ctx) {
       const task = {...data, expires_at: generation.expires, cancelled: false};
       tasks.set(agent.id, task);
       lift = agent.ctx.tools.restrict(data.role === 'main'
-        ? {allow: data.delivery ? ['send_message', 'send_forward_message'] : ['send_message', 'send_forward_message', 'spawn_task', 'task_status', 'cancel_task']}
+        ? {allow: data.delivery ? ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker'] : ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'spawn_task', 'task_status', 'cancel_task']}
         : {deny: ['spawn_task', 'task_status', 'cancel_task']});
       const before = agent.session.snapshotEvents().length;
       agent.followup({id: randomUUID(), role: 'user', source: {kind: 'user'}, content: text(data.prompt)});

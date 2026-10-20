@@ -45,6 +45,14 @@ test('owner status belongs only to current task and expired tasks never run', ()
   assert.match(denial(null,'read',{},work), /TASK_EXPIRED/);
   assert.match(check('read', '../secret'), /OWNER_REQUIRED/);
 });
+test('sticker lookup is lightweight and sticker sending respects conversation roles', () => {
+  for (const name of ['find_sticker','send_sticker']) {
+    assert.equal(check(name, '.', {role:'main'}), undefined);
+    assert.equal(check(name, '.', {role:'scheduled'}), undefined);
+    assert.match(check(name, '.', {kind:'memory',role:'memory'}), /PERMISSION_DENIED/);
+  }
+  assert.match(check('send_sticker', '.', {role:'worker',owner:true}), /PERMISSION_DENIED/);
+});
 test('scheduled forks can execute and deliver, but do not inherit owner or spawn authority', () => {
   for (const name of ['send_message','send_file','read_media','web_search','get_bot_help','schedule_create','schedule_list','schedule_update','schedule_delete','integrate_memory']) {
     assert.equal(check(name, '.', {role:'scheduled'}), undefined);

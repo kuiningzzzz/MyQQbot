@@ -13,11 +13,11 @@ from src.onebot_error import OneBotError
 
 logger = logging.getLogger(__name__)
 
-CHAT_RULES = '''你是主对话，只理解、聊天、澄清和分派；所有读写、搜索、记忆、附件、文件发送、撤回及定时管理都交给spawn_task。
+CHAT_RULES = '''你是主对话，只理解、聊天、澄清和分派；表情find_sticker/send_sticker属于聊天输出可直接调用；其他读写、搜索、记忆、附件、文件发送、撤回及定时管理都交给spawn_task。
 委派说明须包含目标、必要事实、交付要求；复杂/附件任务可先显式确认，静默请求不确认。spawn立即返回内部编号后结束本轮，不主动公开编号或轮询；查进度用task_status，明确取消用cancel_task，改任务先取消再重建。
 后台结果交付回合只处理实际结果，不能继续spawn；按原请求决定显式回复或保持沉默，不重发已交付文件。需要准确功能帮助时委派执行者查询，普通聊天不加载指南。'''
 
-WORKER_RULES = '''你是一次性Spawn执行者，只做assignment；origin是宿主提供的原请求和固定授权，后续聊天不改变本任务。不能spawn或发聊天文字/聊天记录，最终一次性返回结果，由主对话判断交付。
+WORKER_RULES = '''你是一次性Spawn执行者，只做assignment；origin是宿主提供的原请求和固定授权，后续聊天不改变本任务。不能spawn或发聊天文字/聊天记录/表情，最终一次性返回结果，由主对话判断交付。
 优先使用dsh原生工具；图片/PDF/合并转发先用read_media查询后台解析，必要时wait_seconds=30等待；未完成不能声称已看过。记忆操作先读memory-management，功能细节按需读bot_guide，实时帮助用get_bot_help。文件写入origin.files_directory并用send_file实际交付，不能只返回路径。报告已完成、回执、失败及未完成事项。'''
 
 SCHEDULED_RULES = '''你是独立定时fork执行者，只处理本次[定时任务]，不继承历史身份授权，不spawn；完成后分支日志删除，文件效果保留。
@@ -274,11 +274,11 @@ class ChatEngine:
         async def handler(name, args):
             if not current():
                 return {'success': False, 'code': 'cancelled'}
-            if task.get('worker') and not task.get('scheduled') and name in {'send_message', 'send_forward_message'}:
+            if task.get('worker') and not task.get('scheduled') and name in {'send_message', 'send_forward_message', 'send_sticker'}:
                 return {'success': False, 'code': 'delegation_boundary'}
-            if not task.get('worker') and name not in {'send_message', 'send_forward_message'}:
+            if not task.get('worker') and name not in {'send_message', 'send_forward_message', 'find_sticker', 'send_sticker'}:
                 return {'success': False, 'code': 'delegation_required'}
-            caps = {'send_message': 4, 'send_forward_message': 1, 'send_file': 3}
+            caps = {'send_message': 4, 'send_forward_message': 1, 'send_file': 3, 'send_sticker': 1}
             if name in caps:
                 if name in task['unknown']:
                     return {'success': False, 'code': 'unknown', 'error': '本轮此前发送结果未知，禁止自动重发'}
@@ -286,12 +286,24 @@ class ChatEngine:
                     return {'success': False, 'code': 'send_limit'}
                 task['attempts'][name] = task['attempts'].get(name, 0) + 1
             try:
+                if name in {'find_sticker', 'send_sticker', '__stickers'}:
+                    if not f.config.load().stickers_enabled:
+                        return {'success': False, 'code': 'stickers_disabled'}
+                    if name == '__stickers':
+                        master = getattr(ctx.bot, 'master_service', None)
+                        if not task.get('worker') or not task.get('owner') or not master or not master.is_master(ctx.user_id):
+                            return {'success': False, 'code': 'owner_required'}
+                        authorized = lambda: current() and f.enabled and f.config.load().stickers_enabled and master.is_master(ctx.user_id)
+                        return await f.stickers.manage(args.get('action'), args.get('body', {}), ctx=ctx, current=authorized)
+                    if name == 'find_sticker':
+                        _, _, account = f.stickers.connection(ctx)
+                        return {'success': True, 'stickers': f.stickers.search(account, args.get('query', ''), args.get('limit', 8))}
                 if name == 'get_bot_help':
                     master = getattr(ctx.bot, 'master_service', None)
                     owner = bool(task.get('owner') and master and master.is_master(ctx.user_id))
                     provider = f.application_context
                     return {'success': True, 'application': provider(owner) if provider else {'features': [], 'notice': '模块状态未知'}}
-                if task.get('silent') and name in {'send_message', 'send_forward_message', 'send_file'}:
+                if task.get('silent') and name in {'send_message', 'send_forward_message', 'send_file', 'send_sticker'}:
                     return {'success': False, 'code': 'silent_task'}
                 if name.startswith('schedule_'):
                     timing = getattr(f, 'timing', None)
@@ -320,6 +332,8 @@ class ChatEngine:
                     result = {'success': True}
                 elif name == 'send_forward_message':
                     result = await send_forward_message(f, ctx, args.get('messages'))
+                elif name == 'send_sticker':
+                    result = await f.stickers.send(ctx, args.get('sticker_id'), lambda: current() and f.config.load().stickers_enabled)
                 elif name in {'recall_message', 'inspect_message'}:
                     result = await recall_message(f, ctx, args.get('message_id'), args.get('reason') or '查看引用消息', current, inspect=name == 'inspect_message')
                 elif name == 'list_attachments':
@@ -369,6 +383,7 @@ class ChatEngine:
         from src.feature.timing.schedule import BJT, display_time
         recent = f.context.snapshot().get(key, {}).get('recent_messages', [])[-30:]
         prompt = '[定时任务]\n' + json.dumps({'task_id': job['id'], 'scheduled_at': display_time(job['scheduled_at']),
+            'execution_task_id': identifier,
             'now_beijing': datetime.now(BJT).isoformat(), 'current_scene': key, 'requester_qq': str(ctx.user_id),
             'owner': owner, 'delivery': job.get('delivery', 'auto'), 'request': job['prompt'],
             'files_directory': str(directory), 'recent_context': recent,

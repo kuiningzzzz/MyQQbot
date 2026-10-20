@@ -1,0 +1,33 @@
+<section id="ai-view-stickers" data-ai-view="stickers" role="tabpanel" aria-labelledby="ai-tab-stickers" hidden>
+  <style>
+    .sticker-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(210px,1fr)); gap: 16px; }
+    .sticker-card { border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px; min-width: 0; }
+    .sticker-card img { width: 100%; height: 150px; object-fit: contain; background: #f8fafc; border-radius: 6px; margin-bottom: 12px; }
+    .sticker-card p { margin: 8px 0; overflow-wrap: anywhere; }
+    .sticker-card .ai-field { margin: 10px 0; }
+    .sticker-card .ai-toolbar { gap: 6px; margin: 10px 0 0; }
+    .sticker-card button { padding: 7px 10px; font-size: 13px; }
+    .sticker-pagination { display: flex; gap: 12px; align-items: center; margin: 16px 0; }
+    [data-sticker-status] { white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+  <div class="ai-card">
+    <h3>表情库</h3>
+    <p class="ai-muted">QQ收藏与本地目录分开管理。同步会自动读取更多收藏并在后台下载、去重、标注。名称、标签和本地描述不改变QQ收藏，只有勾选同步QQ描述才会调用QQ修改接口。表情数据随项目完整备份。</p>
+    <div class="ai-toolbar"><label class="ai-field">机器人账号<select data-sticker-account aria-label="机器人QQ账号"></select></label><button type="button" data-sticker-sync>同步QQ收藏</button><button type="button" class="ai-secondary" data-sticker-refresh>刷新</button></div>
+    <div class="ai-grid"><label class="ai-field">添加图片URL<input type="text" data-sticker-url placeholder="https://…"></label><label class="ai-field">名称（可选）<input type="text" data-sticker-name maxlength="100"></label></div>
+    <label class="ai-check"><input type="checkbox" data-sticker-add-qq checked>同时加入QQ账号收藏（需要NapCat在线）</label>
+    <div class="ai-toolbar"><button type="button" data-sticker-add-url>从URL添加</button><input type="file" data-sticker-upload accept="image/png,image/jpeg,image/gif,image/webp" aria-label="上传表情图片"><button type="button" data-sticker-add-file>上传图片</button></div>
+    <p class="ai-muted">PNG/JPEG/GIF/WebP，最多8MiB。GIF会保留原动图，理解时只抽样少量帧。不依赖两个容器共享本地文件路径。</p>
+    <p data-sticker-status role="status" aria-live="polite"></p>
+  </div>
+  <div class="ai-card">
+    <div class="ai-toolbar"><h3>已有表情</h3><input type="text" data-sticker-query placeholder="搜索名称、标签或描述" aria-label="搜索表情" style="max-width:280px"><button type="button" class="ai-secondary" data-sticker-search>搜索</button></div>
+    <div class="sticker-grid" data-sticker-grid></div>
+    <div class="sticker-pagination"><button type="button" class="ai-secondary" data-sticker-prev>上一页</button><span data-sticker-count></span><button type="button" class="ai-secondary" data-sticker-next>下一页</button></div>
+  </div>
+  <div class="ai-card">
+    <h3>测试发送</h3>
+    <p class="ai-muted">点击卡片的“测试发送”会真的向下面指定的群聊或私聊发一张图片。发送有10秒会话冷却；超时表示结果未知，请先在QQ核对。</p>
+    <div class="ai-grid"><label class="ai-field">目标类型<select data-sticker-test-type><option value="group">群聊</option><option value="private">私聊</option></select></label><label class="ai-field">目标群号／QQ号<input type="text" data-sticker-test-id inputmode="numeric"></label></div>
+  </div>
+</section>

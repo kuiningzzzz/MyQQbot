@@ -26,6 +26,7 @@ from .media import MediaReader
 from .runtime import MemoryRuntime
 from .storage import Workspace
 from .workfiles import WorkFiles
+from .stickers import StickerLibrary
 from .media import IMAGE_SUFFIXES
 from .media_queue import MediaQueue, needs_media, PENDING
 
@@ -49,6 +50,7 @@ class AiFeature(Feature):
         self.sandbox = LocalWorkspace(self.workspace.root)
         self.files = MediaReader(self.config, self.client, self.identity, self.sandbox)
         self.workfiles = WorkFiles(self)
+        self.stickers = StickerLibrary(self)
         self.media = MediaQueue(self)
         self.dsh = DshRuntime(self)
         self.runtime = MemoryRuntime(self)
@@ -298,6 +300,7 @@ class AiFeature(Feature):
     async def start(self, bot):
         await self.runtime.start()
         await self.media.start(bot)
+        await self.stickers.start(bot)
         if not self.config.load().vector_index_enabled:
             return
         ok, error = await asyncio.to_thread(self.index.preload)
@@ -307,6 +310,7 @@ class AiFeature(Feature):
             logger.warning("AI 向量索引预加载失败：%s（记忆检索已降级为纯文本检索，每 %s 秒自动重试）", error, self.index.MODEL_RETRY_SECONDS)
 
     async def stop(self):
+        await self.stickers.stop()
         await self.media.stop()
         await self.engine.stop()
         await self.runtime.stop()
@@ -349,6 +353,14 @@ class AiFeature(Feature):
                          + Path(__file__).with_name('self_description.md').read_text('utf-8'))
         if not guide.exists() or guide.read_text('utf-8') != guide_content:
             atomic_write(guide, guide_content)
+        # Built-in operational SKILL: not a permanently injected mutation tool.
+        source = Path(__file__).with_name('skills') / 'sticker-management'
+        for file in source.rglob('*'):
+            if file.is_file() and file.suffix in {'.md', '.py'}:
+                dest = self.workspace.root / '.agents/skills/sticker-management' / file.relative_to(source)
+                content = file.read_text('utf-8')
+                if not dest.exists() or dest.read_text('utf-8') != content:
+                    atomic_write(dest, content)
 
     async def query_memory(self, query, target_qq=None, scope='auto', target_group=None):
         if scope not in {'auto', 'user', 'group', 'common'} or any(value is not None and (not str(value).isascii() or not str(value).isdigit()) for value in (target_qq, target_group)):

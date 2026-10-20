@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {validateScheduledTools} from '../plugin.mjs';
 
-const sends = ['send_message', 'send_forward_message', 'send_file'];
+const sends = ['send_message', 'send_forward_message', 'send_file', 'send_sticker'];
 
 test('a scheduled branch must retain every send tool, regardless of owner status', () => {
   for (const owner of [false, true]) {

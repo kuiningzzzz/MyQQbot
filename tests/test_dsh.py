@@ -463,6 +463,18 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
     async def native(self, kind='chat', **kwargs):
         return await self.f.dsh.run(kind, kwargs.pop('prompt', 'native test'), task_id=kwargs.pop('task_id', 'test'), current=lambda: True, handler=kwargs.pop('handler', AsyncMock(return_value={'success': True})), qq='123', scene_dir='scene', system='必读分类规则', role=kwargs.pop('role', 'worker' if kind == 'chat' else 'memory'), **kwargs)
 
+    async def test_native_sticker_tools_reach_host_in_main_delivery_and_scheduled(self):
+        for index, options in enumerate([{'role': 'main'}, {'role': 'main', 'delivery': True}, {'role': 'scheduled'}]):
+            handler = AsyncMock(return_value={'success': True, 'message_id': 123})
+            self.responses = [self.tool('find_sticker', query='开心'),
+                self.tool('send_sticker', sticker_id='s-' + 'a' * 24), '内部记录']
+            before = len(self.requests)
+            result = await self.native(task_id=f'sticker-{index}', prompt='[定时任务] 表情链路测试' if options['role'] == 'scheduled' else '表情链路测试', handler=handler, **options)
+            self.assertEqual(result['finish_reason'], 'completed')
+            for request in self.requests[before:]:
+                self.assertTrue({'find_sticker', 'send_sticker'} <= {t['name'] for t in request['tools']})
+            self.assertEqual([call.args[0] for call in handler.await_args_list], ['find_sticker', 'send_sticker'])
+
     async def test_upgrade_resumes_genuine_old_checkpoint_and_preserves_data(self):
         from src.feature.ai.dsh_upgrade import DSH_VERSION
         fixture = Path(__file__).parent / 'fixtures/dsh-0.2.0-rc.2/session.v4.jsonl'
@@ -818,7 +830,7 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         self.responses = ['后台结果已处理']
         await self.native(role='main', delivery=True, prompt='PRE_RESTART_DELIVERY')
         self.assertEqual({tool['name'] for tool in self.requests[-1]['tools']},
-                         {'send_message', 'send_forward_message'})
+                         {'send_message', 'send_forward_message', 'find_sticker', 'send_sticker'})
         await self.f.dsh.stop()
         start = len(self.requests)
         handler = AsyncMock(return_value={'success': True, 'message_id': 'news-forward'})
@@ -872,7 +884,7 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             logged = [json.loads(call.args[1]) for call in audit.call_args_list if call.args[0] == 'dsh工具注入：%s']
             surfaces = {entry['role']: entry for entry in logged}
             self.assertEqual(set(surfaces), {'main', 'scheduled'})
-            self.assertEqual(set(surfaces['main']['tools']), {'send_message', 'send_forward_message', 'spawn_task', 'task_status', 'cancel_task'})
+            self.assertEqual(set(surfaces['main']['tools']), {'send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'spawn_task', 'task_status', 'cancel_task'})
             self.assertIn('send_message', surfaces['scheduled']['tools'])
             self.assertNotIn('BUSY_PARENT_SCHEDULE', json.dumps(logged))
             self.assertNotIn('local-test-key', json.dumps(logged))

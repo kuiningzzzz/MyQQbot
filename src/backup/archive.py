@@ -30,7 +30,7 @@ ENV_NAMES |= {'AI_' + key.upper() for key in (
     'api_key', 'api_url', 'dsh_api_url', 'bot_qq', 'nickname', 'account_description',
     'chat_enabled', 'summary_enabled', 'memory_enabled', 'memory_auto_learn',
     'dsh_timeout_seconds', 'vector_index_enabled', 'embedding_model', 'timezone',
-    'workspace_enabled', 'ocr_enabled')}
+    'workspace_enabled', 'ocr_enabled', 'stickers_enabled')}
 SOURCE_DIRS = {'src', 'dsh', 'deploy', 'docs', 'licenses', 'sandbox', 'scripts', 'tests', '.github'}
 SOURCE_FILES = {'Dockerfile', 'docker-compose.yml', 'requirements.txt', '.dockerignore',
                 '.env.example', '.gitignore', '.gitattributes', 'LICENSE', 'README.md',

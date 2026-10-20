@@ -97,6 +97,23 @@ class BackupTests(unittest.TestCase):
         self.assertEqual(read_json(self.root / 'data/master.json')['master_id'], 2)
         self.assertTrue((self.root / 'data/extra/current.txt').exists())
 
+    def test_sticker_catalogue_and_assets_survive_incremental_and_overwrite_restore(self):
+        from src.feature.ai.sticker_store import StickerStore
+        catalogue = StickerStore(self.root / 'data/ai')
+        first = catalogue.save('999', 'a' * 32, {'name': 'backup', 'asset': 'a' * 64 + '.png'})
+        asset = self.put('data/ai/workspace/stickers/assets/' + 'a' * 64 + '.png', 'image-bytes')
+        name = self.backup()
+        catalogue.save('999', 'a' * 32, {'name': 'current'})
+        second = catalogue.save('999', 'b' * 32, {'name': 'current-only'})
+        asset.unlink()
+        self.store.restore(name, 'incremental')
+        self.assertEqual(catalogue.get(first['id'])['name'], 'backup')
+        self.assertIsNotNone(catalogue.get(second['id']))
+        self.assertEqual(asset.read_text('utf-8'), 'image-bytes')
+        self.store.restore(name, 'overwrite')
+        self.assertIsNone(catalogue.get(second['id']))
+        self.assertEqual(catalogue.get(first['id'])['name'], 'backup')
+
     def test_incremental_merges_configuration_and_database_rows(self):
         self.put('data/features.json', '{"common":{"backup":1,"shared":"backup"},"backup-only":true}')
         self.put('data/ai/config.yaml', 'nickname: 备份名字\n')

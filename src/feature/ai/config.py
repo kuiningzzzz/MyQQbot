@@ -40,6 +40,7 @@ class Settings(BaseModel):
     timezone: str = "Asia/Shanghai"
     workspace_enabled: bool = True
     ocr_enabled: bool = True
+    stickers_enabled: bool = True
 
     @model_validator(mode="after")
     def budget_valid(self):
