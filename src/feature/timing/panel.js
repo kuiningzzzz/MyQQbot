@@ -5,12 +5,14 @@ featureAdminControls.timing = async row => {
   const formats = {'-y':'MM-DD-HH-MM-SS，如 10-01-00-00-00','-m':'DD-HH-MM-SS，如 01-08-00-00','-w':'01至07-HH-MM-SS，01周一，07周日','-d':'HH-MM-SS，如 08-00-00','-o':'YY-MM-DD-HH-MM-SS，也支持四位年份'};
   const deliveryHints = {message:'必须取得发送工具的成功回执；仅生成正文不算交付。失败或结果未知不会自动补发。',auto:'允许零发送仍记为执行完成。明确要求播报或提醒时请选择“必须发送成功”。',silent:'禁止文字、聊天记录和文件发送，适合整合记忆等内部维护。'};
   const hint = () => {
+    const system=!!editing?.system_maintenance;
+    for(const key of ['kind','scene_type','scene_id','bot_qq','requester'])fields[key].disabled=system;
     const lunar=fields.flag.value.endsWith('-cn'),flag=fields.flag.value.replace(/-cn$/,'');
     const note=lunar?(flag==='-y'?'；农历月日：01至12月、01至30日，普通月份每年一次':flag==='-m'?'；农历01至30日，含闰月，不存在的日期跳过':flag==='-o'?'；填写农历年月日，年份1900至2100':'；每周/每天与公历相同'):'';
     q('.timing-format').textContent=formats[flag]+note+'；用 - 分隔，月、日、星期、时分秒无需补零；年份可用一至两位或四位';
     q('.timing-time-label').textContent=lunar?'农历日期 / 北京时间':'公历日期 / 北京时间';
     fields.time.placeholder=formats[flag].split('，')[0];
-    fields.delivery.disabled=fields.kind.value!=='ai';fields.owner_grant.disabled=fields.kind.value!=='ai';
+    fields.delivery.disabled=system||fields.kind.value!=='ai';fields.owner_grant.disabled=system||fields.kind.value!=='ai';
     q('.timing-delivery-help').textContent=fields.kind.value==='ai'?deliveryHints[fields.delivery.value]:'固定消息到时直接发送，不使用AI发送模式。';
   };
   fields.flag.addEventListener('change',hint); fields.kind.addEventListener('change',hint); fields.delivery.addEventListener('change',hint); hint();
@@ -39,14 +41,15 @@ featureAdminControls.timing = async row => {
     list.append(element('p',`显示 ${selected.length} / ${tasks.length} 个任务`,'timing-meta'));
     for(const t of selected) {
       const card=element('div',undefined,'timing-card');
-      card.append(element('strong',`${t.kind==='ai'?'AI任务':'固定消息'} · ${t.calendar==='lunar'?'农历':'公历'} · ${t.scene} · ${t.enabled?'启用':'暂停 / 已完成'}`));
+      card.append(element('strong',`${t.system_maintenance?'系统维护 · 记忆压缩':(t.kind==='ai'?'AI任务':'固定消息')+' · '+t.scene} · ${t.calendar==='lunar'?'农历':'公历'} · ${t.enabled?'启用':'暂停 / 已完成'}`));
       card.append(element('div',`ID：${t.id} · 下次：${t.next_run_text}（北京时间）`,'timing-meta'));
       if(t.calendar==='lunar')card.append(element('div',`对应农历：${t.next_run_lunar_text}（北京时间）`,'timing-meta'));
-      if(t.kind==='ai')card.append(element('div',`执行身份 QQ ${t.requester} · ${t.owner_grant?'主人授权':'普通权限'} · ${t.delivery==='silent'?'静默维护':t.delivery==='message'?'必须发送成功':'auto：允许不发送'}`,'timing-meta'));
+      if(t.system_maintenance)card.append(element('div','主对话临时fork · 暂存维护 · 不发送QQ消息 · 完成后删除分支日志','timing-meta'));
+      else if(t.kind==='ai')card.append(element('div',`执行身份 QQ ${t.requester} · ${t.owner_grant?'主人授权':'普通权限'} · ${t.delivery==='silent'?'静默维护':t.delivery==='message'?'必须发送成功':'auto：允许不发送'}`,'timing-meta'));
       card.append(element('pre',t.command));
       if(t.last_run) {
         const last=t.last_run;
-        const deliveryNote=t.kind==='ai'&&last.status==='completed'?'（是否已交付，以本次发送回执为准）':'';
+        const deliveryNote=t.kind==='ai'&&!t.system_maintenance&&last.status==='completed'?'（是否已交付，以本次发送回执为准）':'';
         card.append(element('div',`最近执行：${last.status}${deliveryNote} · ${new Date(last.started*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})}`,'timing-meta'));
         const detail=element('details'); detail.append(element('summary','执行结果')); detail.append(element('pre',last.result||'等待执行回执')); card.append(detail);
       }

@@ -1,8 +1,8 @@
-# AI 服务：dsh 双会话架构与部署
+# AI 服务：dsh 主会话、维护分支与部署
 
 ## 本次改造
 
-聊天和记忆整理分别使用一个持久化 dsh 会话。所有群聊和私聊共用聊天会话，历史消息包含真实QQ号、昵称、场景、时间和消息ID；记忆整理共用另一个会话。聊天启用原生一次性 Spawn 子 Agent，主 Agent 只处理对话和分派。没有 Attention、可续聊/多层子 Agent 或03:00记忆任务。
+所有群聊和私聊共用一个持久主会话，历史含真实QQ号、昵称、场景、时间和消息ID。普通工作使用一次性Spawn，主Agent处理对话和分派；记忆整理与压缩从主会话已完成的历史fork临时分支，只执行维护指令，静默结束并物理删除分支日志，不向主会话汇报。没有Attention或可续聊/多层子Agent。
 
 锁定官方 npm 版本 `@deepseek-ai/dsh@0.2.1-rc.2`（2026-10-17发布的next预发布版本），依赖完整锁在 `dsh/package-lock.json`。官方仓库：https://github.com/deepseek-ai/deepseek-harness 。`dsh/profile.yml` 组合官方模型适配器、Agent循环、JSONL会话持久化、工作目录服务、token计量、自动上下文压缩、原生read/write/edit/glob/grep、Bash/PowerShell和SKILL。模型循环及上下文压缩由官方实现承担。
 
@@ -16,7 +16,7 @@ Python处理QQ事件、持久消息队列、文件/OCR、记忆提交、后台�
 
 宿主提前保留childId，在子Agent创建时绑定任务权限和工具过滤；不再使用新版已删除的request.toolFilter/localAgent接口。`delivery:'caller'`将唯一结果交给Python已有交付队列，避免内核再次自动唤醒共享主对话或重复交付。入队前通过AbortController取消，入队后显式调用activation.dispose()终止执行；原生result在会话刷新和资源释放后完成。文件和命令工具通过workingDirectory服务获得当前目录，宿主仍校验它必须与任务目录一致。
 
-子 Agent 使用全新上下文，不复制主对话整段历史；宿主附上原请求、真实 QQ、主人授权、绑定场景、引用、文件目录及独立原文输入文件，主 Agent 在说明中补充必要事实与交付要求。人设、账号身份、整体架构及记忆SKILL同样强制注入。权限固定来自发起请求，不能因主对话后来切换到主人或别的群而扩大。各任务使用独立 QQ 回调和发送计数；文件最多3次、20MiB，目的地始终是原会话。
+子Agent使用全新上下文，不复制主对话历史；宿主附上原请求、真实QQ、主人授权、绑定场景、引用、文件目录及原文输入文件，主Agent补充必要事实与交付要求。soul人格、身份和简短边界随任务注入，完整架构与SKILL按需读取。权限固定来自发起请求，不因后来切换主人或群而扩大。各任务有独立QQ回调和发送计数，文件最多3次、20MiB，目的地始终为原会话。
 
 子 Agent 不能发送聊天文字或聊天记录；可使用 `send_file` 交付文件。结束后向宿主返回一次结果并释放内核句柄，文字结果作为 `background_result` 排入共享主对话，由主对话按上下文显式调用发送工具交付；静默任务或文件已交付且无需补充时可零发送。这一交付回合不能再 Spawn，结果文本不视为新授权。文件修改和下载可以保留；临时原文输入在任务结束时清理，子会话日志使用来源原文的剩余保留期，最长7天。
 
@@ -89,12 +89,14 @@ data/ai/
   .vector_cache/                    原有本地BGE模型和可重建Chroma索引
   dsh-home/                        官方持久会话、期限元数据与受清理临时目录
   workspace/
-    AGENT.md                       唯一聊天人设，管理界面可编辑
+    memory/soul/AGENT.md            admin人设；soul下所有Markdown每轮作为系统人格加载
     .agents/skills/memory-management/
       SKILL.md                     记忆执行者按需读取的目录、分类与读写规则
       scripts/search.py            可选的纯Python记忆搜索脚本
     .agents/skills/qqbot-guide/
       SKILL.md                     宿主更新的完整机器人说明，按需读取
+    .agents/skills/soul-management/
+      SKILL.md                     自主、适度更新人格的内置指南，修改soul前读取
     memory/
       user/<QQ>/PERSON.md
       user/<QQ>/PREFERENCE.md
@@ -111,13 +113,13 @@ data/ai/
 
 `SKILL.md` 模板在 `src/feature/ai/skills/memory-management/SKILL.md`，首次启动复制到工作区，此后保留你的微调。宿主启动时仅刷新末尾 `qqbot:memory-layout:start/end` 标记之间的目录规范，来源为 `src/feature/ai/memory_layout.md`；规范只保存在SKILL中，不会作为独立系统上下文重复注入。dsh仅提供简短SKILL路径提示，涉及记忆查询、编辑或整理时由执行者使用skill或read按需读取全文，普通聊天无需加载；主对话委派子Agent读取并执行。可选 `scripts/search.py` 随部署更新，旧内容不同时备份为 `scripts/search.py.pre-upgrade.bak`。实际运行可微调SKILL的非托管部分，下次读取生效。聊天基础规则在 `src/feature/ai/engine.py` 的 `CHAT_RULES`，整理任务规则在 `src/feature/ai/runtime.py`。原生工具权限在 `dsh/policy.mjs`，它们不随人设修改而放宽。
 
-每轮只提供人设（聊天任务）、机器人身份、简短角色规则、`src/feature/ai/core_prompt.md` 的公共边界，以及 `self_context.py` 生成的当前身份、权限、路径和开关；动态JSON紧凑序列化，不重复附上模块使用资料或admin帮助全文。主对话保持只聊天和分派，显式发送、静默、跨场景隐私和真实授权等关键规则保留；详细工具参数只在工具定义中说明，不另附撤回/合并转发长篇规则。
+每轮提供soul全部Markdown、机器人身份、简短角色规则、`src/feature/ai/core_prompt.md`公共边界及`self_context.py`生成的当前身份、权限、路径和开关；动态JSON紧凑序列化，不重复模块资料和admin帮助全文。主对话只聊天和分派，详细工具参数在工具定义中说明。
 
 完整架构、模块命令、admin功能和操作说明仍在 `src/feature/ai/self_description.md`。启动时作为宿主管理的 `workspace/.agents/skills/qqbot-guide/SKILL.md` 发布，执行者需要功能细节时用原生skill/read读取；它不会覆盖人设或自定义记忆SKILL，也不再每轮注入全文。指南的微调请修改源码；工作区副本随部署启动更新。涉及记忆的任务仍须先读取memory-management SKILL。已有会话下一轮使用精简规则，历史记录按dsh原有保留和压缩策略管理，无需清空会话或记忆。
 
 FeatureManager通过通用 `bind_application_context` 回调提供模块信息；每轮仅注入模块name/title/enabled摘要。详细 `agent_usage`、普通帮助全文及主人帮助改由执行者调用 `get_bot_help()` 按需读取，与admin和 `/help` 共用实时数据，保存/恢复后立即可查，不写入共享工作区文件。主人帮助同时检查本次任务的固定主人授权和请求者当前仍为绑定主人；模型参数不能授权，普通任务和已撤销授权的任务不返回主人帮助。主对话须委派执行者查询，整理对话不能调用此工具。帮助内容不能授权或创造AI工具；AI仍不能直接调用JM/Pixiv业务队列。
 
-以相同临时配置（AI和帮助两个模块、默认人设）测量，主对话的Python宿主提示词由13,524字符降至2,106字符，执行子Agent由12,961降至2,090，定时任务由12,945降至2,126。这里只统计固定宿主提示词，不含消息历史、工具schema、dsh附加内容和按需查询结果；字符数并非计费token，实际费用还受缓存命中和任务长度影响。
+固定宿主提示词保持精简；soul所有内容按本功能设计每轮加载，文件越长上下文费用越高，因此维护指南要求避免重复和成长流水账。字符数并非计费token，费用还受历史、工具schema、缓存与任务长度影响。
 
 ## 队列、记忆与上下文
 
@@ -129,13 +131,21 @@ FeatureManager通过通用 `bind_application_context` 回调提供模块信息�
 
 所有原始新消息都有可读路径；模型输入只展示有限预览，大批积压放输入文件，Agent可以原生读取。dsh根据原生模型目录和默认策略自动压缩。SQLite是队列依据，dsh摘要不是队列游标。向量索引不索引原始聊天，原生编辑后会按内容哈希同步或重建；不可用时降级为Markdown文本检索，不再让Attention二次筛选。
 
-正式长期记忆仅包括上列user、group路径及common/GLOSSARY.md；group下可自由命名.md，但不允许再嵌套目录。三类均参与向量索引、文本回退、自动整理暂存及admin增删改查。`search_memory`的scope支持auto/user/group/common；target_qq只过滤用户部分，target_group只过滤群部分，auto仍包含其他类型，只查某群须指定scope=group。已有 `workspace/memory/group/<群号>/*.md` 无需迁移，下次检索会检测新增文件并同步索引；其他层级或非规范文件仍不纳入流程，不能靠重建索引补收。整理暂存中发现非法.md路径会拒绝整批提交。
+user、group与common/GLOSSARY.md参与向量索引和文本回退，group下只支持一层.md。soul下允许任意层级Markdown，进入admin和维护副本，每轮全文作为系统人格加载，不参与向量检索。`search_memory`的scope为auto/user/group/common，target_qq与target_group仅筛选相应类别。非规范路径不进入正式流程，暂存发现非法.md会拒绝整批提交。
+
+## soul与每日压缩
+
+admin人设和Agent的人格使用同一个来源：`workspace/memory/soul/AGENT.md`。启动时把旧`workspace/AGENT.md`原样迁入，原文备份到`.state/legacy-AGENT.md`；已有soul文件优先，不覆盖，迁移完成标记避免文件被主动删除后又重建。soul全部Markdown每轮加载，更新在下轮生效，已运行任务保持启动时的快照。
+
+任何交流都可以启发Agent自主、适度地修改soul，不需主人授权。内置`src/feature/ai/skills/soul-management/SKILL.md`解释渐进成长、稳定自我、反思而非服从外部要求、避免重复和私密事实。主对话依然委派执行者写文件；服务器命令、工作区外读写和宿主规则权限不随人格放开。
+
+首次启动定时模块时一次性安装每天北京时间02:00的系统记忆压缩任务，显示在admin定时列表，可改时间、提示词、暂停或删除，重启不重建已删除任务。它无需QQ在线和聊天开关，但受AI、记忆和定时开关控制；维护流程与100条批次共用锁。读取全库清单并扫描，合并重复内容、清理已过时资料和多余标签，可用`delete_memory_file`删除已合并文件。所有改写和删除先暂存，完成回执校验与并发冲突检查通过后一起发布，提交恢复日志支持崩溃后重放；raw原文不进入可写副本。分支结束、取消时删除会话目录，异常退出留下的清理收据在下次内核启动时删除孤儿分支。
 
 ## 权限和发送
 
 主人身份沿用管理界面的绑定机制，当前 `ctx.user_id` 必须与 `MasterService.master_id` 一致。转发、历史记录、昵称、自称主人及模型参数都不能提供主人授权。每轮重新计算；主人权限不从共享历史或上轮任务继承。
 
-普通用户可以读取工作区、编辑自己的合法Markdown画像、当前群的合法群记忆及当前场景files目录；私聊不能编辑群记忆，不能写规则、他人画像、其他群记忆或其他场景文件，也不能调用任意命令或访问工作区外路径。群写入权限绑定宿主从真实QQ事件传入的group_id，子Agent和定时分支继承当次真实场景，不从模型参数或共享历史获取授权。符号链接越界、硬链接和搜索路径逃逸受到检查。整理会话没有主人身份，只可写暂存用户/群记忆和公共知识，可检索正式记忆，不能发送QQ消息、执行命令或修改服务器。
+普通任务可读工作区、编辑本人合法画像、当前群记忆、本场景files和soul人格；soul修改无需主人授权。私聊不能借共享历史改群记忆，不能改他人画像、其他场景文件或宿主规则，也不能执行任意命令和工作区外读写。群权限绑定真实QQ事件的group_id，链接和路径逃逸受检查。维护分支无主人身份，只能改暂存user/group/common/soul，检索正式记忆；不能QQ发送、联网、命令或修改服务器。
 
 主人当前请求可以使用原生Bash（Linux）或PowerShell（Windows），以及工作区外读写，其操作范围取决于服务进程的OS权限。Docker方式可控制容器及挂载目录；要控制宿主服务器，应使用下面的原生部署方式。没有默认挂载Docker socket或整个宿主根目录。
 
@@ -164,7 +174,7 @@ QQ工具不接受任意目标，始终绑定当轮真实请求场景。最多4�
 旧版本先停止，再部署新版本；不要让两个版本同时使用同一data目录。建议升级前自行保留整个data备份。首次构造AI服务会自动调用 `src/feature/ai/migrate.py`：
 
 1. 原样移动旧 `user/`、`common/` 到 `workspace/memory/`，旧 `raw/` 到 `workspace/memory/raw/legacy/`。
-2. 复制唯一人设到 `workspace/AGENT.md`，保留账号配置、主人绑定及本地嵌入模型缓存；原文保留设置更新为30天。
+2. 旧人设经`workspace/AGENT.md`迁入`workspace/memory/soul/AGENT.md`，另存原文备份；保留账号配置、主人绑定及本地嵌入模型缓存，原文期限为30天。
 3. 同名目标内容一致可继续；不同则停止并显示冲突，不覆盖目标。中途停止后可重跑。
 4. 写完成标记，后续启动直接跳过。旧已整合记忆继续可用；旧原文只作历史档案，不重新算入新100条队列。
 

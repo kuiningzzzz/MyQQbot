@@ -1,15 +1,30 @@
-"""Durable 100-message batches in the independent maintenance conversation."""
+"""Transactional memory maintenance in disposable forks of the main chat."""
 import asyncio
 import json
 import logging
 import time
 import uuid
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from .storage import atomic_write
 from .transactions import MemoryTransaction, recover
 from .self_context import self_context
 
 logger = logging.getLogger(__name__)
+
+MAINTENANCE_RULES = '''你是从主对话fork的临时记忆维护分支，继承主对话已完成的上下文，但只执行本轮维护指令，不继续历史请求。
+先读取memory-management SKILL，涉及人格再读soul-management SKILL。当前cwd/memory是可修改的完整暂存副本；正式memory只读。
+使用原生读写和search_memory；索引检索的是正式记忆，编辑前必须读暂存对应文件。需要删除已合并或过时文件时调用delete_memory_file，不能删除原始聊天记录。
+不能执行命令、联网、发送QQ消息、spawn，或向主对话汇报。无需受理回执、维护日志或结果消息；最终仅向宿主输出JSON：{"completed":true,"batch":"本批编号"}。
+只有完成本轮全部维护才能报告completed=true；发生失败、冲突或未完成须如实报告，宿主会保留正式数据和队列。
+'''
+
+COMPRESSION_PROMPT = '''[定时任务] 记忆压缩：平扫inventory.json列出的全部暂存记忆文件，逐个读取后维护。当前日期以宿主current_time为准，不沿用历史对话的旧日期。
+合并重复事实和同主题事件，清理已明确过时的计划、失去价值的细节、无意义标签和重复时间标签；保留事实的有效时间、必要来源和关系，不为缩小体积牺牲仍有用的记忆。
+合并后删除空壳和已迁移完有效内容的冗余文件；不确定是否过时则保留或明确不确定性，不臆测事实。不要修改或复制原始聊天档案来绕过30天保留期。
+soul也要检查冗余与矛盾，依据soul-management SKILL谨慎精简、渐进更新；不是为完成定时任务强行改变人格，不把聊天事实和成长流水账塞入人格。
+'''
 
 
 class MemoryRuntime:
@@ -86,37 +101,74 @@ class MemoryRuntime:
                     data = f.journal_record(row)
                     payload.append({'source': str(self.workspace.memory_root / row['path']), 'record': data['record'], 'rendered_content': data.get('rendered_content', ''), 'media_supplement': media_only, 'note': '媒体解析补充，不是新的用户发言；只补充原消息的可验证信息，表情包不等于长期偏好。' if media_only else '原始QQ事件完整保存在source；媒体后台解析未完成不应猜测，完成后会另行补充；长消息应按需read原文'})
                 atomic_write(transaction.root / 'batch.json', json.dumps(payload, ensure_ascii=False))
-                system = f.identity.prompt() + '''\n你负责另一个独立的记忆整理对话。只处理当前batch，历史批次仅作参考。
-先读取memory-management SKILL，再读batch.json及相关暂存记忆。覆盖本批所有人及群聊的可记忆事实，按SKILL中的分类和目录规范组织记忆。
-普通闲聊可以不产生记忆。原文不可修改。当前cwd/memory是本批可修改的暂存副本；正式memory只读。
-不能执行命令、联网或发送QQ消息。
-检索索引命中的是正式记忆，写入前必须读取暂存对应文件。完成全部编辑后最终仅输出JSON：{"completed":true,"batch":"本批编号"}。
-'''
-                system += '\n' + self_context(f, 'memory', cwd=transaction.root)
-                prompt = json.dumps({'batch': batch, 'count': len(rows), 'batch_file': str(transaction.root / 'batch.json'), 'memory_directory': str(transaction.root / 'memory')}, ensure_ascii=False)
-                async def handler(name, args):
-                    if name != 'search_memory':
-                        raise PermissionError('整理任务只能调用记忆检索')
-                    return await f.query_memory(**args)
-                result = await f.dsh.run('memory', prompt, task_id=uuid.uuid4().hex, handler=handler,
-                    current=allowed, cwd=transaction.root, system=system,
-                    expires_at=min(row['timestamp'] for row in rows) + 30 * 86400)
-                if result.get('cancelled') or result.get('finish_reason') != 'completed':
-                    raise RuntimeError('dsh整理未完成：' + str(result.get('error') or result.get('finish_reason')))
-                output = result.get('final_response', '').strip()
-                if output.startswith('```'):
-                    output = '\n'.join(output.splitlines()[1:-1])
-                done = json.loads(output)
-                if not allowed() or result.get('cancelled') or result.get('finish_reason') != 'completed' or done.get('completed') is not True or done.get('batch') != batch:
-                    raise RuntimeError('整理未完整完成，暂存修改不发布，队列保留')
-                for file in (transaction.root / 'memory/user').glob('*'):
-                    if file.name in f.identity.ids:
-                        raise ValueError('整理尝试建立机器人自身画像')
-                changed = transaction.commit()
+                prompt = {'batch': batch, 'count': len(rows), 'batch_file': str(transaction.root / 'batch.json'), 'memory_directory': str(transaction.root / 'memory'),
+                          'instructions': '读取batch.json，覆盖本批所有人及群聊的可记忆事实，按SKILL分类；普通闲聊不必产生记忆。媒体待解析不应猜测。可从交流中自主反思人格，但无需每批修改soul。'}
+                changed = await self._maintain(transaction, prompt, allowed, min(row['timestamp'] for row in rows) + 30 * 86400)
                 f.journal.acknowledge([] if media_only else [r['seq'] for r in rows], revisions)
                 self.workspace.save_state('index', {'dirty': True})
                 self.last_error = ''
                 return {'success': True, 'processed': processed, 'media_updated': media_updated, 'batch': batch, 'updated_files': changed}
+            finally:
+                transaction.close()
+
+    async def _maintain(self, transaction, prompt, allowed, expires_at=None):
+        f = self.feature
+        prompt = {**prompt, 'current_time': datetime.now(ZoneInfo('Asia/Shanghai')).isoformat()}
+        system = f.identity.prompt() + '\n' + MAINTENANCE_RULES + '\n' + self_context(f, 'memory', cwd=transaction.root)
+
+        async def handler(name, args):
+            if not allowed():
+                raise PermissionError('维护任务已撤销')
+            if name == 'search_memory':
+                return await f.query_memory(**args)
+            if name == 'delete_memory_file':
+                relative = args['path']
+                formal = self.workspace.memory_path(relative)  # Validate the exact same layout.
+                target = transaction.root / 'memory' / formal.relative_to(self.workspace.memory_root)
+                if target.resolve() != target.absolute() or target.exists() and target.stat().st_nlink > 1:
+                    raise ValueError('拒绝删除链接文件')
+                if any(relative.startswith('user/' + qq + '/') for qq in f.identity.ids):
+                    raise ValueError('不能为机器人维护用户画像')
+                existed = target.exists()
+                target.unlink(missing_ok=True)
+                return {'success': True, 'deleted': existed, 'path': relative, 'staged': True}
+            raise PermissionError('维护分支只能检索或删除暂存记忆')
+
+        result = await f.dsh.run('memory', json.dumps(prompt, ensure_ascii=False), task_id=uuid.uuid4().hex,
+                                 handler=handler, current=allowed, cwd=transaction.root, system=system,
+                                 expires_at=expires_at, role='memory')
+        if result.get('cancelled') or result.get('finish_reason') != 'completed':
+            raise RuntimeError('dsh维护未完成：' + str(result.get('error') or result.get('finish_reason')))
+        output = result.get('final_response', '').strip()
+        if output.startswith('```'):
+            output = '\n'.join(output.splitlines()[1:-1])
+        done = json.loads(output)
+        if not allowed() or done.get('completed') is not True or done.get('batch') != transaction.batch:
+            raise RuntimeError('维护未完整完成，暂存修改不发布，队列保留')
+        for file in (transaction.root / 'memory/user').glob('*'):
+            if file.name in f.identity.ids:
+                raise ValueError('维护尝试建立机器人自身画像')
+        return transaction.commit()
+
+    async def compact(self, current=None, instructions=COMPRESSION_PROMPT):
+        f = self.feature
+        allowed = lambda: self.enabled and f.enabled and f.config.load().memory_enabled and (current is None or current())
+        async with self.lock:
+            if not allowed():
+                raise PermissionError('记忆压缩已取消或关闭')
+            transaction = MemoryTransaction(self.workspace, 'compact-' + uuid.uuid4().hex, f.identity.ids, receipt='memory-compression-receipt')
+            try:
+                inventory = sorted(transaction.hashes)
+                atomic_write(transaction.root / 'inventory.json', json.dumps(inventory, ensure_ascii=False))
+                changed = await self._maintain(transaction, {'batch': transaction.batch, 'mode': 'compression',
+                    'inventory_file': str(transaction.root / 'inventory.json'), 'memory_directory': str(transaction.root / 'memory'),
+                    'instructions': instructions}, allowed)
+                self.workspace.save_state('index', {'dirty': True})
+                self.last_error = ''
+                return {'success': True, 'scanned_files': len(inventory), 'updated_files': changed}
+            except Exception as exc:
+                self.last_error = str(exc)
+                raise
             finally:
                 transaction.close()
 

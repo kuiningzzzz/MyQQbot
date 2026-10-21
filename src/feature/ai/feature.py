@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 class AiFeature(Feature):
     name = "ai"
     title = "AI 服务"
-    description = "dsh 共享对话、后台 Spawn 执行、独立记忆整理与 QQ 工具。"
+    description = "dsh 共享对话、后台 Spawn 执行、记忆维护分支与 QQ 工具。"
 
     def __init__(self, root: Path = Path("data/ai"), client=None, index=None):
         self.migration = migrate(root)
@@ -353,6 +353,10 @@ class AiFeature(Feature):
                          + Path(__file__).with_name('self_description.md').read_text('utf-8'))
         if not guide.exists() or guide.read_text('utf-8') != guide_content:
             atomic_write(guide, guide_content)
+        soul = Path(__file__).with_name('skills') / 'soul-management/SKILL.md'
+        dest = self.workspace.root / '.agents/skills/soul-management/SKILL.md'
+        if not dest.exists() or dest.read_text('utf-8') != soul.read_text('utf-8'):
+            atomic_write(dest, soul.read_text('utf-8'))
         # Built-in operational SKILL: not a permanently injected mutation tool.
         source = Path(__file__).with_name('skills') / 'sticker-management'
         for file in source.rglob('*'):

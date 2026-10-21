@@ -41,6 +41,7 @@ const definitions = {
   download_attachment: ['先发简短确认后下载附件到当前会话files目录', {attachment_id: {type: 'string', required: true}, path: {type: 'string'}}],
   send_file: ['将files_directory内已创建、下载或修改的文件发送为当前群的群文件或当前私聊文件；path为文件路径，name为可选显示文件名；单文件最多20MiB，等待NapCat回执。需文件开关开启且当前为明确请求', {path: {type: 'string', required: true}, name: {type: 'string'}}],
   search_memory: ['本地向量与文本检索；scope为auto/user/group/common，auto搜索全部正式记忆。target_qq仅筛选用户记忆，target_group仅筛选群记忆；只查指定群时用scope=group和target_group。也可原生grep/read', {query: {type: 'string', required: true}, target_qq: {type: 'string'}, target_group: {type: 'string'}, scope: {type: 'string'}}],
+  delete_memory_file: ['仅供记忆维护分支删除暂存副本中的合法记忆文件，path相对cwd/memory，例如user/123/memory/过时主题.md；先读取并确认有效信息已合并。正式记忆在整个维护成功后才提交删除，不能删除原文或任意服务器文件', {path:{type:'string',required:true}}],
   spawn_task: ['主对话的执行入口：联网/查最新/读链接、记忆读写、文件/附件处理与发送、撤回、定时/表情管理、复杂分析或长文均委派。普通用户也可委派联网及权限内工作；主对话缺少执行工具不代表机器人不能做。prompt写目标、必要事实与交付要求；立即返回内部task_id，结果自动回主对话，文字由主对话交付、文件由执行者send_file。不自动发受理回执，不继承后续请求、不提升权限；检查启动回执', {title: {type: 'string', required: true}, prompt: {type: 'string', required: true}}],
   task_status: ['查询当前请求者在当前QQ会话的后台任务状态，省略task_id列出最近任务', {task_id: {type: 'string'}}],
   cancel_task: ['取消当前请求者在当前QQ会话的指定后台任务；文件修改不回滚', {task_id: {type: 'string', required: true}}],
@@ -139,10 +140,10 @@ export async function apply(ctx) {
     instructions(agent.ctx, agent, task);
     // rc.2 removed request.toolFilter. Bind the child scope before its first
     // model step, independently of the changing shared parent's authority.
-    agent.ctx.tools.restrict({deny: task.role === 'worker'
-      ? ['spawn_task', 'task_status', 'cancel_task', 'send_message', 'send_forward_message', 'send_sticker']
-      : ['spawn_task', 'task_status', 'cancel_task']});
-    if (task.role === 'scheduled') {
+    agent.ctx.tools.restrict(task.role === 'memory' ? {allow: ['read', 'write', 'edit', 'glob', 'grep', 'skill', 'search_memory', 'delete_memory_file']} : {deny: task.role === 'worker'
+      ? ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file', 'send_message', 'send_forward_message', 'send_sticker']
+      : ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file']});
+    if (['scheduled', 'memory'].includes(task.role)) {
       branches[agent.id] = true;
       writeJSON(branchFile, branches);
       return;
@@ -316,7 +317,7 @@ export async function apply(ctx) {
       tasks.set(agent.id, task);
       lift = agent.ctx.tools.restrict(data.role === 'main'
         ? {allow: data.delivery ? ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker'] : ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'spawn_task', 'task_status', 'cancel_task']}
-        : {deny: ['spawn_task', 'task_status', 'cancel_task']});
+        : {deny: ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file']});
       const before = agent.session.snapshotEvents().length;
       agent.followup({id: randomUUID(), role: 'user', source: {kind: 'user'}, content: text(data.prompt)});
       await agent.whenIdle();
@@ -331,18 +332,21 @@ export async function apply(ctx) {
       busy.delete(data.kind);
     }
   }
-  async function runScheduled(data) {
-    if (closing || data.role !== 'scheduled' || !data.prompt.startsWith('[定时任务]')) throw new Error('定时任务请求无效');
-    const task = {...data, role:'scheduled', kind:'chat', cancelled:false};
+  async function runFork(data) {
+    const maintenance = data.role === 'memory' && data.kind === 'memory';
+    if (closing || (!maintenance && (data.role !== 'scheduled' || !data.prompt.startsWith('[定时任务]')))) throw new Error('临时分支请求无效');
+    if (maintenance && !sameDirectory(data.cwd, path.join(workspace, 'tmp/memory-stage'))) throw new Error('记忆维护必须使用暂存目录');
+    const task = {...data, cancelled:false};
     const job = {task, controller:new AbortController(), run:null};
     scheduled.set(data.task_id, job);
     try {
       const start = creation.then(async () => {
         if (closing || job.controller.signal.aborted) throw new Error('TASK_EXPIRED');
-        const parent = await getHandle('chat', {...data, options:{provider:'deepseek-official',model:'deepseek-flash'}});
+        // Fork the real main chat, never rotate it to the staging directory.
+        const parent = await getHandle('chat', {...data, cwd:workspace, options:{provider:'deepseek-official',model:'deepseek-flash'}});
         job.parent_id = parent.agent.id;
         task.expires_at = Math.min(task.expires_at, generations.chat.expires);
-        return activate('fork', parent.agent, task, '定时任务', data.prompt, job.controller);
+        return activate('fork', parent.agent, task, maintenance ? '记忆维护' : '定时任务', data.prompt, job.controller);
       });
       creation = start.then(() => {}, () => {});
       job.run = await start;
@@ -374,8 +378,9 @@ export async function apply(ctx) {
       for await (const chunk of request) { body += chunk; if (body.length > 2 * 1024 * 1024) throw new Error('请求过大'); }
       const data = JSON.parse(body);
       if (request.url === '/run') result = await run(data);
-      else if (request.url === '/scheduled') {
-        const execution = runScheduled(data);
+      else if (request.url === '/scheduled' || request.url === '/maintenance') {
+        if ((request.url === '/maintenance') !== (data.kind === 'memory' && data.role === 'memory')) throw new Error('分支角色无效');
+        const execution = runFork(data);
         const job = scheduled.get(data.task_id);
         if (job) job.done = execution.catch(() => {});
         result = await execution;

@@ -207,6 +207,7 @@ class DshRuntime:
         self.turn_lock = asyncio.Lock()
 
     async def run(self, kind, prompt, *, task_id, handler, current, owner=False, qq="", cwd=None, system="", scene_dir="", group_id="", expires_at=None, role=None, worker_system='', spawn=None, delivery=False, revoke=None):
+        role = role or ('main' if kind == 'chat' else 'memory')
         # Root conversations are ordered independently; native forks never
         # hold a root turn lock while doing their potentially long work.
         gate = None if role == 'scheduled' else await self.acquire_gate(kind)
@@ -229,7 +230,8 @@ class DshRuntime:
                 if oldest is not None:
                     deadline = min(deadline, oldest + 30 * 86400)
                 self.active[task_id]['expires_at'] = deadline
-                request_task = asyncio.create_task(self.request('/scheduled' if role == 'scheduled' else '/run', {"kind": kind, "role": role or ('main' if kind == 'chat' else 'memory'), 'worker_system': worker_system,
+                endpoint = '/maintenance' if kind == 'memory' else '/scheduled' if role == 'scheduled' else '/run'
+                request_task = asyncio.create_task(self.request(endpoint, {"kind": kind, "role": role, 'worker_system': worker_system,
                     'delivery': delivery, "task_id": task_id, "owner": owner, "qq": qq,
                     'sticker_capability': capability,
                     "prompt": prompt, "system": system, "self_ids": sorted(self.feature.identity.ids), "scene_dir": scene_dir, "group_id": group_id, "cwd": str(cwd or self.feature.workspace.root),

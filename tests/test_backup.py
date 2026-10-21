@@ -514,7 +514,7 @@ class BackupProcessTests(unittest.IsolatedAsyncioTestCase):
                             cwd=clean, env=env, capture_output=True, text=True, encoding='utf-8', timeout=30)
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertEqual((clean / 'data/restore-probe.txt').read_text('utf-8'), 'original')
-                        self.assertTrue((clean / 'data/ai/workspace/AGENT.md').is_file())
+                        self.assertTrue((clean / 'data/ai/workspace/memory/soul/AGENT.md').is_file())
                 finally:
                     if os.name == 'nt':
                         # This PID is the test's own supervisor; reap only its

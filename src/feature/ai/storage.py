@@ -57,28 +57,58 @@ class Workspace:
         self.root = self.data_root / "workspace"
         self.memory_root = self.root / "memory"
         (self.data_root / ".state").mkdir(parents=True, exist_ok=True)
-        for directory in ("memory/raw", "memory/user", "memory/group", "memory/common", "files", "tmp"):
+        for directory in ("memory/raw", "memory/user", "memory/group", "memory/common", "memory/soul", "files", "tmp"):
             path = self.root / directory
             if path.resolve() != path.absolute():
                 raise ValueError("记忆目录不能是符号链接")
             path.mkdir(parents=True, exist_ok=True)
-        if not (self.root / "AGENT.md").exists():
-            atomic_write(self.root / "AGENT.md", "你是一位自然、友善的 QQ 聊天成员。回答简洁，依据事实，不编造记忆。\n")
+        self.persona_path = self.memory_root / 'soul/AGENT.md'
+        self._migrate_persona()
         if not (self.memory_root / "common/GLOSSARY.md").exists():
             atomic_write(self.memory_root / "common/GLOSSARY.md", "# 网络黑话与通用知识\n")
 
     def memory_path(self, relative: str) -> Path:
-        if "\\" in relative or not re.fullmatch(r"(?:user/[0-9]+/(?:PERSON|PREFERENCE|RECENTNESS)\.md|user/[0-9]+/memory/[^/]+\.md|group/[0-9]+/[^/\r\n]+\.md|common/GLOSSARY\.md)", relative):
-            raise ValueError("只允许访问合法用户记忆、group/<群号>/<主题>.md 和 common/GLOSSARY.md")
+        if "\\" in relative or not re.fullmatch(r"(?:user/[0-9]+/(?:PERSON|PREFERENCE|RECENTNESS)\.md|user/[0-9]+/memory/[^/]+\.md|group/[0-9]+/[^/\r\n]+\.md|common/GLOSSARY\.md|soul/(?:[^/\r\n]+/)*[^/\r\n]+\.md)", relative):
+            raise ValueError("只允许访问合法用户、群聊、公共记忆和 soul 下的 Markdown 文件")
         path = self.memory_root / relative
         if path.resolve() != path.absolute() or not path.resolve().is_relative_to(self.root) or any(part in {"..", "."} for part in Path(relative).parts) or any(char in relative for char in '<>:"|?*'):
             raise ValueError("路径越界")
         return path
 
-    def files(self) -> list[str]:
+    def _migrate_persona(self):
+        marker = self.data_root / '.state/soul-migrated.json'
+        if marker.exists():
+            return
+        legacy = self.root / 'AGENT.md'
+        if legacy.is_symlink() or self.persona_path.is_symlink():
+            raise ValueError('人设文件不能是符号链接')
+        if legacy.exists():
+            original = legacy.read_text('utf-8')
+            backup = self.data_root / '.state/legacy-AGENT.md'
+            if not backup.exists():
+                atomic_write(backup, original)
+            if not self.persona_path.exists():
+                atomic_write(self.persona_path, original)
+        elif not self.persona_path.exists():
+            atomic_write(self.persona_path, '你是一位自然、友善的 QQ 聊天成员。回答简洁，依据事实，不编造记忆。\n')
+        self.save_state('soul-migrated', {'version': 1})
+        # Keep the original in .state, rather than two competing active personas.
+        legacy.unlink(missing_ok=True)
+
+    def soul_prompt(self) -> str:
+        with FileLock(str(self.data_root / '.state/memory.lock')):
+            return '\n'.join('【人格文件 ' + relative + '】\n' + self.memory_path(relative).read_text('utf-8')
+                             for relative in self._files(('soul',)))
+
+    def files(self, *, include_soul=False) -> list[str]:
+        return self._files(('user', 'group', 'common') + (('soul',) if include_soul else ()))
+
+    def _files(self, folders) -> list[str]:
         result = []
-        for folder in ('user', 'group', 'common'):
+        for folder in folders:
             for file in (self.memory_root / folder).rglob('*.md'):
+                if not file.is_file():
+                    continue
                 relative = file.relative_to(self.memory_root).as_posix()
                 try:
                     self.memory_path(relative)

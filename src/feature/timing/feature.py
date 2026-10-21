@@ -13,6 +13,8 @@ from .schedule import display_time, display_lunar_time
 from .storage import TaskStore
 
 logger = logging.getLogger(__name__)
+MEMORY_COMPRESSION_ID = 'a6320367b7c943d8a87f9f01f256b102'
+MEMORY_SCENE = 'system:memory'
 USAGE = '''北京时间定时任务（群聊和私聊均可）：
 /timing-task -y MM-DD-HH-MM-SS 文本：每年
 /timing-task -m DD-HH-MM-SS 文本：每月
@@ -146,12 +148,28 @@ class TimingFeature(Feature):
             raise ValueError('会话ID无效')
         return f'{ctx.message_type}:{identifier}'
 
-    def validate(self, body):
+    @staticmethod
+    def is_memory_task(job):
+        return job.get('id') == MEMORY_COMPRESSION_ID and job.get('scene') == MEMORY_SCENE
+
+    def install_memory_task(self):
+        from src.feature.ai.runtime import COMPRESSION_PROMPT
+        data = self.validate({'kind': 'ai', 'scene': MEMORY_SCENE, 'flag': '-d', 'time': '02-00-00',
+            'prompt': COMPRESSION_PROMPT, 'delivery': 'silent', 'enabled': True}, MEMORY_COMPRESSION_ID)
+        # A deliberate admin pause/delete survives startup and upgrades.
+        self.store.save(data, identifier=MEMORY_COMPRESSION_ID, installation='memory-compression-v1')
+
+    def validate(self, body, identifier=None):
         allowed = {'kind', 'scene', 'flag', 'time', 'content', 'segments', 'prompt', 'enabled', 'delivery', 'requester', 'owner_grant', 'bot_qq'}
         if set(body) - allowed:
             raise ValueError('不支持的任务字段：' + ','.join(sorted(set(body) - allowed)))
         data = dict(body)
-        if data.get('kind') not in {'fixed', 'ai'} or not re.fullmatch(r'(group|private):[1-9][0-9]{0,19}', str(data.get('scene', ''))):
+        system = identifier == MEMORY_COMPRESSION_ID
+        if system:
+            if data.get('scene') != MEMORY_SCENE or data.get('kind') != 'ai' or data.get('delivery', 'silent') != 'silent' or data.get('owner_grant'):
+                raise ValueError('记忆压缩须保持系统维护、AI类型、静默及非主人执行身份')
+            data.update(delivery='silent', requester='0', owner_grant=False, bot_qq='')
+        if data.get('kind') not in {'fixed', 'ai'} or not system and not re.fullmatch(r'(group|private):[1-9][0-9]{0,19}', str(data.get('scene', ''))):
             raise ValueError('任务类型或会话ID无效')
         if not isinstance(data.get('enabled', True), bool) or not isinstance(data.get('owner_grant', False), bool):
             raise ValueError('启用和主人授权须为布尔值')
@@ -181,7 +199,7 @@ class TimingFeature(Feature):
         return data
 
     def save(self, body, identifier=None, expected=None):
-        result = self.store.save(self.validate(body), identifier=identifier, expected=expected)
+        result = self.store.save(self.validate(body, identifier), identifier=identifier, expected=expected)
         self.wake.set()
         return self.describe(result)
 
@@ -191,6 +209,7 @@ class TimingFeature(Feature):
         content = task['prompt'] if task['kind'] == 'ai' else body_text(task['segments'])
         lunar = task['flag'].endswith('-cn')
         return {**task, 'content': content, 'command': f"{command} {task['flag']} {task['time']} {content}",
+                'system_maintenance': TimingFeature.is_memory_task(task),
                 'calendar': 'lunar' if lunar else 'solar', 'next_run_text': display_time(task['next_run']),
                 'next_run_lunar_text': display_lunar_time(task['next_run']) if lunar else ''}
 
@@ -290,6 +309,9 @@ class TimingFeature(Feature):
 
     def valid(self, job):
         latest = self.store.get(job['id'])
+        if self.is_memory_task(job):
+            return bool(self.enabled and latest and latest['revision'] == job['revision'] and self.ai.enabled
+                        and self.ai.config.load().memory_enabled)
         # claim disables a once-only task, so compare revision rather than enabled.
         return bool(self.enabled and latest and latest['revision'] == job['revision'] and self.connection(job) is not None
                     and (not job.get('owner_grant') or self.master.is_master(int(job['requester'])))
@@ -300,6 +322,10 @@ class TimingFeature(Feature):
         try:
             if not self.valid(job):
                 status = 'cancelled'
+                return
+            if self.is_memory_task(job):
+                result = await self.ai.runtime.compact(current=lambda: self.valid(job), instructions=job['prompt'])
+                status, detail = 'completed', json.dumps(result, ensure_ascii=False)
                 return
             scene_type, scene_id = job['scene'].split(':')
             ws = self.connection(job)
@@ -341,15 +367,16 @@ class TimingFeature(Feature):
                 if task.cancelled():
                     self.store.finish(job['run_id'], 'cancelled', '执行前任务已撤销')
                 self.running.pop(identifier, None)
-        if not self.enabled or not self.bot:
+        if not self.enabled:
             return
         now = time.time()
         for job in self.store.due(now):
             if sum(1 for running, _ in self.running.values() if running['kind'] == job['kind']) >= 4:
                 continue
-            if not job['enabled'] or not job['next_run'] or job['next_run'] > now or job['id'] in self.running or not self.connection(job):
+            system = self.is_memory_task(job)
+            if not job['enabled'] or not job['next_run'] or job['next_run'] > now or job['id'] in self.running or not system and not self.connection(job):
                 continue
-            if job['kind'] == 'ai' and (not self.ai.enabled or not self.ai.config.load().chat_enabled):
+            if job['kind'] == 'ai' and (not self.ai.enabled or not (self.ai.config.load().memory_enabled if system else self.ai.config.load().chat_enabled)):
                 continue
             claimed = self.store.claim(job['id'], now)
             if claimed:
@@ -371,6 +398,7 @@ class TimingFeature(Feature):
 
     async def start(self, bot):
         self.bot = bot
+        self.install_memory_task()
         self.store.recover()
         self.loop = asyncio.create_task(self._loop())
 

@@ -22,6 +22,7 @@ def self_context(feature, kind, *, cwd=None, scene=None, requester=None,
         'cwd': str(cwd or feature.workspace.root),
         'formal_memory_directory': str(feature.workspace.memory_root),
         'editable_memory_directory': str((cwd or feature.workspace.root) / 'memory'),
+        'soul_directory': str((cwd or feature.workspace.root) / 'memory/soul'),
         'current_scene': scene if chat else None,
         'requester_qq': str(requester) if chat and requester is not None else None,
         'owner': bool(chat and owner),
@@ -51,4 +52,4 @@ def self_context(feature, kind, *, cwd=None, scene=None, requester=None,
     ]}
     if application.get('notice'):
         state['application']['notice'] = application['notice']
-    return CORE_PROMPT.read_text('utf-8') + '\n【当轮宿主状态】\n' + json.dumps(state, ensure_ascii=False, separators=(',', ':'))
+    return feature.workspace.soul_prompt() + '\n' + CORE_PROMPT.read_text('utf-8') + '\n【当轮宿主状态】\n' + json.dumps(state, ensure_ascii=False, separators=(',', ':'))

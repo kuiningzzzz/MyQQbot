@@ -27,6 +27,7 @@ class TaskStore:
                     updated REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS task_due ON tasks(enabled,next_run);
                 CREATE INDEX IF NOT EXISTS task_scene ON tasks(scene,kind);
+                CREATE TABLE IF NOT EXISTS installations (id TEXT PRIMARY KEY, installed REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS runs (
                     id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
                     scheduled REAL NOT NULL, started REAL NOT NULL, finished REAL,
@@ -69,7 +70,7 @@ class TaskStore:
                 results.append(item)
             return results
 
-    def save(self, data, *, identifier=None, expected=None, now=None):
+    def save(self, data, *, identifier=None, expected=None, now=None, installation=None):
         now = time.time() if now is None else now
         data = dict(data)
         data.pop('last_run', None)
@@ -78,6 +79,8 @@ class TaskStore:
         enabled = bool(data.get('enabled', True))
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
+            if installation and db.execute('SELECT 1 FROM installations WHERE id=?', (installation,)).fetchone():
+                return self.get(identifier)
             previous = db.execute('SELECT * FROM tasks WHERE id=?', (identifier,)).fetchone()
             if expected is not None and (previous is None or previous['revision'] != expected):
                 raise Conflict('任务已被其他人修改或删除，请刷新后重试')
@@ -99,6 +102,8 @@ class TaskStore:
             payload = json.dumps(data, ensure_ascii=False)
             db.execute('INSERT INTO tasks VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,scene=excluded.scene,data=excluded.data,revision=excluded.revision,enabled=excluded.enabled,next_run=excluded.next_run,updated=excluded.updated',
                        (identifier, data['kind'], data['scene'], payload, revision, int(enabled), due, created, now))
+            if installation:
+                db.execute('INSERT INTO installations VALUES (?,?)', (installation, now))
         return self.get(identifier)
 
     def delete(self, identifier, *, scene=None, kind=None, expected=None):

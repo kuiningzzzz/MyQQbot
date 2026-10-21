@@ -3,7 +3,7 @@ featureAdminControls.ai = async function (row) {
   const $$ = selector => [...row.querySelectorAll(selector)];
   const fields = {};
   let items = [], openedPath = '', fileHash = '', savedContent = '', openRevision = 0;
-  const hints = {PERSON:'职业、称呼、关系等稳定背景。', PREFERENCE:'长期喜好、习惯与沟通偏好。', RECENTNESS:'近期计划、状态与待办，建议注明日期。', EVENT:'具体经历、项目背景或持续更新的主题。', GROUP:'本群群规、专属梗、共同活动与项目；群号为身份主键，主题名称可自由命名。', GLOSSARY:'跨群、跨用户通用的术语与公共知识。'};
+  const hints = {PERSON:'职业、称呼、关系等稳定背景。', PREFERENCE:'长期喜好、习惯与沟通偏好。', RECENTNESS:'近期计划、状态与待办，建议注明日期。', EVENT:'具体经历、项目背景或持续更新的主题。', GROUP:'本群群规、专属梗、共同活动与项目；群号为身份主键，主题名称可自由命名。', GLOSSARY:'跨群、跨用户通用的术语与公共知识。', SOUL:'自身人格，每轮作为系统人格全文加载。保持简洁、稳定，可由Agent自主适度更新，不参与向量检索。'};
   function status(message, error=false) {
     $('[data-ai-status]').textContent=message;
     $('[data-ai-status]').dataset.error=String(error);
@@ -45,6 +45,7 @@ featureAdminControls.ai = async function (row) {
     parent.append(wrapper);fields[key]=input;
   }
   const config=await request('/api/ai/config');
+  let personaHash=config.agent_prompt_hash;
   field($('[data-ai-switches]'),'stickers_enabled','启用表情库自动同步、后台理解与Agent发送',config.stickers_enabled);
   initStickerPanel(row);
   for(const [key,label] of Object.entries({bot_qq:'机器人QQ号',nickname:'网名／唤醒姓名',account_description:'账号身份说明'}))field($('[data-ai-identity]'),key,label,config[key]);
@@ -63,7 +64,9 @@ featureAdminControls.ai = async function (row) {
   action('[data-ai-save]',async()=>{
     const body=Object.fromEntries(Object.entries(fields).map(([key,input])=>[key,input.type==='checkbox'?input.checked:input.value]));
     body.agent_prompt=$('[data-ai-prompt]').value;
-    renderRuntime(await request('/api/ai/config',body));status('账号、人设与功能设置已保存。');
+    body.agent_prompt_hash=personaHash;
+    const data=await request('/api/ai/config',body);personaHash=data.agent_prompt_hash;
+    renderRuntime(data);status('账号、人设与功能设置已保存。');
   });
   function dirty(){return !!openedPath&&$('[data-memory-content]').value!==savedContent;}
   function updateDirty(){const changed=dirty();$('[data-memory-dirty]').textContent=changed?'未保存修改':'已保存';$('[data-memory-save]').disabled=!changed;}
@@ -76,7 +79,7 @@ featureAdminControls.ai = async function (row) {
     $('[data-memory-empty]').hidden=true;$('[data-memory-editor]').hidden=false;
     const item=items.find(item=>item.path===openedPath);
     $('[data-memory-title]').textContent=item?.title||openedPath.split('/').at(-1);
-    $('[data-memory-meta]').textContent=(item?.group_id?`群 ${item.group_id} · `:item?.qq?`${item.nickname} · QQ ${item.qq} · `:'公共记忆 · ')+openedPath+(item?.updated_at?' · '+new Date(item.updated_at*1000).toLocaleString():'');
+    $('[data-memory-meta]').textContent=(item?.category==='SOUL'?'自身人格 · 每轮加载 · ':item?.group_id?`群 ${item.group_id} · `:item?.qq?`${item.nickname} · QQ ${item.qq} · `:'公共记忆 · ')+openedPath+(item?.updated_at?' · '+new Date(item.updated_at*1000).toLocaleString():'');
     updateDirty();renderList();
   }
   async function openFile(path,force=false){
@@ -93,8 +96,8 @@ featureAdminControls.ai = async function (row) {
     const visible=items.filter(item=>(!category||item.category===category)&&`${item.nickname} ${item.qq} ${item.group_id||''} ${item.title} ${item.path}`.toLowerCase().includes(query));
     let previous=null;
     for(const item of visible){
-      const group=item.group_id?`group:${item.group_id}`:item.qq?`user:${item.qq}`:'common';
-      if(group!==previous){const heading=document.createElement('div');heading.className='ai-file-group';heading.textContent=item.group_id?`群聊 · ${item.group_id}`:item.qq?`${item.nickname} · ${item.qq}`:'公共记忆';container.append(heading);previous=group;}
+      const group=item.category==='SOUL'?'soul':item.group_id?`group:${item.group_id}`:item.qq?`user:${item.qq}`:'common';
+      if(group!==previous){const heading=document.createElement('div');heading.className='ai-file-group';heading.textContent=item.category==='SOUL'?'自身人格 · 每轮加载':item.group_id?`群聊 · ${item.group_id}`:item.qq?`${item.nickname} · ${item.qq}`:'公共记忆';container.append(heading);previous=group;}
       const button=document.createElement('button');button.type='button';button.className='ai-file';button.setAttribute('aria-pressed',String(item.path===openedPath));
       button.append(document.createTextNode(item.title));
       if(['EVENT','GROUP'].includes(item.category)){const subtitle=document.createElement('small');subtitle.textContent=item.category==='GROUP'?'群聊记忆':'主题与事件';button.append(subtitle);}
@@ -115,7 +118,7 @@ featureAdminControls.ai = async function (row) {
     const data=await request('/api/ai/file',{path,content,expected_hash:fileHash});
     if(openedPath===path){fileHash=data.hash;savedContent=content;}
     await refresh();updateDirty();
-    status(data.indexed?'记忆与索引已保存。':'记忆已保存。'+(data.index_error||'本地向量索引未启用，文本检索仍可使用。'));
+    status(path.startsWith('soul/')?'人格已保存，下轮上下文生效；不参与向量检索。':data.indexed?'记忆与索引已保存。':'记忆已保存。'+(data.index_error||'本地向量索引未启用，文本检索仍可使用。'));
   });
   action('[data-memory-delete]',async()=>{
     if(!window.confirm(`确定删除这份记忆吗？\n${openedPath}${dirty()?'\n未保存的修改也将丢弃。':''}`))return;
@@ -127,9 +130,9 @@ featureAdminControls.ai = async function (row) {
   const dialog=$('[data-memory-create]');
   function createCategory(){
     const category=$('[data-create-category]').value;
-    $('[data-create-user-field]').hidden=['GLOSSARY','GROUP'].includes(category);$('[data-create-qq]').required=!['GLOSSARY','GROUP'].includes(category);
+    $('[data-create-user-field]').hidden=['GLOSSARY','GROUP','SOUL'].includes(category);$('[data-create-qq]').required=!['GLOSSARY','GROUP','SOUL'].includes(category);
     $('[data-create-group-field]').hidden=category!=='GROUP';$('[data-create-group]').required=category==='GROUP';
-    $('[data-create-title-field]').hidden=!['EVENT','GROUP'].includes(category);$('[data-create-title]').required=['EVENT','GROUP'].includes(category);$('[data-create-hint]').textContent=hints[category];
+    $('[data-create-title-field]').hidden=!['EVENT','GROUP','SOUL'].includes(category);$('[data-create-title]').required=['EVENT','GROUP','SOUL'].includes(category);$('[data-create-hint]').textContent=hints[category];
   }
   $('[data-create-category]').onchange=createCategory;
   $('[data-memory-new]').onclick=()=>{

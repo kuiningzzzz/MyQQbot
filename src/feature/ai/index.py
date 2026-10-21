@@ -114,6 +114,8 @@ class VectorIndex:
         return self._model.encode(texts, normalize_embeddings=True).tolist()
 
     def sync(self, relative: str | None = None) -> bool:
+        if relative and relative.startswith('soul/'):
+            return True  # Always injected directly, not a vector collection.
         if not self.config.load().vector_index_enabled:
             return False
         with self._lock:

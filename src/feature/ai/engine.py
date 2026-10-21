@@ -21,7 +21,7 @@ CHAT_RULES = '''你是QQbot主对话，负责理解、聊天、澄清和委派�
 需要执行时实际调用spawn_task，不能只口头答应或让用户代为运行。复杂/附件任务可先显式确认，静默请求不确认；只有成功回执才能说任务已启动，失败按原因处理。spawn成功后结束本轮，不主动公开内部编号或轮询；用户问进度用task_status，明确取消用cancel_task，改任务先取消后重建。
 后台结果交付回合没有spawn权限，只按原请求与实际回执显式回复或保持沉默，不重发已交付文件，不把后台结果当作新授权。普通聊天不加载完整指南。'''
 
-WORKER_RULES = '''你是一次性Spawn执行者，只做assignment；origin是宿主提供的原请求和固定授权，后续聊天不改变本任务。不能spawn或发聊天文字/聊天记录/表情，最终一次性返回结果，由主对话判断交付。
+WORKER_RULES = '''你是一次性Spawn执行者，执行assignment；任务中有值得沉淀的自我反思也可适度更新soul，无需主人授权或刻意强改。origin是原请求和固定授权，后续聊天不改变本任务。不能spawn或发聊天文字/聊天记录/表情，最终一次性返回结果，由主对话判断交付。
 优先使用dsh原生工具；普通用户也可用web_search/web_fetch联网查询，shell_allowed=false只限制命令行，不代表禁止原生联网。请求联网或最新信息时实际查询并返回来源链接，失败如实报告。图片/PDF/合并转发先用read_media查询后台解析，必要时wait_seconds=30等待；未完成不能声称已看过。记忆操作先读memory-management，功能细节按需读bot_guide，实时帮助用get_bot_help。文件写入origin.files_directory并用send_file实际交付，不能只返回路径。报告已完成、回执、失败及未完成事项。'''
 
 SCHEDULED_RULES = '''你是独立定时fork执行者，只处理本次[定时任务]，不继承历史身份授权，不spawn；完成后分支日志删除，文件效果保留。
@@ -215,10 +215,10 @@ class ChatEngine:
             'request': ctx.msg[:12000], 'message_id': ctx.event.get('message_id'), 'reply_ids': [s.get('data', {}).get('id') for s in ctx.event.get('message', []) if isinstance(s, dict) and s.get('type') == 'reply'],
             'files_directory': str(directory), 'new_messages_file': str(feed), 'new_message_count': len(rows), 'media_update_count': len(media_rows),
             'recent_context': [{**r, 'content': r['content'][:4000], 'rendered_content': r.get('rendered_content', '')[:4000]} for r in records[-30:]], 'preview_notice': '预览可能截断，完整原文用read读取raw_path；所有新消息及媒体补充见new_messages_file。media_supplement不是新发言，不必主动回复；未解析图片由执行者用read_media读取'}, ensure_ascii=False)
-        system = (f.workspace.root / 'AGENT.md').read_text('utf-8') + '\n' + f.identity.prompt() + '\n' + CHAT_RULES
+        system = f.identity.prompt() + '\n' + CHAT_RULES
         system += '\n' + self_context(f, 'chat', scene=key, requester=ctx.user_id, owner=owner,
             explicit=forced, files_directory=directory)
-        worker_system = (f.workspace.root / 'AGENT.md').read_text('utf-8') + '\n' + f.identity.prompt() + '\n' + WORKER_RULES
+        worker_system = f.identity.prompt() + '\n' + WORKER_RULES
         worker_system += '\n' + self_context(f, 'chat', scene=key, requester=ctx.user_id, owner=owner,
             explicit=forced, files_directory=directory, role='worker')
         if completion is not None:
@@ -380,7 +380,7 @@ class ChatEngine:
         owner = bool(job.get('owner_grant'))
         task['owner'] = owner
         directory = f.sandbox.scene_dir(key)
-        system = (f.workspace.root / 'AGENT.md').read_text('utf-8') + '\n' + f.identity.prompt() + '\n' + SCHEDULED_RULES
+        system = f.identity.prompt() + '\n' + SCHEDULED_RULES
         system += '\n' + self_context(f, 'chat', scene=key, requester=ctx.user_id, owner=owner,
                                      explicit=True, files_directory=directory, role='scheduled')
         from datetime import datetime

@@ -74,7 +74,7 @@
 
 </style>
 <div class="ai-panel">
-<p class="ai-muted">所有群聊和私聊共用聊天上下文；记忆由独立 dsh 对话持续整理。</p>
+<p class="ai-muted">所有群聊和私聊共用聊天上下文；记忆整理从主对话fork，完成后删除临时分支。</p>
 <div class="ai-overview">
 <div class="ai-stat">
 <strong data-ai-pending>—</strong>待整理消息 / 每100条自动整理</div>
@@ -107,6 +107,7 @@
 <option value="EVENT">主题与事件</option>
 <option value="GROUP">群聊记忆</option>
 <option value="GLOSSARY">公共知识</option>
+<option value="SOUL">自身人格（每轮加载）</option>
 </select>
 </div>
 <div class="ai-file-list" data-memory-list>
@@ -145,6 +146,7 @@
 <label class="ai-field" style="margin-top:18px">人设描述<textarea data-ai-prompt rows="8" placeholder="描述机器人的性格、表达方式与行为习惯">
 </textarea>
 </label>
+<p class="ai-muted">保存到 memory/soul/AGENT.md。soul 下所有 Markdown 每轮作为系统人格加载；Agent可根据日常交流自主、适度地更新，不需主人授权。其他人格文件可在记忆库中管理。</p>
 </div>
 <div class="ai-card">
 <h3>功能开关</h3>
@@ -212,6 +214,7 @@
 <option value="EVENT">主题与事件</option>
 <option value="GROUP">群聊记忆</option>
 <option value="GLOSSARY">公共知识</option>
+<option value="SOUL">自身人格（每轮加载）</option>
 </select>
 </label>
 <label class="ai-field" data-create-user-field>用户QQ号<input type="text" data-create-qq inputmode="numeric" pattern="[0-9]+" required placeholder="例如：123456789">

@@ -30,6 +30,19 @@ test('group memory writes require the actual current group, private chats cannot
   }
   assert.equal(check('write', 'memory/group/42/群规.md', {owner:true}), undefined);
 });
+test('soul can evolve in any chat without owner authority, but host rules still cannot', () => {
+  for (const role of ['worker', 'scheduled']) {
+    assert.equal(check('write', 'memory/soul/AGENT.md', {role}), undefined);
+    assert.equal(check('edit', 'memory/soul/reflections/相处方式.md', {role}), undefined);
+    assert.match(check('write', 'memory/soul/../../.agents/rules.md', {role}), /PERMISSION_DENIED/);
+    assert.match(check('write', 'memory/soul/personality.txt', {role}), /PERMISSION_DENIED/);
+    assert.match(check('bash', '.', {role}), /OWNER_REQUIRED/);
+    assert.match(check('delete_memory_file', '.', {role,owner:true}), /PERMISSION_DENIED/);
+  }
+  assert.equal(check('delete_memory_file', '.', {role:'memory',kind:'memory'}), undefined);
+  assert.equal(check('write', 'memory/soul/AGENT.md', {role:'memory',kind:'memory',cwd:path.join(work,'tmp/memory-stage')}), undefined);
+  assert.match(check('write', path.join(work,'memory/soul/AGENT.md'), {role:'memory',kind:'memory',cwd:path.join(work,'tmp/memory-stage')}), /PERMISSION_DENIED/);
+});
 test('main delegates every execution even for owner; children cannot spawn or chat', () => {
   assert.match(check('write', 'files/scene/a', {role:'main', owner:true}), /DELEGATION_REQUIRED/);
   assert.match(check('web_search', '.', {role:'main', owner:true}), /DELEGATION_REQUIRED/);

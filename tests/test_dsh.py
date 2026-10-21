@@ -594,7 +594,7 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         atomic_write(memory, '原有记忆：不可重写\n')
         human_skill = self.f.workspace.root / '.agents/skills/memory-management/SKILL.md'
         human_skill.write_text(human_skill.read_text('utf-8') + '\n用户自定义提醒\n', encoding='utf-8')
-        before = {p: p.read_bytes() for p in [memory, human_skill, self.f.workspace.root / 'AGENT.md']}
+        before = {p: p.read_bytes() for p in [memory, human_skill, self.f.workspace.persona_path]}
         self.responses = ['新内核已继续旧对话']
         result = await self.native(role='main')
         self.assertEqual(result['finish_reason'], 'completed')
@@ -917,6 +917,62 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             if not branch.done():
                 branch.cancel()
             await asyncio.gather(branch, return_exceptions=True)
+
+    async def test_memory_fork_inherits_main_silently_and_deletes_its_logs(self):
+        self.responses = ['MAIN_MEMORY_CONTEXT_REPLY']
+        await self.native(role='main', prompt='MAIN_MEMORY_CONTEXT_SEED')
+        await self.f.record('group', '12', '123', '甲', '来自新批次的事实', message_id='fork-memory')
+        name = 'group/12/重复.md'
+        self.f.workspace.write_memory(name, '待合并的记忆')
+        started, release = asyncio.Event(), asyncio.Event()
+        requests, branch_dirs = [], []
+        async def respond(request):
+            names = {tool['name'] for tool in request.get('tools', [])}
+            if 'write' not in names:
+                return 'LATER_MAIN_REPLY'
+            requests.append(request)
+            self.assertEqual(names, {'read', 'write', 'edit', 'glob', 'grep', 'skill', 'search_memory', 'delete_memory_file'})
+            if len(requests) == 1:
+                started.set()
+                await release.wait()
+                return self.tool('delete_memory_file', path=name)
+            if len(requests) == 2:
+                state = host_state(model_instructions(request))
+                return self.tool('write', file_path=str(Path(state['editable_memory_directory']) / 'soul/相处方式.md'), content='保留自我，也愿意倾听不同的意见。')
+            return '{"completed":true,"batch":"1-1"}'
+        self.dispatcher = respond
+        branch = asyncio.create_task(self.f.runtime.full())
+        try:
+            await asyncio.wait_for(started.wait(), 15)
+            branches = json.loads((self.f.dsh.home / 'qqbot-branches.json').read_text('utf-8'))
+            self.assertEqual(len(branches), 1)
+            branch_dirs = [p for identity in branches for p in (self.f.dsh.home / 'sessions').glob('*/' + identity)]
+            self.assertEqual(len(branch_dirs), 1)
+            await asyncio.wait_for(self.native(role='main', prompt='LATER_MAIN_MEMORY_MARKER', task_id='main-during-maintenance'), 10)
+            release.set()
+            result = await asyncio.wait_for(branch, 15)
+            self.assertEqual(result['processed'], 1)
+            context = model_instructions(requests[-1])
+            self.assertIn('MAIN_MEMORY_CONTEXT_SEED', context)
+            self.assertIn('MAIN_MEMORY_CONTEXT_REPLY', context)
+            self.assertNotIn('LATER_MAIN_MEMORY_MARKER', context)
+            self.assertFalse(self.f.workspace.memory_path(name).exists())
+            self.assertIn('保留自我', self.f.workspace.read_memory('soul/相处方式.md'))
+            self.assertTrue(all(not p.exists() for p in branch_dirs))
+            self.assertEqual(json.loads((self.f.dsh.home / 'qqbot-branches.json').read_text('utf-8')), {})
+            self.assertFalse(list((self.f.dsh.home / 'sessions').glob('*/memory-*')))
+            self.assertFalse((self.f.workspace.root / 'tmp/memory-stage').exists())
+        finally:
+            release.set()
+            if not branch.done():
+                branch.cancel()
+            await asyncio.gather(branch, return_exceptions=True)
+
+    async def test_ordinary_execution_can_update_soul_without_shell_authority(self):
+        target = self.f.workspace.memory_root / 'soul/反思.md'
+        self.responses = [self.tool('write', file_path=str(target), content='从交流中学习，温和而有自己的边界。'), 'done']
+        await self.native(owner=False)
+        self.assertIn('温和', target.read_text('utf-8'))
 
     async def test_scheduled_fork_after_restart_from_delivery_only_parent_can_send(self):
         self.responses = ['主对话历史']

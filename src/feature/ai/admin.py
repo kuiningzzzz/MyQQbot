@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from .client import ModelError
 from .dsh_runtime import DSH_VERSION
 
-from .storage import atomic_write, digest
+from .storage import digest
 
 
 class RecordRequest(BaseModel):
@@ -85,21 +85,25 @@ class AiAdmin:
 
         @app.get("/api/ai/config")
         async def config():
-            return {**f.config.public(), "observed_self_ids": sorted(f.identity.observed_ids), "agent_prompt": (f.workspace.root / "AGENT.md").read_text("utf-8"), "index_error": f.index.last_error, "integration_error": f.runtime.last_error, "pending_messages": f.journal.pending_count(), "pending_media_memory": f.journal.pending_media_count(), "media_queue": f.media.statistics(), "dsh_version": DSH_VERSION, "workspace_path": str(f.workspace.root), "memory_skill_path": str(f.workspace.root / ".agents/skills/memory-management/SKILL.md")}
+            prompt = f.workspace.read_memory('soul/AGENT.md')
+            return {**f.config.public(), "observed_self_ids": sorted(f.identity.observed_ids), "agent_prompt": prompt, 'agent_prompt_hash': digest(prompt), "index_error": f.index.last_error, "integration_error": f.runtime.last_error, "pending_messages": f.journal.pending_count(), "pending_media_memory": f.journal.pending_media_count(), "media_queue": f.media.statistics(), "dsh_version": DSH_VERSION, "workspace_path": str(f.workspace.root), "memory_skill_path": str(f.workspace.root / ".agents/skills/memory-management/SKILL.md")}
 
         @app.post("/api/ai/config")
         async def save_config(data: dict = Body(...)):
             try:
                 changes = dict(data)
                 prompt = changes.pop("agent_prompt", None)
+                prompt_hash = changes.pop('agent_prompt_hash', None)
                 if prompt is not None:
-                    if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 100000:
-                        raise ValueError("人设提示词必须为1至100000字符")
+                    if not isinstance(prompt, str) or len(prompt) > 100000:
+                        raise ValueError('人设提示词最多100000字符；留空时仍加载其他soul文件')
+                    if prompt_hash is not None and prompt_hash != digest(f.workspace.read_memory('soul/AGENT.md')):
+                        raise ValueError('文件已被更新，请重新读取后保存')
                 f.config.save(changes)
                 if prompt is not None:
-                    await asyncio.to_thread(atomic_write, f.workspace.root / "AGENT.md", prompt)
+                    await asyncio.to_thread(f.workspace.write_memory, 'soul/AGENT.md', prompt, prompt_hash)
             except ValueError as exc:
-                raise HTTPException(400, str(exc)) from exc
+                raise HTTPException(409 if '文件已被更新' in str(exc) else 400, str(exc)) from exc
             # Saving configuration restarts the native runtime. Revoke running
             # workers first, including their in-flight QQ callback checks.
             await f.engine.stop()
@@ -116,20 +120,20 @@ class AiAdmin:
                     if not record.get('is_self'):
                         nicknames[record['qq']] = record.get('nickname') or record['qq']
             items = []
-            for path in f.workspace.files():
+            for path in f.workspace.files(include_soul=True):
                 parts = path.split('/')
                 qq = parts[1] if parts[0] == 'user' else ''
                 if qq in f.identity.ids:
                     continue
                 group_id = parts[1] if parts[0] == 'group' else ''
-                category = 'GROUP' if group_id else 'EVENT' if len(parts) == 4 else Path(path).stem
+                category = 'SOUL' if parts[0] == 'soul' else 'GROUP' if group_id else 'EVENT' if len(parts) == 4 else Path(path).stem
                 file = f.workspace.memory_path(path)
                 try:
                     info = file.stat()
                 except FileNotFoundError:
                     continue  # Agent may delete a file while the list is read.
                 items.append({'path': path, 'qq': qq, 'group_id': group_id, 'nickname': nicknames.get(qq, qq), 'category': category,
-                    'title': Path(path).stem if category in {'EVENT', 'GROUP'} else labels.get(category, category),
+                    'title': Path(path).stem if category in {'EVENT', 'GROUP', 'SOUL'} else labels.get(category, category),
                     'updated_at': info.st_mtime, 'size': info.st_size})
             return {'files': [item['path'] for item in items], 'items': items}
 
@@ -158,6 +162,10 @@ class AiAdmin:
             try:
                 if data.category == 'GLOSSARY':
                     path = 'common/GLOSSARY.md'
+                elif data.category == 'SOUL':
+                    if not data.title.strip() or '/' in data.title or '\\' in data.title or '\n' in data.title or '\r' in data.title:
+                        raise ValueError('请填写不含路径分隔符或换行的人格主题名称')
+                    path = f'soul/{data.title.strip()}.md'
                 elif data.category == 'GROUP':
                     if not data.group_id.isascii() or not data.group_id.isdigit():
                         raise ValueError('请填写有效的群号')
@@ -178,7 +186,7 @@ class AiAdmin:
                 target = f.workspace.memory_path(path)
                 if target.exists():
                     raise ValueError('该记忆文件已存在，请从列表打开')
-                text = '# ' + (data.title.strip() if data.category in {'EVENT', 'GROUP'} else labels[data.category]) + '\n\n'
+                text = '# ' + (data.title.strip() if data.category in {'EVENT', 'GROUP', 'SOUL'} else labels[data.category]) + '\n\n'
                 await asyncio.to_thread(f.workspace.write_memory, path, text, digest(''))
                 f.workspace.save_state('index', {'dirty': True})
                 return {'path': path, 'content': text, 'hash': digest(text)}
