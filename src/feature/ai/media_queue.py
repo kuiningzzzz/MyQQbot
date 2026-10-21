@@ -180,12 +180,17 @@ class MediaQueue:
                 raise
             except Exception as exc:
                 if selected:
-                    attempt = selected['attempts'] + (0 if isinstance(exc, ConnectionError) else 1)
+                    # 网络类错误通常是瞬时的，给更宽的重试预算；但必须有上限：
+                    # 旧的图片/文件链接会永久失效，无限重试只会刷日志、占住队列。
+                    transient = isinstance(exc, ConnectionError)
+                    attempt = selected['attempts'] + 1
+                    limit = 6 if transient else 3
+                    delay = (30 if transient else 10) * 2 ** min(attempt, 3)
                     with self.connect() as db:
                         db.execute('UPDATE jobs SET status=?,attempts=?,due=?,error=? WHERE seq=?',
-                            ('retry' if attempt < 3 else 'failed', attempt, time.time() + 10 * 2 ** min(attempt, 3), type(exc).__name__, selected['seq']))
-                    logger.warning('媒体后台处理失败：seq=%s type=%s', selected['seq'], type(exc).__name__)
-                    if attempt >= 3:
+                            ('retry' if attempt < limit else 'failed', attempt, time.time() + delay, type(exc).__name__, selected['seq']))
+                    logger.warning('媒体后台处理失败：seq=%s type=%s attempt=%s/%s', selected['seq'], type(exc).__name__, attempt, limit)
+                    if attempt >= limit:
                         source = self._source(selected['seq'])
                         if source:
                             notice = self.feature.journal.load(source).get('rendered_content', '')
