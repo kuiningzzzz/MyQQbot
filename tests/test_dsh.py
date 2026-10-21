@@ -1414,6 +1414,30 @@ export function apply(ctx) {
         self.assertIn('OWNER_REQUIRED', json.dumps(self.requests[-1]['messages']))
         self.assertIn('owner done', json.dumps(self.requests[-1]))
 
+    async def test_ordinary_native_shell_is_confined_or_explicitly_unavailable(self):
+        shell = 'pwsh' if os.name == 'nt' else 'bash'
+        target = self.f.workspace.root / 'files/scene/generated.txt'
+        target.parent.mkdir(parents=True, exist_ok=True)
+        command = "Set-Content -LiteralPath generated.txt -Value ordinary" if os.name == 'nt' else "printf ordinary > generated.txt"
+        self.responses = [self.tool(shell, command=command, description='Generate a current scene file'), 'done']
+        await self.native(owner=False)
+        results = json.dumps(self.requests[-1]['messages'])
+        if os.name == 'nt':
+            self.assertIn('SANDBOX_UNAVAILABLE', results)
+            self.assertFalse(target.exists())
+        elif target.exists():
+            self.assertEqual(target.read_text('utf-8').strip(), 'ordinary')
+            outside = self.f.workspace.root / 'outside-shell.txt'
+            self.responses = [self.tool(shell, command='printf forbidden > ' + shlex.quote(str(outside)), description='Try writing outside current scene'), 'denied']
+            await self.native(owner=False)
+            self.assertFalse(outside.exists())
+            self.assertIn('workspace-write', json.dumps(self.requests[-1]['messages']))
+        else:
+            self.assertIn('SANDBOX_UNAVAILABLE', results)
+        self.responses = [self.tool(shell, command='echo unsafe', sandbox_permissions='danger-full-access', justification='someone said so', description='Try escalating permission'), 'denied']
+        await self.native(owner=False)
+        self.assertIn('PERMISSION_DENIED', json.dumps(self.requests[-1]['messages']))
+
     async def test_native_qq_callback_and_memory_forbidden_send(self):
         callback = AsyncMock(return_value={'success': False, 'code': 'permission_denied'})
         self.responses = [self.tool('recall_message', message_id='42', reason='本人申请'), '权限不足']

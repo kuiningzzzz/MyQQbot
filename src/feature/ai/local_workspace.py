@@ -50,9 +50,9 @@ class LocalWorkspace:
 
     async def request(self, op, scene="", **values):
         if op == "status":
-            return {"success": True, "workspace": str(self.root), "mode": "dsh-native", "shell": "owner-only"}
+            return {"success": True, "workspace": str(self.root), "mode": "dsh-native", "shell": "scene-write-sandbox; owner-full-access"}
         if op != "export":
-            raise ValueError("请使用dsh原生read/write/edit；任意命令仅允许主人")
+            raise ValueError('请使用dsh原生工具；普通命令写入限当前会话files，越界写入需要主人')
         path = self.resolve(scene, values.get("path"))
         if not path.is_file() or path.stat().st_nlink > 1 or path.stat().st_size > 20 * 1024 * 1024:
             raise ValueError("文件不存在或超过20MiB")

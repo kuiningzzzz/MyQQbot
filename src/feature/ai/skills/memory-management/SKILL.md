@@ -35,4 +35,4 @@ description: 读取、搜索、整理和纠正QQ机器人的长时记忆；用�
 6. 自动整理对话只能编辑当前cwd下的暂存memory，成功完成整个批次后宿主才原子提交；不要修改正式目录。原生写入失败、工具预算耗尽、存在冲突时如实报告，不能输出completed=true。
 7. 主对话只负责聊天和spawn分派，记忆查询、读写由一次性子Agent执行。普通执行者最终返回结果，由主对话判断交付；自动维护则从主对话fork，不发送QQ、不向主对话汇报，最终仅向宿主输出批次JSON，随后物理删除分支日志。只修改暂存memory，可用delete_memory_file删除冗余文件；未完整完成不得提交。每天北京时间02:00默认另有全库压缩任务，在admin可调整、暂停或删除。
 
-可选脚本 `scripts/search.py` 用Python标准库检索Markdown；普通用户优先用原生grep/search_memory，脚本命令受宿主主人权限限制。
+可选脚本 `scripts/search.py` 用Python标准库检索Markdown。普通用户优先用grep/search_memory；受限命令可运行只读检索，但写入只限当前会话files。记忆修改使用原生write/edit，维护分支仍禁止命令。

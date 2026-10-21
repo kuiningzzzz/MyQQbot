@@ -24,3 +24,5 @@ QQ号、群号必须是ASCII数字；群记忆可以自由命名Markdown文件�
 自动整理不再使用独立持久memory对话，而是从主对话已完成上下文fork临时分支；本轮注入的维护任务优先于继承的历史请求。只修改cwd下暂存memory，宿主检查回执和冲突后提交；可用delete_memory_file删除已合并或过时的暂存文件。每100条人类消息整理和媒体补充机制保留；默认北京时间02:00另做全库压缩，可在admin定时任务调整或删除。两种维护均不发QQ、不向主对话回报；最终仅向宿主返回批次JSON，随后物理删除分支日志。原始档案仍只读、保留30天。
 
 查询用search_memory(query, scope="auto"|"user"|"group"|"common", target_qq?, target_group?)；auto搜索所有正式记忆。target_qq仅筛选用户部分，target_group仅筛选群部分。只查某群时明确使用scope="group"及target_group；检索过滤参数不提供编辑权限。也可原生glob/grep/read，但直接搜索读到的非规范文件不会因此成为正式记忆。主对话必须把查询和编辑交给一次性子Agent，不能自行执行工具读写。
+
+命令权限以宿主shell_allowed与shell_mode为准：普通聊天执行者可运行受限命令，允许读取外部文件，但只能写当前会话files，默认在该目录执行；不能用命令直接写记忆或规则，记忆编辑继续用原生工具。记忆维护分支仍不运行命令。此条替代旧版SKILL中“所有命令仅主人”的说明；服务器管理和越界写入仍限主人，拒绝或SANDBOX_UNAVAILABLE不能绕过。

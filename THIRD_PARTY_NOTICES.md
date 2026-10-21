@@ -9,6 +9,7 @@
 | 项目 | 本项目如何使用 | 使用位置 | 许可证与声明 |
 | --- | --- | --- | --- |
 | [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) | 安装官方 npm 内核，复用模型适配、Agent 循环、工具、压缩、持久会话及 Spawn/Fork；不是本项目自行实现的推理内核 | `dsh/package.json`、`dsh/profile.yml`、`dsh/plugin.mjs`、`src/feature/ai/dsh_runtime.py` | `0.2.1-rc.2`，MIT；Copyright (c) 2026 DeepSeek。[许可证副本](licenses/DeepSeek-Harness-MIT.txt) |
+| DeepSeek `node-addon-system` | 复用官方预编译 `landlock-run` 和版本化授权/探测API，对普通命令实施文件写入限制；没有复制启动器源码 | `dsh/sandbox.mjs`，由 dsh 锁文件引入 `0.1.2` | BSD-3-Clause；保留 npm 包及对应平台包自带的 LICENSE |
 | [JMComic-Crawler-Python](https://github.com/hect0x7/JMComic-Crawler-Python) | 调用 `download_album`、配置构造及 `Feature.export_pdf`；下载、图片处理和 PDF 导出核心来自上游，本项目负责 QQ 队列、回执、自检和管理界面 | `src/feature/jm/feature.py`、`src/feature/jm/diagnostics.py` | `jmcomic>=2.6.19`，本地核对 `2.7.5`；MIT，Copyright (c) 2023 hect0x7。[许可证副本](licenses/JMComic-Crawler-Python-MIT.txt) |
 | [PixivPy](https://github.com/upbit/pixivpy) | 使用 Pixiv API 的认证、作品详情和图片下载接口 | `src/feature/pixiv/client.py` | `pixivpy3>=3.7.5`，本地核对 `3.7.5`；Unlicense。[声明副本](licenses/PixivPy-Unlicense.txt) |
 | [get-pixivpy-token](https://github.com/eggplants/get-pixivpy-token) | 调用 `gppt.login` 和浏览器支持代码获取授权；本项目另做独立进程、超时、冷却和凭据存储 | `src/feature/pixiv/login_worker.py`、`src/feature/pixiv/auth.py` | `gppt==5.1.0`；MIT，Copyright 2021 haruna。[许可证副本](licenses/get-pixivpy-token-MIT.txt) |

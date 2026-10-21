@@ -30,7 +30,9 @@ class UpgradeTests(unittest.TestCase):
         key = self.log.relative_to(self.upgrade.home).as_posix()
         self.assertEqual(metadata['sha256'][key], hashlib.sha256(self.log.read_bytes()).hexdigest())
         self.assertEqual((snapshot / 'runtime' / key).read_bytes(), self.log.read_bytes())
-        self.assertEqual(metadata['expires_at'], self.deadline)
+        # Millisecond persistence and conversion back to seconds can round by
+        # one floating-point ULP; the retention deadline is unchanged in use.
+        self.assertAlmostEqual(metadata['expires_at'], self.deadline, delta=1e-6)
         self.assertEqual(state['status'], 'pending')
         self.assertEqual(state, self.upgrade.prepare())
         self.upgrade.complete()

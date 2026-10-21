@@ -43,13 +43,12 @@
       name: '@deepseek-ai/dsh-tool-fs-search'
       config: { sampleOverCapGlobResults: false }
     - { id: shell-env, name: '@deepseek-ai/dsh-shell-env' }
-    - id: bash
-      name: '@deepseek-ai/dsh-bash-local'
-      disabled: !!js process.platform === 'win32'
-      config: { timeoutMs: 60000 }
-    - id: pwsh
-      name: '@deepseek-ai/dsh-pwsh-local'
-      disabled: !!js process.platform !== 'win32'
+    - { id: sandbox, name: ./sandbox.mjs }
+    - id: sandbox-policy
+      name: ./shell-policy.mjs
+      config: { mode: workspace-write }
+    - id: shell
+      name: ./shell.mjs
       config: { timeoutMs: 60000 }
     - id: tool-bash
       name: '@deepseek-ai/dsh-tool-bash'

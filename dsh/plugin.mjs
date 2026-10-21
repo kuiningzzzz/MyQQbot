@@ -4,6 +4,7 @@ import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {defineTool} from '@deepseek-ai/dsh-tools';
 import {denial, within} from './policy.mjs';
+import {bindShellTasks} from './shell-policy.mjs';
 
 export const name = 'myqqbot-bridge';
 export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt', 'sessionPersistence', 'fs', 'compaction', 'subagents', 'workingDirectory', 'shellEnv'];
@@ -87,6 +88,7 @@ export async function apply(ctx) {
   // A crash leaves a cleanup receipt, never an orphaned retained fork.
   for (const id of Object.keys(branches)) removeBranch(id);
   const currentTask = agent => tasks.get(agent?.id);
+  bindShellTasks(sessionId => [...tasks.values()].find(task => task.session_id === sessionId));
   // Ambient credentials are intentionally scrubbed by dsh. Supply only this
   // execution's narrow, host-issued capability, never the global bridge key.
   ctx.shellEnv.register({name: 'qqbot-sticker-cli', variables: {
@@ -136,6 +138,7 @@ export async function apply(ctx) {
     const task = pendingChildren.get(agent.id);
     if (!task || agent.session.header.origin !== 'subagent') return;
     tasks.set(agent.id, task);
+    task.session_id = agent.session.header.id;
     task.agent_id = agent.id;
     instructions(agent.ctx, agent, task);
     // rc.2 removed request.toolFilter. Bind the child scope before its first
@@ -315,6 +318,7 @@ export async function apply(ctx) {
       writeJSON(manifest, generations);
       const task = {...data, expires_at: generation.expires, cancelled: false};
       tasks.set(agent.id, task);
+      task.session_id = agent.session.header.id;
       lift = agent.ctx.tools.restrict(data.role === 'main'
         ? {allow: data.delivery ? ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker'] : ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'spawn_task', 'task_status', 'cancel_task']}
         : {deny: ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file']});

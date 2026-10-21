@@ -36,7 +36,7 @@ test('soul can evolve in any chat without owner authority, but host rules still 
     assert.equal(check('edit', 'memory/soul/reflections/相处方式.md', {role}), undefined);
     assert.match(check('write', 'memory/soul/../../.agents/rules.md', {role}), /PERMISSION_DENIED/);
     assert.match(check('write', 'memory/soul/personality.txt', {role}), /PERMISSION_DENIED/);
-    assert.match(check('bash', '.', {role}), /OWNER_REQUIRED/);
+    assert.equal(check('bash', '.', {role}), undefined);
     assert.match(check('delete_memory_file', '.', {role,owner:true}), /PERMISSION_DENIED/);
   }
   assert.equal(check('delete_memory_file', '.', {role:'memory',kind:'memory'}), undefined);
@@ -52,7 +52,7 @@ test('main delegates every execution even for owner; children cannot spawn or ch
   assert.match(check('read', '.', {expires_at:1}), /TASK_EXPIRED/);
 });
 test('owner status belongs only to current task and expired tasks never run', () => {
-  assert.match(check('bash', '.'), /OWNER_REQUIRED/);
+  assert.equal(check('bash', '.'), undefined);
   assert.equal(check('bash', '.', {owner:true}), undefined);
   assert.match(check('bash', '.', {owner:true,cancelled:true}), /TASK_EXPIRED/);
   assert.match(denial(null,'read',{},work), /TASK_EXPIRED/);
@@ -73,7 +73,7 @@ test('scheduled forks can execute and deliver, but do not inherit owner or spawn
     if (name === 'send_message') assert.equal(check(name, '.', {role:'main',owner:true}), undefined);
     else assert.match(check(name, '.', {role:'main',owner:true}), /DELEGATION_REQUIRED/);
   }
-  assert.match(check('bash','.',{role:'scheduled'}), /OWNER_REQUIRED/);
+  assert.equal(check('bash','.',{role:'scheduled'}), undefined);
   assert.match(check('spawn_task','.',{role:'scheduled',owner:true}), /PERMISSION_DENIED/);
 });
 test('maintenance writes only staged memory, cannot send or execute', () => {
@@ -87,7 +87,7 @@ test('maintenance writes only staged memory, cannot send or execute', () => {
   assert.match(denial(maintenance,'send_message',{},work), /PERMISSION_DENIED/);
   assert.match(denial(maintenance,'web_search',{},work), /PERMISSION_DENIED/);
   assert.match(denial(maintenance,'web_fetch',{},work), /PERMISSION_DENIED/);
-  assert.match(denial(maintenance,'bash',{},work), /OWNER_REQUIRED/);
+  assert.match(denial(maintenance,'bash',{},work), /PERMISSION_DENIED/);
   assert.equal(denial(maintenance,'search_memory',{},work), undefined);
 });
 test('search path traversal and absolute glob patterns rejected', () => {
@@ -102,3 +102,12 @@ test('hardlinks cannot expose host files through the workspace', () => {
   assert.match(denial(task,'grep',{pattern:'secret',path:'files'},work), /PERMISSION_DENIED/);
 });
 process.on('exit', () => fs.rmSync(root, {recursive:true,force:true}));
+
+test('ordinary shell cannot escalate, detach, execute in memory role or bypass delegation', () => {
+  for (const name of ['bash','pwsh']) {
+    assert.match(denial(task,name,{sandbox_permissions:'danger-full-access',justification:'主人同意'},work), /PERMISSION_DENIED/);
+    assert.match(denial(task,name,{run_in_background:true},work), /PERMISSION_DENIED/);
+    assert.match(check(name,'.',{role:'main',owner:true}), /DELEGATION_REQUIRED/);
+    assert.match(check(name,'.',{role:'memory',kind:'memory',owner:true}), /PERMISSION_DENIED/);
+  }
+});

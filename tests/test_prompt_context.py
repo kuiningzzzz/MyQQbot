@@ -61,6 +61,18 @@ class PromptContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('master_messages', usage(await query(123, worker=True, owner=True)))
         self.assertNotIn('PRIVATE', '\n'.join(p.read_text('utf-8') for p in (self.f.workspace.root / '.agents').rglob('*.md')))
 
+    async def test_ordinary_worker_and_scheduled_shell_are_scoped_but_memory_and_main_cannot_execute(self):
+        directory = self.f.sandbox.scene_dir('group:12')
+        for role in ['worker', 'scheduled']:
+            context = self_context(self.f, 'chat', role=role, owner=False, files_directory=directory)
+            state = json.loads(context.split('【当轮宿主状态】\n')[1])
+            self.assertTrue(state['shell_allowed'])
+            self.assertEqual(state['shell_mode'], 'workspace-write')
+            self.assertEqual(state['shell_writable_directory'], str(directory))
+        for kind, role in [('chat', 'main'), ('memory', 'memory')]:
+            state = json.loads(self_context(self.f, kind, role=role).split('【当轮宿主状态】\n')[1])
+            self.assertFalse(state['shell_allowed'])
+
 
 if __name__ == '__main__':
     unittest.main()
