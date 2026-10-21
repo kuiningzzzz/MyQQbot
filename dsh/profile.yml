@@ -67,4 +67,4 @@
     - { id: tool-skill, name: '@deepseek-ai/dsh-tool-skill' }
     - id: qqbot
       name: ./plugin.mjs
-      inject: [agents, sessions, agentLoop, tools, systemPrompt, sessionPersistence, fs, compaction, subagents, workingDirectory]
+      inject: [agents, sessions, agentLoop, tools, systemPrompt, sessionPersistence, fs, compaction, subagents, workingDirectory, shellEnv]

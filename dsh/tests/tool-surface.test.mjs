@@ -1,8 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateScheduledTools} from '../plugin.mjs';
+import {stickerShellEnv, validateScheduledTools} from '../plugin.mjs';
 
 const sends = ['send_message', 'send_forward_message', 'send_file', 'send_sticker'];
+test('only the current authorized execution receives its narrow sticker capability', () => {
+  const task = {owner:true,role:'worker',expires_at:Date.now()+60000,sticker_capability:'task-a'};
+  const url = 'http://127.0.0.1:1/tool';
+  assert.deepEqual(stickerShellEnv(task, url), {DSH_QQBOT_STICKER_TOKEN:'task-a',DSH_QQBOT_CALLBACK:url});
+  assert.equal(stickerShellEnv({...task,role:'scheduled',sticker_capability:'task-b'},url).DSH_QQBOT_STICKER_TOKEN, 'task-b');
+  for (const value of [null,{...task,owner:false},{...task,role:'main'},{...task,role:'memory'},
+    {...task,cancelled:true},{...task,expires_at:1},{...task,expires_at:undefined},{...task,sticker_capability:''}]) {
+    assert.deepEqual(stickerShellEnv(value, url), {});
+  }
+});
 
 test('a scheduled branch must retain every send tool, regardless of owner status', () => {
   for (const owner of [false, true]) {

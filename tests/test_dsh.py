@@ -1,9 +1,14 @@
 """Exercise the installed official runtime against a local Messages API, never QQ/cloud."""
 import asyncio
+import base64
+import hashlib
+import io
 import json
 import os
 import re
+import shlex
 import shutil
+import sys
 import tempfile
 import time
 import unittest
@@ -462,6 +467,95 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
 
     async def native(self, kind='chat', **kwargs):
         return await self.f.dsh.run(kind, kwargs.pop('prompt', 'native test'), task_id=kwargs.pop('task_id', 'test'), current=lambda: True, handler=kwargs.pop('handler', AsyncMock(return_value={'success': True})), qq='123', scene_dir='scene', system='必读分类规则', role=kwargs.pop('role', 'worker' if kind == 'chat' else 'memory'), **kwargs)
+
+    def python_command(self, *arguments):
+        if os.name == 'nt':
+            return '& ' + ' '.join("'" + str(arg).replace("'", "''") + "'" for arg in (sys.executable, *arguments))
+        return shlex.join([sys.executable, *(str(arg) for arg in arguments)])
+
+    async def test_real_shell_sticker_skill_from_spawn_and_scheduled_without_global_key(self):
+        from PIL import Image
+        from src.feature.ai.sticker_store import StickerStore
+        stream = io.BytesIO()
+        Image.new('RGB', (8, 8), 'blue').save(stream, 'PNG')
+        image = stream.getvalue()
+        bot = SimpleNamespace(reply=AsyncMock(), call_action=AsyncMock(return_value={'message_id': 500}),
+            master_service=SimpleNamespace(is_master=lambda qq: qq == 123),
+            _self_ids={'ws': '999', 'other': '888'}, connected_clients={'ws', 'other'})
+        ctx = MessageContext(bot=bot, websocket='ws', event={'self_id': 999}, msg='收藏这张图片',
+            message_type='private', user_id=123, group_id=None)
+        self.f.stickers.bot = bot
+        attachment, _ = self.f.workfiles.register(ctx, 'image', {'url': 'base64://' + base64.b64encode(image).decode()})
+        directory = self.f.sandbox.scene_dir('private:123')
+        request_file = directory / 'sticker-add.json'
+        request_file.write_text(json.dumps({'attachment_id': attachment, 'name': 'blue', 'tags': ['测试'], 'qq': False}), 'utf-8')
+        identifier = StickerStore.identifier('999', hashlib.md5(image).hexdigest())
+        update_file = directory / 'sticker-update.json'
+        update_file.write_text(json.dumps({'id': identifier, 'name': 'updated-blue'}), 'utf-8')
+        script = self.f.workspace.root / '.agents/skills/sticker-management/scripts/manage.py'
+        counts = {'main': 0, 'worker': 0}
+        capabilities = set()
+        shell = 'pwsh' if os.name == 'nt' else 'bash'
+        async def respond(request):
+            tools = {t['name'] for t in request.get('tools', [])}
+            if shell in tools:
+                counts['worker'] += 1
+                task_id, active = next((key, task) for key, task in self.f.dsh.active.items() if task.get('finish'))
+                capabilities.add(active['sticker_capability'])
+                self.assertNotIn('send_sticker', tools)
+                if counts['worker'] == 1:
+                    code = "import os; print('GLOBAL_PRESENT='+str(bool(os.getenv('QQBOT_DSH_TOKEN')))); print('SCOPED_PRESENT='+str(bool(os.getenv('DSH_QQBOT_STICKER_TOKEN'))))"
+                    return self.tool(shell, command=self.python_command('-c', code), description='Check credential presence without revealing values')
+                if counts['worker'] == 2:
+                    self.assertIn('GLOBAL_PRESENT=False', json.dumps(request))
+                    self.assertIn('SCOPED_PRESENT=True', json.dumps(request))
+                    return self.tool(shell, command=self.python_command(script, '--task-id', task_id, 'add', '--input', request_file), description='Add current attachment to local stickers')
+                if counts['worker'] == 3:
+                    self.assertIsNotNone(self.f.stickers.store.get(identifier))
+                    return self.tool(shell, command=self.python_command(script, '--task-id', task_id, 'update', '--input', update_file), description='Update saved sticker metadata through skill')
+                if counts['worker'] == 4:
+                    return self.tool(shell, command=self.python_command(script, '--task-id', task_id, 'list'), description='Verify the stored sticker in catalogue')
+                self.assertEqual(self.f.stickers.store.get(identifier)['name'], 'updated-blue')
+                return '表情已入库并核对'
+            counts['main'] += 1
+            if counts['main'] == 1:
+                return self.tool('spawn_task', title='收藏图片', prompt='读取sticker-management，收藏本次附件并核对，完成后一次性返回')
+            if counts['main'] == 3:
+                return self.tool('find_sticker', query='updated-blue')
+            if counts['main'] == 4:
+                return self.tool('send_sticker', sticker_id=identifier)
+            return '内部完成记录'
+        self.dispatcher = respond
+        try:
+            await asyncio.wait_for(self.f.engine._turn(ctx, 'private:123', True), 30)
+            async with asyncio.timeout(60):
+                while self.f.engine.background or self.f.engine.tasks:
+                    await asyncio.sleep(.05)
+            self.assertGreaterEqual(counts['worker'], 5)
+            self.assertEqual(counts['main'], 5)
+            self.assertTrue(self.f.stickers.store.get(identifier)['asset'])
+            self.assertTrue(any(call.args[0] == 'send_private_msg' for call in bot.call_action.await_args_list))
+            del self.dispatcher
+            task = {'attempts': {}, 'sent': 0, 'unknown': set(), 'worker': True, 'owner': True, 'scheduled': True}
+            handler = self.f.engine.make_handler(ctx, 'private:123', True, task, lambda: True)
+            command = self.python_command(script, '--task-id', 'scheduled-sticker-cli', 'list')
+            def scheduled_command(request):
+                capabilities.add(self.f.dsh.active['scheduled-sticker-cli']['sticker_capability'])
+                return self.tool(shell, command=command, description='Read stickers in scheduled task')
+            self.responses = [scheduled_command, 'scheduled complete']
+            result = await self.native(role='scheduled', owner=True, task_id='scheduled-sticker-cli',
+                prompt='[定时任务] 检查表情目录', handler=handler)
+            self.assertEqual(result['finish_reason'], 'completed')
+            results = [block for message in self.requests[-1]['messages'] for block in message['content'] if block['type'] == 'tool_result']
+            self.assertIn(identifier, json.dumps(results))
+            self.assertEqual(len(capabilities), 2)
+            history = '\n'.join(p.read_text('utf-8') for p in self.f.dsh.home.rglob('*.jsonl'))
+            for secret in capabilities | {self.f.dsh.token}:
+                self.assertTrue(secret)
+                self.assertNotIn(secret, history)
+                self.assertNotIn(secret, json.dumps(self.requests))
+        finally:
+            await self.f.engine.stop()
 
     async def test_native_sticker_tools_reach_host_in_main_delivery_and_scheduled(self):
         for index, options in enumerate([{'role': 'main'}, {'role': 'main', 'delivery': True}, {'role': 'scheduled'}]):

@@ -324,12 +324,15 @@ class StickerTests(unittest.IsolatedAsyncioTestCase):
         script = self.f.workspace.root / '.agents/skills/sticker-management/scripts/manage.py'
         self.assertTrue(script.exists())
         handler, _ = self.handler(worker=True, owner=True)
-        self.f.dsh.active['owner-task'] = {'handler': handler, 'current': lambda: True}
+        capability = 'test-current-task-sticker-capability'
+        self.f.dsh.active['owner-task'] = {'handler': handler, 'current': lambda: True,
+            'sticker_capability': capability, 'expires_at': time.time() + 60}
         server = await asyncio.start_server(self.f.dsh._callback, '127.0.0.1', 0)
         request = self.f.workspace.root / 'request.json'
         request.write_text(json.dumps({'id': item['id'], 'name': '通过脚本修改'}), 'utf-8')
-        env = {**os.environ, 'QQBOT_CALLBACK': f'http://127.0.0.1:{server.sockets[0].getsockname()[1]}/tool',
-               'QQBOT_DSH_TOKEN': self.f.dsh.token, 'PYTHONIOENCODING': 'utf-8'}
+        env = {**os.environ, 'DSH_QQBOT_CALLBACK': f'http://127.0.0.1:{server.sockets[0].getsockname()[1]}/tool',
+               'DSH_QQBOT_STICKER_TOKEN': capability, 'PYTHONIOENCODING': 'utf-8'}
+        env.pop('QQBOT_DSH_TOKEN', None)
         async def call():
             return await asyncio.to_thread(subprocess.run, [sys.executable, str(script), '--task-id', 'owner-task',
                 'update', '--input', str(request)], env=env, capture_output=True, text=True, encoding='utf-8', timeout=10)
@@ -345,10 +348,53 @@ class StickerTests(unittest.IsolatedAsyncioTestCase):
             result = await call()
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn(self.f.dsh.token, result.stdout + result.stderr)
+            self.assertNotIn(capability, result.stdout + result.stderr)
         finally:
             self.f.dsh.active.clear()
             server.close()
             await server.wait_closed()
+
+    async def test_sticker_capability_cannot_cross_task_or_call_other_tools(self):
+        handler = AsyncMock(return_value={'success': True})
+        capability = 'only-owner-task-stickers'
+        active = {'handler': handler, 'current': lambda: True, 'sticker_capability': capability,
+                  'expires_at': time.time() + 60}
+        self.f.dsh.active.update({'a': active, 'b': {**active, 'sticker_capability': 'another-task'}})
+        server = await asyncio.start_server(self.f.dsh._callback, '127.0.0.1', 0)
+        url = f'http://127.0.0.1:{server.sockets[0].getsockname()[1]}/tool'
+        try:
+            async with httpx.AsyncClient(trust_env=False) as client:
+                async def call(task, name, token=capability):
+                    return (await client.post(url, headers={'Authorization': 'Bearer ' + token},
+                        json={'task_id': task, 'name': name, 'arguments': {}})).json()
+                self.assertTrue((await call('a', '__stickers'))['ok'])
+                for task, name in [('b', '__stickers'), ('a', 'send_message'), ('a', '__finish'),
+                                   ('a', '__spawn'), ('a', '__revoke'), ('a', 'integrate_memory')]:
+                    self.assertFalse((await call(task, name))['ok'])
+                active['expires_at'] = time.time() - 1
+                self.assertFalse((await call('a', '__stickers'))['ok'])
+                active['expires_at'] = time.time() + 60
+                active['current'] = lambda: False
+                self.assertFalse((await call('a', '__stickers'))['ok'])
+                handler.assert_awaited_once_with('__stickers', {})
+        finally:
+            self.f.dsh.active.clear()
+            server.close()
+            await server.wait_closed()
+
+    async def test_cli_missing_environment_diagnoses_without_printing_secrets(self):
+        script = self.f.workspace.root / '.agents/skills/sticker-management/scripts/manage.py'
+        env = {key: value for key, value in os.environ.items() if not key.startswith('DSH_QQBOT_')}
+        env.update(QQBOT_DSH_TOKEN='global-must-not-be-used', PYTHONIOENCODING='utf-8')
+        def run():
+            return subprocess.run([sys.executable, str(script), '--task-id', 'test', 'list'],
+                env=env, capture_output=True, text=True, encoding='utf-8', timeout=10)
+        result = await asyncio.to_thread(run)
+        self.assertIn('地址', json.loads(result.stdout)['error'])
+        env['DSH_QQBOT_CALLBACK'] = 'http://127.0.0.1:1/tool'
+        result = await asyncio.to_thread(run)
+        self.assertIn('凭据', json.loads(result.stdout)['error'])
+        self.assertNotIn('global-must-not-be-used', result.stdout + result.stderr)
 
     async def test_admin_routes_upload_metadata_preview_and_local_delete(self):
         # Auth is provided by the parent app; these ASGI calls isolate route logic.

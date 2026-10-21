@@ -6,9 +6,14 @@ import {defineTool} from '@deepseek-ai/dsh-tools';
 import {denial, within} from './policy.mjs';
 
 export const name = 'myqqbot-bridge';
-export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt', 'sessionPersistence', 'fs', 'compaction', 'subagents', 'workingDirectory'];
+export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt', 'sessionPersistence', 'fs', 'compaction', 'subagents', 'workingDirectory', 'shellEnv'];
 
 const text = value => [{type: 'text', text: value}];
+export function stickerShellEnv(task, callback) {
+  if (!task?.owner || !['worker', 'scheduled'].includes(task.role) || task.cancelled ||
+      !Number.isFinite(task.expires_at) || task.expires_at <= Date.now() || !task.sticker_capability) return {};
+  return {DSH_QQBOT_STICKER_TOKEN: task.sticker_capability, DSH_QQBOT_CALLBACK: callback};
+}
 export function validateScheduledTools(task, names) {
   if (task.role !== 'scheduled') return;
   const missing = ['send_message', 'send_forward_message', 'send_file', 'send_sticker'].filter(name => !names.includes(name));
@@ -81,6 +86,14 @@ export async function apply(ctx) {
   // A crash leaves a cleanup receipt, never an orphaned retained fork.
   for (const id of Object.keys(branches)) removeBranch(id);
   const currentTask = agent => tasks.get(agent?.id);
+  // Ambient credentials are intentionally scrubbed by dsh. Supply only this
+  // execution's narrow, host-issued capability, never the global bridge key.
+  ctx.shellEnv.register({name: 'qqbot-sticker-cli', variables: {
+    DSH_QQBOT_STICKER_TOKEN: {description: '仅本执行任务的表情管理凭据；禁止打印或转述'},
+    DSH_QQBOT_CALLBACK: {description: 'QQbot 表情管理脚本的本机回环地址'},
+  }, resolve(exec) {
+    return stickerShellEnv(currentTask(exec.agent), process.env.QQBOT_CALLBACK);
+  }});
   // Inspect the effective agent scope, not the global registry or the parent's
   // persisted request/header. Run at every model step, including after tools
   // and compaction; only log the first surface or a subsequent change.
@@ -203,6 +216,7 @@ export async function apply(ctx) {
     jobs.set(id, job);
     try {
       const prepared = await callback(parent, '__spawn', {task_id: id, title: args.title}, exec.signal);
+      task.sticker_capability = prepared.sticker_capability || '';
       // Only scope creation is serialized. Model/tool execution is independent.
       const start = creation.then(async () => {
         if (closing || job.controller.signal.aborted) throw new Error('TASK_EXPIRED');

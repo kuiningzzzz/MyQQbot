@@ -47,15 +47,20 @@ class DshRuntime:
                         break
                     key, value = item.decode().split(":", 1)
                     headers[key.lower()] = value.strip()
-                if headers.get("authorization") != "Bearer " + self.token:
-                    raise PermissionError("未授权的工具桥接请求")
+                authorization = headers.get('authorization', '')
+                native = secrets.compare_digest(authorization.encode(), ('Bearer ' + self.token).encode())
                 size = int(headers.get("content-length", 0))
                 if not 0 < size <= 2 * 1024 * 1024 or not line.startswith(b"POST /tool "):
                     raise ValueError("工具桥接请求无效")
                 payload = json.loads(await reader.readexactly(size))
+                task = self.active.get(payload.get("task_id"))
+                capability = task.get('sticker_capability') if task else None
+                if not native and not (payload.get('name') == '__stickers' and capability and
+                        task.get('expires_at', 0) > time.time() and
+                        secrets.compare_digest(authorization.encode(), ('Bearer ' + capability).encode())):
+                    raise PermissionError('未授权的工具桥接请求')
                 if payload.get('name') == 'integrate_memory':
                     budget.reschedule(None)
-                task = self.active.get(payload.get("task_id"))
                 # Completion is idempotent, including after a host-side revoke.
                 if task is None and payload.get('name') != '__finish':
                     raise PermissionError("任务已结束或权限已撤销")
@@ -74,8 +79,10 @@ class DshRuntime:
                         raise PermissionError('任务已结束或权限已撤销')
                     if name == '__spawn' and task.get('spawn'):
                         child = await task['spawn'](args['task_id'], args['title'])
+                        child.update(owner=task.get('owner', False), expires_at=task.get('expires_at', 0),
+                                     sticker_capability=secrets.token_hex(32) if task.get('owner') else '')
                         self.active[args['task_id']] = child
-                        result = {'context': child['context']}
+                        result = {'context': child['context'], 'sticker_capability': child['sticker_capability']}
                     else:
                         result = await task['handler'](name, args)
                 data = json.dumps({"ok": True, "result": result}, ensure_ascii=False).encode()
@@ -209,7 +216,9 @@ class DshRuntime:
             turn_timeout, turn_deadline = self.limits()
             async with self.turn_lock:
                 await self.start()
-                self.active[task_id] = {"handler": handler, "current": current, 'spawn': spawn, 'revoke': revoke}
+                capability = secrets.token_hex(32) if kind == 'chat' and owner and role in {'worker', 'scheduled'} else ''
+                self.active[task_id] = {"handler": handler, "current": current, 'spawn': spawn, 'revoke': revoke,
+                                        'owner': owner, 'sticker_capability': capability}
             request_task = monitor = None
             try:
                 # Any native read can consult the oldest retained raw record.
@@ -219,8 +228,10 @@ class DshRuntime:
                 deadline = expires_at or time.time() + 30 * 86400
                 if oldest is not None:
                     deadline = min(deadline, oldest + 30 * 86400)
+                self.active[task_id]['expires_at'] = deadline
                 request_task = asyncio.create_task(self.request('/scheduled' if role == 'scheduled' else '/run', {"kind": kind, "role": role or ('main' if kind == 'chat' else 'memory'), 'worker_system': worker_system,
                     'delivery': delivery, "task_id": task_id, "owner": owner, "qq": qq,
+                    'sticker_capability': capability,
                     "prompt": prompt, "system": system, "self_ids": sorted(self.feature.identity.ids), "scene_dir": scene_dir, "group_id": group_id, "cwd": str(cwd or self.feature.workspace.root),
                     "expires_at": deadline * 1000}, timeout=turn_timeout))
                 async def watch():
