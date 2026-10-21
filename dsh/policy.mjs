@@ -23,12 +23,12 @@ export function denial(task, name, args, workspace) {
   if (task.expires_at && task.expires_at <= Date.now()) return 'TASK_EXPIRED: 上下文已过保留期';
   const dispatch = new Set(['spawn_task', 'task_status', 'cancel_task']);
   if (task.role === 'main') {
-    const allowed = ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', ...(task.delivery ? [] : dispatch)];
+    const allowed = ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', ...(task.delivery ? [] : dispatch)];
     if (allowed.includes(name)) return;
     return 'DELEGATION_REQUIRED: 主对话只能聊天和分派，执行工作必须spawn子Agent';
   }
   if (dispatch.has(name)) return 'PERMISSION_DENIED: 只有主对话可分派任务，子Agent只能一次性返回';
-  if (task.role === 'worker' && ['send_message', 'send_forward_message', 'send_sticker'].includes(name)) return 'PERMISSION_DENIED: 子任务结果由主对话交付，文件使用send_file';
+  if (task.role === 'worker' && ['send_message', 'send_forward_message', 'send_sticker', 'send_voice'].includes(name)) return 'PERMISSION_DENIED: 子任务结果由主对话交付，文件使用send_file';
   if (name === 'delete_memory_file') return task.kind === 'memory' && task.role === 'memory' ? undefined : 'PERMISSION_DENIED: 仅记忆维护可删除暂存文件';
   if (['bash', 'pwsh'].includes(name)) {
     if (task.kind !== 'chat' || !['worker', 'scheduled'].includes(task.role)) return 'PERMISSION_DENIED: 只有聊天执行者和定时任务可运行命令';
@@ -37,7 +37,7 @@ export function denial(task, name, args, workspace) {
   }
   if (task.owner) return;
   const fileTools = new Set(['read', 'write', 'edit', 'glob', 'grep']);
-  const qqTools = new Set(['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'recall_message', 'inspect_message', 'get_bot_help', 'list_attachments', 'download_attachment', 'send_file', 'web_search', 'web_fetch', 'search_memory', 'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'integrate_memory']);
+  const qqTools = new Set(['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', 'synthesize_voice', 'recall_message', 'inspect_message', 'get_bot_help', 'list_attachments', 'download_attachment', 'send_file', 'web_search', 'web_fetch', 'search_memory', 'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'integrate_memory']);
   if (name === 'read_media') return task.kind === 'chat' ? undefined : 'PERMISSION_DENIED: 记忆整理只能读取已完成的媒体补充';
   if (name === 'skill' || name === 'search_memory') return;
   if (qqTools.has(name)) {

@@ -121,6 +121,7 @@ class DshRuntime:
                 "TMPDIR": str(temporary), "TMP": str(temporary), "TEMP": str(temporary),
                 "QQBOT_CALLBACK": callback, "QQBOT_WORKSPACE": str(self.feature.workspace.root), "DEEPSEEK_API_KEY": settings.api_key,
                 "DEEPSEEK_BASE_URL": settings.dsh_api_url or settings.api_url.removesuffix("/v1") + "/anthropic"}
+            env.pop('DASHSCOPE_API_KEY', None)  # Cloud audio belongs to the host, never to shell tools.
             self.process = await asyncio.create_subprocess_exec(node, str(cli), "--profile", "qqbot", "--patch", str(self.code / "profile.yml"), cwd=self.feature.workspace.root, env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
             self.diagnostic_task = asyncio.create_task(self._diagnostics())
             try:

@@ -17,7 +17,7 @@ export function stickerShellEnv(task, callback) {
 }
 export function validateScheduledTools(task, names) {
   if (task.role !== 'scheduled') return;
-  const missing = ['send_message', 'send_forward_message', 'send_file', 'send_sticker'].filter(name => !names.includes(name));
+  const missing = ['send_message', 'send_forward_message', 'send_file', 'send_sticker', 'send_voice', 'synthesize_voice'].filter(name => !names.includes(name));
   if (missing.length) throw new Error('SEND_TOOLS_MISSING: 定时分支缺少发送工具：' + missing.join(', '));
 }
 function writeJSON(file, value) {
@@ -30,6 +30,8 @@ function writeJSON(file, value) {
   }
 }
 const definitions = {
+  synthesize_voice: ['后台合成语音，不向QQ发送。正文text为1至1200字符的口语文本；instruction可选，最多500字符，单独描述语气/语速/情绪。使用宿主固定音色，不能选账号或收件人。本轮最多2次，返回当前会话绑定、24小时有效的voice_id；普通执行者将ID和正文返回主对话，主对话再send_voice。失败如实报告', {text:{type:'string',required:true},instruction:{type:'string'}}],
+  send_voice: ['向current_scene显式发送语音条，本轮最多2次。voice_id用synthesize_voice的真实回执，或path指定当前会话files目录内已有音频文件；二选一。未合成时主对话先spawn执行者合成，收到voice_id再发送。检查QQ发送回执，合成成功不等于已发送；unknown不重试。普通Spawn禁止本工具，定时分支可用，silent禁止发送', {voice_id:{type:'string'},path:{type:'string'}}],
   find_sticker: ['按情绪、用途或名称从当前机器人账号的本地表情库查找少量候选；不调用视觉模型，不等后台解析。主对话可直接查询；目录未就绪时不要猜ID', {query: {type:'string'}, limit:{type:'integer'}}],
   send_sticker: ['按find_sticker返回的sticker_id向当前QQ会话发送一张表情，本轮最多1张、会话冷却10秒；静默任务禁止发送，结果unknown不重发。增删改委派主人执行者读sticker-management SKILL', {sticker_id:{type:'string',required:true}}],
   send_message: ['向current_scene发文字，1至4000字符，本轮最多4次；检查回执', {message: {type: 'string', required: true}}],
@@ -38,7 +40,7 @@ const definitions = {
   recall_message: ['撤回当前会话真实消息。本人申请撤回自己的消息直接批准；第三方申请结合误发、隐私、骚扰等上下文判断，不限申请者角色。对象不明先inspect_message；reason写判断依据。permission_denied是机器人QQ权限不足', {message_id: {type: 'string', required: true}, reason: {type: 'string', required: true}}],
   get_bot_help: ['按需获取最新admin帮助全文、模块用法与开关；主人帮助仅返回宿主确认的主人任务。了解模块不代表可调用其业务队列', {}],
   list_attachments: ['列出当前QQ会话收到的附件', {}],
-  read_media: ['读取当前会话图片/PDF/合并转发的后台解析结果，按message_id或attachment_id查询；可wait_seconds=0至30等待，未完成则返回状态；长结果用next_offset继续读取；retry=true仅明确重试失败解析。主对话须委派执行者使用，未完成前不能声称已看过图片', {message_id:{type:'string'},attachment_id:{type:'string'},wait_seconds:{type:'integer'},retry:{type:'boolean'},offset:{type:'integer'}}],
+  read_media: ['读取当前会话图片/PDF/语音音频/合并转发的后台解析结果，按message_id或attachment_id查询；可wait_seconds=0至30等待，未完成则返回状态；长结果用next_offset继续读取；retry=true仅明确重试失败解析。主对话须委派执行者使用，未完成前不能声称已看过或听过', {message_id:{type:'string'},attachment_id:{type:'string'},wait_seconds:{type:'integer'},retry:{type:'boolean'},offset:{type:'integer'}}],
   download_attachment: ['先发简短确认后下载附件到当前会话files目录', {attachment_id: {type: 'string', required: true}, path: {type: 'string'}}],
   send_file: ['将files_directory内已创建、下载或修改的文件发送为当前群的群文件或当前私聊文件；path为文件路径，name为可选显示文件名；单文件最多20MiB，等待NapCat回执。需文件开关开启且当前为明确请求', {path: {type: 'string', required: true}, name: {type: 'string'}}],
   search_memory: ['本地向量与文本检索；scope为auto/user/group/common，auto搜索全部正式记忆。target_qq仅筛选用户记忆，target_group仅筛选群记忆；只查指定群时用scope=group和target_group。也可原生grep/read', {query: {type: 'string', required: true}, target_qq: {type: 'string'}, target_group: {type: 'string'}, scope: {type: 'string'}}],
@@ -144,7 +146,7 @@ export async function apply(ctx) {
     // rc.2 removed request.toolFilter. Bind the child scope before its first
     // model step, independently of the changing shared parent's authority.
     agent.ctx.tools.restrict(task.role === 'memory' ? {allow: ['read', 'write', 'edit', 'glob', 'grep', 'skill', 'search_memory', 'delete_memory_file']} : {deny: task.role === 'worker'
-      ? ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file', 'send_message', 'send_forward_message', 'send_sticker']
+      ? ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file', 'send_message', 'send_forward_message', 'send_sticker', 'send_voice']
       : ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file']});
     if (['scheduled', 'memory'].includes(task.role)) {
       branches[agent.id] = true;
@@ -320,7 +322,7 @@ export async function apply(ctx) {
       tasks.set(agent.id, task);
       task.session_id = agent.session.header.id;
       lift = agent.ctx.tools.restrict(data.role === 'main'
-        ? {allow: data.delivery ? ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker'] : ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'spawn_task', 'task_status', 'cancel_task']}
+        ? {allow: data.delivery ? ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice'] : ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', 'spawn_task', 'task_status', 'cancel_task']}
         : {deny: ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file']});
       const before = agent.session.snapshotEvents().length;
       agent.followup({id: randomUUID(), role: 'user', source: {kind: 'user'}, content: text(data.prompt)});

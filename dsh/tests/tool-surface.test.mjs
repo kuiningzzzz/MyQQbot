@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {stickerShellEnv, validateScheduledTools} from '../plugin.mjs';
 
-const sends = ['send_message', 'send_forward_message', 'send_file', 'send_sticker'];
+const sends = ['send_message', 'send_forward_message', 'send_file', 'send_sticker', 'send_voice', 'synthesize_voice'];
 test('only the current authorized execution receives its narrow sticker capability', () => {
   const task = {owner:true,role:'worker',expires_at:Date.now()+60000,sticker_capability:'task-a'};
   const url = 'http://127.0.0.1:1/tool';

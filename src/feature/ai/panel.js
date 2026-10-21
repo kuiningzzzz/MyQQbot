@@ -49,7 +49,7 @@ featureAdminControls.ai = async function (row) {
   field($('[data-ai-switches]'),'stickers_enabled','启用表情库自动同步、后台理解与Agent发送',config.stickers_enabled);
   initStickerPanel(row);
   for(const [key,label] of Object.entries({bot_qq:'机器人QQ号',nickname:'网名／唤醒姓名',account_description:'账号身份说明'}))field($('[data-ai-identity]'),key,label,config[key]);
-  for(const [key,label] of Object.entries({chat_enabled:'启用聊天',summary_enabled:'启用群聊总结',memory_enabled:'启用长时记忆',memory_auto_learn:'自动整理消息队列',workspace_enabled:'启用文件下载与发送',ocr_enabled:'启用图片／PDF OCR',vector_index_enabled:'启用本地向量检索'}))field($('[data-ai-switches]'),key,label,config[key]);
+  for(const [key,label] of Object.entries({chat_enabled:'启用聊天',summary_enabled:'启用群聊总结',memory_enabled:'启用长时记忆',memory_auto_learn:'自动整理消息队列',workspace_enabled:'启用文件下载与发送',ocr_enabled:'启用图片／PDF OCR',audio_enabled:'启用云端声音理解',voice_enabled:'启用语音合成与QQ语音发送',vector_index_enabled:'启用本地向量检索'}))field($('[data-ai-switches]'),key,label,config[key]);
   for(const [key,label] of Object.entries({embedding_model:'嵌入模型名称或本地目录',timezone:'时间显示时区'}))field($('[data-ai-memory]'),key,label,config[key]);
   $('[data-ai-prompt]').value=config.agent_prompt;
   function renderRuntime(data) {
@@ -61,12 +61,35 @@ featureAdminControls.ai = async function (row) {
     }
   }
   renderRuntime(config);
+  async function renderAudio(){
+    const data=await request('/api/ai/audio/status');
+    $('[data-audio-state]').textContent=`百炼Key：${data.configured?'已配置':'未配置'}；声音理解：${data.hearing_enabled?'开启':'关闭'}（${data.audio_model}）；语音发送：${data.voice_enabled?'开启':'关闭'}（${data.tts_model} / ${data.voice}）。临时语音缓存最多${data.cache_limit_mib}MiB，保留${data.cache_hours}小时。${data.last_error?'最近错误：'+data.last_error:''}`;
+  }
+  await renderAudio();
+  action('[data-audio-refresh]',renderAudio);
+  action('[data-audio-preview]',async()=>{
+    status('正在合成试听音频…');
+    const data=await request('/api/ai/audio/preview',{text:$('[data-audio-text]').value});
+    if(!data.success)throw new Error(data.error||data.code||'合成未完成');
+    const player=$('[data-audio-player]');player.src=data.audio_url;player.hidden=false;player.load();
+    await renderAudio();status('试听音频已准备好，点击播放即可。没有发送QQ消息。');
+  });
+  action('[data-audio-analyze]',async()=>{
+    const file=$('[data-audio-file]').files[0];
+    if(!file)throw new Error('请先选择音频。');
+    if(file.size>20*1024*1024)throw new Error('音频最多20MiB。');
+    status('正在后台请求声音理解…');
+    const response=await fetch('/api/ai/audio/analyze',{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});
+    const data=await response.json();
+    if(!response.ok)throw new Error(data.detail||'声音理解失败');
+    $('[data-audio-result]').textContent=data.description;await renderAudio();status('音频解析完成。没有发送QQ消息。');
+  });
   action('[data-ai-save]',async()=>{
     const body=Object.fromEntries(Object.entries(fields).map(([key,input])=>[key,input.type==='checkbox'?input.checked:input.value]));
     body.agent_prompt=$('[data-ai-prompt]').value;
     body.agent_prompt_hash=personaHash;
     const data=await request('/api/ai/config',body);personaHash=data.agent_prompt_hash;
-    renderRuntime(data);status('账号、人设与功能设置已保存。');
+    renderRuntime(data);await renderAudio();status('账号、人设与功能设置已保存。');
   });
   function dirty(){return !!openedPath&&$('[data-memory-content]').value!==savedContent;}
   function updateDirty(){const changed=dirty();$('[data-memory-dirty]').textContent=changed?'未保存修改':'已保存';$('[data-memory-save]').disabled=!changed;}

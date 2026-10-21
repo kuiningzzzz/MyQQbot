@@ -19,6 +19,15 @@ services:
     restart: unless-stopped
     environment:
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-}
+      - DASHSCOPE_BASE_URL=${DASHSCOPE_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      - DASHSCOPE_HTTP_BASE_URL=${DASHSCOPE_HTTP_BASE_URL:-https://dashscope.aliyuncs.com/api/v1}
+      - AI_AUDIO_MODEL=${AI_AUDIO_MODEL:-qwen3.8-omni-flash}
+      - AI_TTS_MODEL=${AI_TTS_MODEL:-qwen-audio-3.0-tts-plus}
+      - AI_TTS_VOICE=${AI_TTS_VOICE:-longanlingxin}
+      - AI_TTS_INSTRUCTION=${AI_TTS_INSTRUCTION:-用自然亲近的语气说话，像日常聊天，避免播音腔和夸张表演。}
+      - AI_AUDIO_ENABLED=${AI_AUDIO_ENABLED:-}
+      - AI_VOICE_ENABLED=${AI_VOICE_ENABLED:-}
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_API_URL=${AI_API_URL:-https://api.deepseek.com}
       - AI_DSH_API_URL=${AI_DSH_API_URL:-}

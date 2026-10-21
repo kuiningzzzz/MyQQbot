@@ -9,7 +9,7 @@
 .ai-panel .ai-stat{padding:14px 18px;background:#f8fafc;border:1px solid var(--ai-border);border-radius:10px}
 .ai-panel .ai-stat strong{display:block;font-size:22px;color:#1e3a8a}
 
-.ai-panel .ai-tabs{display:flex;gap:6px;border-bottom:1px solid var(--ai-border);margin-bottom:20px}
+.ai-panel .ai-tabs{display:flex;flex-wrap:wrap;gap:6px;border-bottom:1px solid var(--ai-border);margin-bottom:20px}
 .ai-panel button{margin:0}
 .ai-panel .ai-tabs button{background:transparent;color:#667085;border-radius:6px 6px 0 0;padding:12px 16px;border-bottom:3px solid transparent}
 .ai-panel .ai-tabs button[aria-selected="true"]{color:#1d4ed8;border-bottom-color:#2563eb;background:#eff6ff}
@@ -88,7 +88,27 @@
 <button type="button" id="ai-tab-settings" data-ai-tab="settings" role="tab" aria-controls="ai-view-settings" aria-selected="false" tabindex="-1">账号与功能</button>
 <button type="button" id="ai-tab-maintenance" data-ai-tab="maintenance" role="tab" aria-controls="ai-view-maintenance" aria-selected="false" tabindex="-1">检索与维护</button>
 <button type="button" id="ai-tab-stickers" data-ai-tab="stickers" role="tab" aria-controls="ai-view-stickers" aria-selected="false" tabindex="-1">表情库</button>
+<button type="button" id="ai-tab-audio" data-ai-tab="audio" role="tab" aria-controls="ai-view-audio" aria-selected="false" tabindex="-1">语音听说</button>
 </div>
+<section id="ai-view-audio" data-ai-view="audio" role="tabpanel" aria-labelledby="ai-tab-audio" hidden>
+<div class="ai-card">
+<div class="ai-toolbar"><h3>云端语音服务</h3><button type="button" class="ai-secondary" data-audio-refresh>刷新状态</button></div>
+<p class="ai-muted">音频上传阿里云理解或合成；不在服务器运行语音模型。密钥、模型和音色通过环境配置，开关在“账号与功能”中保存。状态显示“已配置”不代表接口已验证，可在下方测试。</p>
+<p data-audio-state></p>
+</div>
+<div class="ai-card">
+<h3>合成与试听</h3>
+<p class="ai-muted">使用当前配置的音色。点击测试会产生少量云端费用，不发送QQ消息；重复的相同文本和语气会复用24小时内的缓存。</p>
+<label class="ai-field"><span>朗读内容</span><textarea data-audio-text rows="3" maxlength="1200">你好，很高兴听到你的声音。我们可以慢慢聊。</textarea></label>
+<div class="ai-toolbar" style="margin-top:14px"><button type="button" data-audio-preview>合成并试听</button><audio data-audio-player controls hidden preload="none"></audio></div>
+</div>
+<div class="ai-card">
+<h3>声音理解测试</h3>
+<p class="ai-muted">选择一段WAV、MP3等音频，测试转写与声音描述。最多20MiB，建议不超过5分钟；会产生云端费用，不发送QQ消息。</p>
+<div class="ai-toolbar"><input type="file" data-audio-file accept="audio/*"><button type="button" data-audio-analyze>解析音频</button></div>
+<pre data-audio-result style="white-space:pre-wrap;overflow-wrap:anywhere" aria-live="polite"></pre>
+</div>
+</section>
 <section id="ai-view-memory" data-ai-view="memory" role="tabpanel" aria-labelledby="ai-tab-memory">
 <div class="ai-toolbar">
 <h3>记忆库</h3>

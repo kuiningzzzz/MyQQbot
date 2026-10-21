@@ -15,9 +15,10 @@ class WorkFiles:
 
     @staticmethod
     def attachment_name(kind, data):
-        name = str(data.get('name') or data.get('file_name') or data.get('file') or ('image.png' if kind == 'image' else 'attachment.bin'))
+        default = 'image.png' if kind == 'image' else 'voice.wav' if kind == 'record' else 'attachment.bin'
+        name = str(data.get('name') or data.get('file_name') or data.get('file') or default)
         if name.startswith(('http:', 'https:', 'data:', 'base64:')):
-            name = 'image.png' if kind == 'image' else 'attachment.bin'
+            name = default
         return PurePosixPath(name.replace('\\', '/')).name[:180]
 
     def register(self, ctx, kind, data, *, position=None, persist=True):
@@ -71,7 +72,7 @@ class WorkFiles:
         if not item or item["scene"] != self.feature.scene_key(ctx) or time.time() - item["created"] >= 7 * 86400:
             raise ValueError("附件不存在、已过期或不属于当前会话")
         path = path or (identifier + "-" + re.sub(r"[^\w.\-]", "_", item["name"]))
-        data = await self.feature.files._download(await self.resolve(ctx, item, refresh=True))
+        data = await self.feature.audio.attachment_bytes(ctx, item) if item['kind'] == 'record' else await self.feature.files._download(await self.resolve(ctx, item, refresh=True))
         if not is_current():
             return {"success": False, "error": "新消息已到达，取消本次下载入库"}
         return await self.feature.sandbox.put(item["scene"], path, data)

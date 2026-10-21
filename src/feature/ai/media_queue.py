@@ -1,7 +1,9 @@
 """Persistent media enrichment, independent of QQ event and conversation queues."""
 import asyncio
+import hashlib
 import json
 import logging
+import re
 import sqlite3
 import time
 from contextlib import contextmanager
@@ -10,6 +12,7 @@ from pathlib import Path
 from src.feature.atom import MessageContext
 from .media import IMAGE_SUFFIXES
 from .workfiles import WorkFiles
+from .audio import AUDIO_SUFFIXES
 
 logger = logging.getLogger(__name__)
 PENDING = '媒体后台解析中'
@@ -18,8 +21,13 @@ PENDING = '媒体后台解析中'
 def needs_media(segments):
     if not isinstance(segments, list):
         return False
-    return any(isinstance(s, dict) and (s.get('type') in {'image', 'forward', 'node'} or
-        s.get('type') == 'file' and Path(WorkFiles.attachment_name('file', s.get('data') or {})).suffix.lower() in IMAGE_SUFFIXES | {'.pdf'}) for s in segments)
+    return any(isinstance(s, dict) and (s.get('type') in {'image', 'record', 'forward', 'node'} or
+        s.get('type') == 'file' and Path(WorkFiles.attachment_name('file', s.get('data') or {})).suffix.lower() in IMAGE_SUFFIXES | AUDIO_SUFFIXES | {'.pdf'}) for s in segments)
+
+
+def has_audio(segments):
+    return isinstance(segments, list) and any(isinstance(s, dict) and (s.get('type') == 'record' or
+        s.get('type') == 'file' and Path(WorkFiles.attachment_name('file', s.get('data') or {})).suffix.lower() in AUDIO_SUFFIXES) for s in segments)
 
 
 class MediaQueue:
@@ -41,6 +49,10 @@ class MediaQueue:
                 due REAL NOT NULL DEFAULT 0, priority INTEGER NOT NULL DEFAULT 0,
                 results TEXT NOT NULL DEFAULT '{}', forwards TEXT NOT NULL DEFAULT '{}',
                 error TEXT NOT NULL DEFAULT '')''')
+            columns = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
+            for column in ('audio_chat', 'audio_delivered'):
+                if column not in columns:
+                    db.execute(f'ALTER TABLE jobs ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0')
             db.execute("UPDATE jobs SET status='queued' WHERE status='running'")
 
     @contextmanager
@@ -57,11 +69,68 @@ class MediaQueue:
         self.bot = ctx.bot
         self.connections[str(ctx.event.get('self_id') or '')] = ctx.websocket
 
-    def enqueue(self, seq, priority=False):
+    def enqueue(self, seq, priority=False, audio_chat=0):
         with self.connect() as db:
-            db.execute('INSERT OR IGNORE INTO jobs(seq,priority) VALUES (?,?)', (seq, int(priority)))
+            db.execute('INSERT OR IGNORE INTO jobs(seq,priority,audio_chat) VALUES (?,?,?)', (seq, int(priority), audio_chat))
         self.ensure_workers()
         self.wake.set()
+
+    async def request_audio_chat(self, ctx, forced):
+        """Park only this audio turn; never block the shared chat on inference."""
+        scene = self.feature.scene_key(ctx)
+        with self.feature.journal.connect() as db:
+            source = db.execute('SELECT seq FROM messages WHERE identity=?', (scene + ':' + str(ctx.event.get('message_id')),)).fetchone()
+        if not source or not self.job(source['seq']):
+            return False
+        seq = source['seq']
+        with self.connect() as db:
+            db.execute('UPDATE jobs SET audio_chat=max(audio_chat,?) WHERE seq=?', (2 if forced else 1, seq))
+        row = self.job(seq)
+        if row['status'] in {'completed', 'failed'}:
+            data = self.feature.journal.load(self._source(seq)) if self._source(seq) else None
+            if data:
+                await self.deliver_audio(seq, ctx, data.get('rendered_content', ''))
+        return True
+
+    async def deliver_audio(self, seq, ctx, content):
+        row = self.job(seq)
+        source = self._source(seq)
+        if not row or row['audio_delivered'] or not source or not has_audio(ctx.event.get('message')):
+            return
+        if not self.feature.enabled or not self.feature.config.load().chat_enabled:
+            return
+        data = self.feature.journal.load(source)
+        if data['record'].get('is_self'):
+            return
+        if row['audio_chat']:
+            ctx.event['_ai_arrival_forced'] = row['audio_chat'] == 2
+        elif ctx.event.get('post_type') != 'message' or not self.feature.engine.note_arrival(ctx.event, self.audio_wake_text(ctx, row)):
+            return
+        with self.connect() as db:
+            if not db.execute('UPDATE jobs SET audio_delivered=1 WHERE seq=? AND audio_delivered=0', (seq,)).rowcount:
+                return
+        ctx.msg = content
+        ctx.event['_ai_audio_ready'] = True
+        await self.feature.engine.handle(ctx)
+
+    def audio_wake_text(self, ctx, job):
+        # Only direct speech/text may wake the bot. Attachment names, sound
+        # observations and quoted forward transcripts are not user requests.
+        parts = []
+        results = json.loads(job['results'])
+        for index, segment in enumerate(ctx.event.get('message') or []):
+            if not isinstance(segment, dict):
+                continue
+            if segment.get('type') == 'text':
+                parts.append(str((segment.get('data') or {}).get('text') or ''))
+            elif has_audio([segment]):
+                identifier = hashlib.sha256(f'{self.feature.scene_key(ctx)}:{ctx.event.get("message_id")}:/{index}'.encode()).hexdigest()[:24]
+                result = results.get(identifier) or {}
+                if result.get('status') == 'completed':
+                    transcript = re.search(r'【语音原文】(.*?)(?=【|$)', result.get('description', ''), re.S)
+                    if transcript:
+                        parts.append(transcript[1])
+        return '\n'.join(parts)
 
     def ensure_workers(self):
         if self.closing:
@@ -84,12 +153,12 @@ class MediaQueue:
         with self.connect() as db:
             return {row['status']: row['count'] for row in db.execute('SELECT status,count(*) AS count FROM jobs GROUP BY status')}
 
-    def partial(self, seq, identifier, description, complete=True):
+    def partial(self, seq, identifier, description, complete=True, retryable=True):
         with self.connect() as db:
             row = db.execute('SELECT results FROM jobs WHERE seq=?', (seq,)).fetchone()
             if row:
                 results = json.loads(row['results'])
-                results[identifier] = {'status': 'completed' if complete else 'failed', 'description': str(description)}
+                results[identifier] = {'status': 'completed' if complete else 'failed', 'description': str(description), 'retryable': retryable}
                 db.execute('UPDATE jobs SET results=? WHERE seq=?', (json.dumps(results, ensure_ascii=False), seq))
         if not complete:
             self.errors.add(seq)
@@ -160,7 +229,8 @@ class MediaQueue:
                     continue
                 failed = seq in self.errors
                 attempt = selected['attempts'] + 1
-                if failed and attempt < 3:
+                permanent = any(item.get('retryable') is False and item.get('status') == 'failed' for item in json.loads(self.job(seq)['results']).values())
+                if failed and attempt < 3 and not permanent:
                     with self.connect() as db:
                         db.execute("UPDATE jobs SET status='retry',attempts=?,due=? WHERE seq=?", (attempt, time.time() + 5 * 2 ** attempt, seq))
                     continue
@@ -173,6 +243,8 @@ class MediaQueue:
                 with self.connect() as db:
                     db.execute('UPDATE jobs SET status=?,attempts=?,error=? WHERE seq=?', ('failed' if failed else 'completed', attempt, '部分附件解析失败' if failed else '', seq))
                 self.feature.runtime.trigger()
+                if published:
+                    await self.deliver_audio(seq, ctx, content)
             except asyncio.CancelledError:
                 if selected:
                     with self.connect() as db:
@@ -197,6 +269,7 @@ class MediaQueue:
                             notice = notice.replace(PENDING, '媒体后台解析失败，可用read_media重试')
                             await asyncio.to_thread(self.feature.journal.annotate, source['seq'], notice, media_update=True)
                             self.feature.runtime.trigger()
+                            await self.deliver_audio(source['seq'], self._context(self.feature.journal.load(source)), notice)
                 else:
                     logger.warning('媒体队列暂不可用：%s', type(exc).__name__)
                 await asyncio.sleep(1)
@@ -218,6 +291,18 @@ class MediaQueue:
                     with self.connect() as db:
                         db.execute('INSERT OR IGNORE INTO jobs(seq) VALUES (?)', (row['seq'],))
         await asyncio.to_thread(recover_jobs)
+        # A completed audio job may have crashed just before admission to chat.
+        with self.connect() as db:
+            ready = [row['seq'] for row in db.execute("SELECT seq FROM jobs WHERE audio_chat>0 AND audio_delivered=0 AND status IN ('completed','failed')")]
+        for seq in ready:
+            source = self._source(seq)
+            if source:
+                data = self.feature.journal.load(source)
+                try:
+                    await self.deliver_audio(seq, self._context(data), data.get('rendered_content', ''))
+                except ConnectionError:
+                    with self.connect() as db:
+                        db.execute("UPDATE jobs SET status='queued' WHERE seq=?", (seq,))
         self.ensure_workers()
 
     async def read(self, ctx, *, message_id=None, attachment_id=None, wait_seconds=0, retry=False, offset=0):
@@ -282,6 +367,7 @@ class MediaQueue:
                 db.executemany('DELETE FROM jobs WHERE seq=?', expired)
         await asyncio.to_thread(prune_jobs)
         await asyncio.to_thread(self.feature.files.cache.prune)
+        await asyncio.to_thread(self.feature.audio.voices.prune)
         if self.running:
             self.ensure_workers()
 

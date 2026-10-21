@@ -15,6 +15,7 @@ if not os.environ.get('MYQQBOT_BACKUP_SUPERVISED'):
     # Loading it again would reintroduce variables intentionally absent there.
     load_dotenv(Path(__file__).resolve().parents[3] / '.env', override=False)
 CONNECTION_FIELDS = {'api_url', 'dsh_api_url', 'api_key', 'model', 'vision_model'}
+CONNECTION_FIELDS |= {'audio_api_key', 'audio_api_url', 'tts_api_url', 'audio_model', 'tts_model', 'tts_voice', 'tts_instruction'}
 
 
 class Settings(BaseModel):
@@ -40,6 +41,15 @@ class Settings(BaseModel):
     timezone: str = "Asia/Shanghai"
     workspace_enabled: bool = True
     ocr_enabled: bool = True
+    audio_enabled: bool = True
+    voice_enabled: bool = True
+    audio_api_key: str = Field(default='', repr=False)
+    audio_api_url: str = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
+    tts_api_url: str = 'https://dashscope.aliyuncs.com/api/v1'
+    audio_model: str = 'qwen3.8-omni-flash'
+    tts_model: str = 'qwen-audio-3.0-tts-plus'
+    tts_voice: str = 'longanlingxin'
+    tts_instruction: str = '用自然亲近的语气说话，像日常聊天，避免播音腔和夸张表演。'
     stickers_enabled: bool = True
 
     @model_validator(mode="after")
@@ -71,7 +81,7 @@ class Settings(BaseModel):
             raise ValueError("dsh API URL 必须是 HTTP(S) 地址")
         return value.rstrip("/")
 
-    @field_validator("api_url")
+    @field_validator("api_url", "audio_api_url", "tts_api_url")
     @classmethod
     def url_valid(cls, value: str) -> str:
         if not value.startswith(("http://", "https://")):
@@ -106,11 +116,16 @@ class Config:
             value = os.getenv("AI_" + name.upper())
             if value is None and name in {"vector_index_enabled", "timezone"}:
                 value = os.getenv(name.upper())
-            if value is not None:
+            if value is not None and (value != '' or name not in {'audio_enabled', 'voice_enabled'}):
                 data[name] = value
         data.update(api_key=os.getenv('DEEPSEEK_API_KEY') or os.getenv('AI_API_KEY') or '',
             api_url=os.getenv('AI_API_URL') or 'https://api.deepseek.com',
             dsh_api_url=os.getenv('AI_DSH_API_URL') or os.getenv('DEEPSEEK_BASE_URL') or '')
+        for field, variable in {'audio_api_key': 'DASHSCOPE_API_KEY', 'audio_api_url': 'DASHSCOPE_BASE_URL',
+                'tts_api_url': 'DASHSCOPE_HTTP_BASE_URL', 'audio_model': 'AI_AUDIO_MODEL',
+                'tts_model': 'AI_TTS_MODEL', 'tts_voice': 'AI_TTS_VOICE', 'tts_instruction': 'AI_TTS_INSTRUCTION'}.items():
+            if os.getenv(variable):
+                data[field] = os.environ[variable]
         return Settings.model_validate(data)
 
     def save(self, changes: dict) -> Settings:

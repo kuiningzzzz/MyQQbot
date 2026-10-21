@@ -980,7 +980,7 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         self.responses = ['后台结果已处理']
         await self.native(role='main', delivery=True, prompt='PRE_RESTART_DELIVERY')
         self.assertEqual({tool['name'] for tool in self.requests[-1]['tools']},
-                         {'send_message', 'send_forward_message', 'find_sticker', 'send_sticker'})
+                         {'send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice'})
         await self.f.dsh.stop()
         start = len(self.requests)
         handler = AsyncMock(return_value={'success': True, 'message_id': 'news-forward'})
@@ -1034,7 +1034,7 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             logged = [json.loads(call.args[1]) for call in audit.call_args_list if call.args[0] == 'dsh工具注入：%s']
             surfaces = {entry['role']: entry for entry in logged}
             self.assertEqual(set(surfaces), {'main', 'scheduled'})
-            self.assertEqual(set(surfaces['main']['tools']), {'send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'spawn_task', 'task_status', 'cancel_task'})
+            self.assertEqual(set(surfaces['main']['tools']), {'send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', 'spawn_task', 'task_status', 'cancel_task'})
             self.assertIn('send_message', surfaces['scheduled']['tools'])
             self.assertNotIn('BUSY_PARENT_SCHEDULE', json.dumps(logged))
             self.assertNotIn('local-test-key', json.dumps(logged))
@@ -1265,6 +1265,54 @@ export function apply(ctx) {
             self.assertTrue(target.exists())
         finally:
             release.set()
+
+    async def test_spawn_synthesizes_voice_then_main_delivers_via_real_kernel(self):
+        import wave
+        stream = io.BytesIO()
+        with wave.open(stream, 'wb') as audio:
+            audio.setnchannels(1)
+            audio.setsampwidth(2)
+            audio.setframerate(24000)
+            audio.writeframes(b'\0\0' * 2400)
+        identifier = self.f.audio.voices.put('group:12', 'voice-e2e', '晚上好。', stream.getvalue())
+        self.f.audio.synthesize = AsyncMock(return_value={'success': True, 'voice_id': identifier, 'text': '晚上好。', 'sent': False})
+        steps = {'main': 0, 'worker': 0}
+        async def respond(request):
+            tools = {tool['name'] for tool in request.get('tools', [])}
+            worker = 'write' in tools
+            role = 'worker' if worker else 'main'
+            steps[role] += 1
+            if worker:
+                self.assertIn('synthesize_voice', tools)
+                self.assertNotIn('send_voice', tools)
+                if steps[role] == 1:
+                    return self.tool('synthesize_voice', text='晚上好。', instruction='轻松自然')
+                return '语音已生成，尚未发送。voice_id=' + identifier
+            self.assertIn('send_voice', tools)
+            self.assertNotIn('synthesize_voice', tools)
+            if steps[role] == 1:
+                return self.tool('spawn_task', title='合成语音', prompt='自然地说晚上好，返回voice_id')
+            if steps[role] == 3:
+                return self.tool('send_voice', voice_id=identifier)
+            return '内部处理结果，不能自动成为QQ消息。'
+        self.dispatcher = respond
+        bot = SimpleNamespace(reply=AsyncMock(), call_action=AsyncMock(return_value={'message_id': 500}),
+            master_service=SimpleNamespace(is_master=lambda qq: False))
+        ctx = MessageContext(bot=bot, event={}, websocket=None, msg='用语音说晚上好',
+            message_type='group', user_id=123, group_id=12)
+        await asyncio.wait_for(self.f.engine._turn(ctx, 'group:12', True), 25)
+        async with asyncio.timeout(20):
+            while self.f.engine.background or self.f.engine.tasks:
+                await asyncio.sleep(.05)
+        self.f.audio.synthesize.assert_awaited_once()
+        self.assertEqual(steps, {'main': 4, 'worker': 2})
+        bot.reply.assert_not_awaited()
+        bot.call_action.assert_awaited_once()
+        action, params, _ = bot.call_action.await_args.args
+        self.assertEqual(action, 'send_group_msg')
+        self.assertEqual(params['group_id'], '12')
+        self.assertEqual(params['message'][0]['type'], 'record')
+        self.assertFalse(list((self.f.workspace.root / 'tmp').glob('worker-*.json')))
 
     async def test_main_cannot_execute_even_with_owner_authority(self):
         outside = self.f.workspace.data_root / 'forbidden.txt'

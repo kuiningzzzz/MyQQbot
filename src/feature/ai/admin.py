@@ -5,9 +5,12 @@ from pathlib import Path
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException, Request
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse
+from fastapi.responses import Response
+from types import SimpleNamespace
+from .audio import AudioError, MAX_AUDIO_BYTES
 
 from .client import ModelError
 from .dsh_runtime import DSH_VERSION
@@ -71,6 +74,42 @@ class AiAdmin:
         f = self.feature
         from . import sticker_admin
         sticker_admin.register(app, f)
+
+        @app.exception_handler(AudioError)
+        async def audio_error(_request, exc):
+            f.audio.last_error = str(exc)
+            return JSONResponse(status_code=502, content={'detail': str(exc), 'code': exc.code})
+
+        @app.get('/api/ai/audio/status')
+        async def audio_status():
+            return f.audio.status()
+
+        @app.post('/api/ai/audio/preview')
+        async def audio_preview(data: dict = Body(...)):
+            ctx = SimpleNamespace(message_type='private', user_id=0)
+            try:
+                result = await f.audio.synthesize(ctx, data.get('text', '你好，很高兴听到你的声音。'), data.get('instruction'), lambda: f.enabled)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from None
+            if result.get('success'):
+                result['audio_url'] = '/api/ai/audio/preview?voice_id=' + result['voice_id']
+            return result
+
+        @app.get('/api/ai/audio/preview')
+        async def audio_preview_file(voice_id: str):
+            item = await asyncio.to_thread(f.audio.voices.get, 'private:0', identifier=voice_id)
+            if not item:
+                raise HTTPException(404, '试听音频已过期，请重新合成。')
+            return Response(item[1], media_type='audio/wav', headers={'Cache-Control': 'no-store'})
+
+        @app.post('/api/ai/audio/analyze')
+        async def audio_analyze(request: Request):
+            data = bytearray()
+            async for chunk in request.stream():
+                data.extend(chunk)
+                if len(data) > MAX_AUDIO_BYTES:
+                    raise HTTPException(413, '音频最多20MiB。')
+            return {'success': True, 'description': str(await f.audio.analyze_bytes(bytes(data)))}
 
         @app.get("/api/ai/workspace/status")
         async def workspace_status():

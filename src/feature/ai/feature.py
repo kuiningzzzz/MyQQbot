@@ -29,6 +29,7 @@ from .workfiles import WorkFiles
 from .stickers import StickerLibrary
 from .media import IMAGE_SUFFIXES
 from .media_queue import MediaQueue, needs_media, PENDING
+from .audio import CloudAudio, AUDIO_SUFFIXES
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class AiFeature(Feature):
         self.context = ContextManager(self.workspace, self.config, self.client, self.identity.prompt)
         self.sandbox = LocalWorkspace(self.workspace.root)
         self.files = MediaReader(self.config, self.client, self.identity, self.sandbox)
+        self.audio = CloudAudio(self)
         self.workfiles = WorkFiles(self)
         self.stickers = StickerLibrary(self)
         self.media = MediaQueue(self)
@@ -94,7 +96,7 @@ class AiFeature(Feature):
             raise ValueError("场景和QQ号无效")
         settings = self.config.load()
         is_self = str(qq) in self.identity.ids or outgoing
-        if message_type in {"image", "file"}:
+        if message_type in {"image", "file", "record"}:
             raw_event = raw_event or {'message': ([{'type': 'text', 'data': {'text': content}}] if content else []) + [{'type': message_type, 'data': {'url': str(file_data or ''), 'name': filename or ('image.png' if message_type == 'image' else 'attachment.bin')}}]}
         now = datetime.now(ZoneInfo(settings.timezone))
         record = {"id": str(message_id or uuid.uuid4()), "scene_type": scene_type, "scene_id": str(scene_id), "qq": str(qq), "nickname": nickname, "content": content, "is_self": is_self, "timestamp": timestamp or now.isoformat()}
@@ -121,7 +123,7 @@ class AiFeature(Feature):
                     self._message_ids = {identity}
             if outgoing:
                 self._sent.append((clock, scene_type, str(scene_id), content))
-        if message_type in {'image', 'file'}:
+        if message_type in {'image', 'file', 'record'}:
             ctx = MessageContext(bot=self.media.bot, websocket=None, event={**raw_event, 'message_id': record['id']}, msg='',
                 message_type=scene_type, user_id=int(qq), group_id=int(scene_id) if scene_type == 'group' else None)
             await self._capture_media(ctx, result)
@@ -161,7 +163,8 @@ class AiFeature(Feature):
             if needs_media(segments):
                 if ctx.bot:
                     self.media.bind(ctx)
-                self.media.enqueue(result['seq'], bool(ctx.event.get('_ai_arrival_forced')))
+                self.media.enqueue(result['seq'], bool(ctx.event.get('_ai_arrival_forced')),
+                    audio_chat=(2 if ctx.event.get('_ai_arrival_forced') else 1) if '_ai_arrival_forced' in ctx.event else 0)
         finally:
             self.runtime.trigger()
 
@@ -190,25 +193,30 @@ class AiFeature(Feature):
                 result.append(f"@QQ:{data.get('qq', '')}")
             elif kind == "reply":
                 result.append(f"[引用消息ID:{data.get('id', '')}]")
-            elif kind in {"image", "file"}:
+            elif kind in {"image", "file", "record"}:
                 identifier, item = self.workfiles.register(ctx, kind, data, position=position, persist=not pending)
-                label = f"[{'图片' if kind == 'image' else '文件'}: {item['name']}；大小:{item['size'] or '未知'}；附件ID:{identifier}]"
+                audio = kind == 'record' or Path(item['name']).suffix.casefold() in AUDIO_SUFFIXES
+                label = f"[{'语音' if audio else '图片' if kind == 'image' else '文件'}: {item['name']}；大小:{item['size'] or '未知'}；附件ID:{identifier}]"
                 result.append(label)
-                if kind == "image" or Path(item["name"]).suffix.casefold() in IMAGE_SUFFIXES | {".pdf"}:
+                if audio or kind == "image" or Path(item["name"]).suffix.casefold() in IMAGE_SUFFIXES | {".pdf"}:
                     if pending:
-                        result.append(f'[{PENDING}；用read_media读取结果，禁止声称已看过]')
+                        result.append(f'[{PENDING}；用read_media读取结果，禁止声称已看过或听过]')
                         continue
                     try:
                         previous = json.loads(self.media.job(sequence)['results']).get(identifier) if sequence else None
                         if previous and previous['status'] == 'completed':
                             description = previous['description']
                         else:
-                            url = await self.workfiles.resolve(ctx, item)
                             async with asyncio.timeout(240):
-                                description = await self.files.understand(url, kind, item["name"], expires_at=source['timestamp'] + 30 * 86400 if source else None)
+                                expiry = source['timestamp'] + 30 * 86400 if source else None
+                                if audio:
+                                    description = await self.audio.understand(ctx, item, expires_at=expiry)
+                                else:
+                                    url = await self.workfiles.resolve(ctx, item)
+                                    description = await self.files.understand(url, kind, item["name"], expires_at=expiry)
                         result.append(description)
                         if sequence:
-                            self.media.partial(sequence, identifier, description, getattr(description, 'complete', True))
+                            self.media.partial(sequence, identifier, description, getattr(description, 'complete', True), getattr(description, 'retryable', True))
                     except Exception as exc:
                         logger.warning("QQ附件解析失败：%s", exc)
                         description = '[附件内容未能解析，可在用户要求时下载处理]'
