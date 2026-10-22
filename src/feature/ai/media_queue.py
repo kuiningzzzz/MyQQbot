@@ -102,9 +102,13 @@ class MediaQueue:
         data = self.feature.journal.load(source)
         if data['record'].get('is_self'):
             return
+        # Re-evaluate only actual spoken words, so a name inside a sound
+        # observation cannot acquire direct-address status. Preserve requests
+        # accepted before a slow transcription outlasted the focus window.
+        accepted = ctx.event.get('post_type') == 'message' and self.feature.engine.note_arrival(ctx.event, self.audio_wake_text(ctx, row))
         if row['audio_chat']:
-            ctx.event['_ai_arrival_forced'] = row['audio_chat'] == 2
-        elif ctx.event.get('post_type') != 'message' or not self.feature.engine.note_arrival(ctx.event, self.audio_wake_text(ctx, row)):
+            ctx.event['_ai_arrival_forced'] = row['audio_chat'] == 2 or bool(ctx.event.get('_ai_arrival_forced'))
+        elif not accepted:
             return
         with self.connect() as db:
             if not db.execute('UPDATE jobs SET audio_delivered=1 WHERE seq=? AND audio_delivered=0', (seq,)).rowcount:

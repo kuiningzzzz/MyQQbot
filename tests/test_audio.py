@@ -166,6 +166,39 @@ class AudioTests(unittest.IsolatedAsyncioTestCase):
         await self.until(lambda: self.f.media.statistics().get('completed') == 2)
         self.assertTrue(self.f.engine.pending.empty())
 
+    async def test_accepted_group_audio_survives_expired_window_without_renewing_it(self):
+        release = asyncio.Event()
+        async def understand(*args):
+            await release.wait()
+            return '【语音原文】你明天来吗？'
+        self.f.audio._understand.side_effect = understand
+        self.bot.call_action.return_value = {'base64': base64.b64encode(self.data).decode()}
+        self.f.engine.active['group:12'] = float('inf')
+        ctx = self.ctx()
+        self.assertTrue(self.f.engine.note_arrival(ctx.event))
+        self.assertFalse(ctx.event['_ai_arrival_forced'])
+        await self.f.observe(ctx)
+        await self.f.engine.handle(ctx)
+        self.f.engine.active.clear()
+        release.set()
+        await self.until(lambda: self.f.engine.pending.qsize() == 1)
+        queued, forced, _ = self.f.engine.pending.get_nowait()
+        self.assertFalse(forced)
+        self.assertEqual(queued.event['_ai_address_hint'], 'group_observation')
+        self.assertNotIn('group:12', self.f.engine.active)
+
+    async def test_active_group_audio_reclassifies_spoken_address_after_transcription(self):
+        self.bot.call_action.return_value = {'base64': base64.b64encode(self.data).decode()}
+        self.f.engine.active['group:12'] = float('inf')
+        ctx = self.ctx()
+        self.assertTrue(self.f.engine.note_arrival(ctx.event))
+        self.assertFalse(ctx.event['_ai_arrival_forced'])
+        await self.f.observe(ctx)
+        await self.until(lambda: self.f.engine.pending.qsize() == 1)
+        queued, forced, _ = self.f.engine.pending.get_nowait()
+        self.assertTrue(forced)
+        self.assertEqual(queued.event['_ai_address_hint'], 'nickname_address')
+
     async def test_repeated_audio_singleflight_and_forward_audio_are_understood(self):
         self.bot.call_action.return_value = {'base64': base64.b64encode(self.data).decode()}
         for i in range(2):

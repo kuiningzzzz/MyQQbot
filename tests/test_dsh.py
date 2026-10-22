@@ -263,7 +263,7 @@ class StateTests(unittest.IsolatedAsyncioTestCase):
                 began.set()
                 await release.wait()
             if kwargs['current']():
-                await kwargs['handler']('send_message', {'message': json.loads(prompt)['request']})
+                await kwargs['handler']('send_message', {'message': json.loads(prompt)['observed_event']['text']})
             return {'finish_reason': 'completed'}
         self.f.dsh.run = run
         self.f.dsh.cancel = AsyncMock()
@@ -305,7 +305,7 @@ class StateTests(unittest.IsolatedAsyncioTestCase):
     async def test_fast_disable_enable_resumes_new_requests(self):
         replies = []
         async def run(kind, prompt, **kwargs):
-            await kwargs['handler']('send_message', {'message': json.loads(prompt)['request']})
+            await kwargs['handler']('send_message', {'message': json.loads(prompt)['observed_event']['text']})
             return {'finish_reason': 'completed'}
         async def reply(ctx, message):
             replies.append(message)
@@ -1717,7 +1717,7 @@ class RobustnessTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_turn_keeps_queue_moving(self):
         replies, calls = [], []
         async def run(kind, prompt, **kwargs):
-            calls.append(json.loads(prompt)['request'])
+            calls.append(json.loads(prompt)['observed_event']['text'])
             if len(calls) == 1:
                 raise RuntimeError("dsh本轮未完成：{'message': 'Service is too busy', 'status': 503}")
             if kwargs['current']():
