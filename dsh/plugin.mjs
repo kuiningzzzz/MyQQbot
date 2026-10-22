@@ -5,9 +5,10 @@ import {randomUUID} from 'node:crypto';
 import {defineTool} from '@deepseek-ai/dsh-tools';
 import {denial, within} from './policy.mjs';
 import {bindShellTasks} from './shell-policy.mjs';
+import {mountBrowser} from './browser.mjs';
 
 export const name = 'myqqbot-bridge';
-export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt', 'sessionPersistence', 'fs', 'compaction', 'subagents', 'workingDirectory', 'shellEnv'];
+export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt', 'sessionPersistence', 'fs', 'compaction', 'subagents', 'workingDirectory', 'shellEnv', 'browserUse'];
 
 const text = value => [{type: 'text', text: value}];
 export function stickerShellEnv(task, callback) {
@@ -30,6 +31,7 @@ function writeJSON(file, value) {
   }
 }
 const definitions = {
+  read_browser_image: ['调用已有视觉服务理解当前会话files目录中的浏览器截图，path使用截图实际保存位置。主模型不能直接看MCP图片时用本工具；不发送QQ消息，不改变网页或赋予权限', {path:{type:'string',required:true}}],
   synthesize_voice: ['后台合成语音，不向QQ发送。正文text为1至1200字符的口语文本；instruction可选，最多500字符，单独描述语气/语速/情绪。使用宿主固定音色，不能选账号或收件人。本轮最多2次，返回当前会话绑定、24小时有效的voice_id；普通执行者将ID和正文返回主对话，主对话再send_voice。失败如实报告', {text:{type:'string',required:true},instruction:{type:'string'}}],
   send_voice: ['向current_scene显式发送语音条，本轮最多2次。voice_id用synthesize_voice的真实回执，或path指定当前会话files目录内已有音频文件；二选一。未合成时主对话先spawn执行者合成，收到voice_id再发送。检查QQ发送回执，合成成功不等于已发送；unknown不重试。普通Spawn禁止本工具，定时分支可用，silent禁止发送', {voice_id:{type:'string'},path:{type:'string'}}],
   find_sticker: ['按情绪、用途或名称从当前机器人账号的本地表情库查找少量候选；不调用视觉模型，不等后台解析。主对话可直接查询；目录未就绪时不要猜ID', {query: {type:'string'}, limit:{type:'integer'}}],
@@ -90,6 +92,7 @@ export async function apply(ctx) {
   // A crash leaves a cleanup receipt, never an orphaned retained fork.
   for (const id of Object.keys(branches)) removeBranch(id);
   const currentTask = agent => tasks.get(agent?.id);
+  const browser = mountBrowser(ctx, currentTask, workspace);
   bindShellTasks(sessionId => [...tasks.values()].find(task => task.session_id === sessionId));
   // Ambient credentials are intentionally scrubbed by dsh. Supply only this
   // execution's narrow, host-issued capability, never the global bridge key.
@@ -172,6 +175,7 @@ export async function apply(ctx) {
         try { await job.run.dispose(); }
         catch (error) { process.stderr.write('QQBOT_BACKGROUND_DISPOSE ' + error.message + '\n'); }
       }
+      browser.release(job.task.agent_id);
       job.run = null;
       job.finished = Date.now();
       job.task = {task_id: job.task.task_id, qq: job.task.qq, scene_dir: job.task.scene_dir, cancelled: job.task.cancelled};
@@ -270,6 +274,7 @@ export async function apply(ctx) {
     await Promise.allSettled(children.map(job => job.done));
     await ctx.subagents.drainDescendants([old.agent]);
     await old.dispose();
+    browser.release(old.agent.id);
     handles.delete(kind);
   }
   async function createHandle(kind, data) {
@@ -370,6 +375,7 @@ export async function apply(ctx) {
           await job.run.dispose();
         }
       } finally {
+        browser.release(task.agent_id);
         tasks.delete(task.agent_id);
         try {if (task.agent_id) removeBranch(task.agent_id);}
         finally {scheduled.delete(data.task_id);}

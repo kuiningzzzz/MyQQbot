@@ -28,6 +28,8 @@ services:
       - AI_TTS_INSTRUCTION=${AI_TTS_INSTRUCTION:-用自然亲近的语气说话，像日常聊天，避免播音腔和夸张表演。}
       - AI_AUDIO_ENABLED=${AI_AUDIO_ENABLED:-}
       - AI_VOICE_ENABLED=${AI_VOICE_ENABLED:-}
+      - AI_BROWSER_ENABLED=${AI_BROWSER_ENABLED:-}
+      - AI_BROWSER_EXECUTABLE_PATH=${AI_BROWSER_EXECUTABLE_PATH:-}
       - AI_API_KEY=${AI_API_KEY:-}
       - AI_API_URL=${AI_API_URL:-https://api.deepseek.com}
       - AI_DSH_API_URL=${AI_DSH_API_URL:-}

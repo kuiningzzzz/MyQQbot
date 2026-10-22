@@ -35,6 +35,19 @@ class WorkFileTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("总价88.50", result)
         self.assertIn("订单截图", result)
 
+    async def test_browser_screenshot_uses_current_scene_export_and_existing_vision(self):
+        self.f.sandbox.request = AsyncMock(return_value={'success':True,'data':'eA=='})
+        self.f.files.understand = AsyncMock(return_value='网页截图：有一个搜索框。')
+        handler = self.f.engine.make_handler(self.ctx,'group:12',True,{'worker':True},lambda:True)
+        result = await handler('read_browser_image',{'path':'screen.png'})
+        self.assertTrue(result['success'])
+        self.assertIn('搜索框',result['description'])
+        self.f.sandbox.request.assert_awaited_once_with('export','group:12',path='screen.png')
+        self.f.files.understand.assert_awaited_once_with('base64://eA==','image','browser.png')
+        self.bot.call_action.assert_not_awaited()
+        self.f.config.save({'browser_enabled':False})
+        self.assertEqual((await handler('read_browser_image',{'path':'screen.png'}))['code'],'browser_disabled')
+
     async def test_pdf_ocr_failure_does_not_invent_content(self):
         self.f.sandbox.analyze = AsyncMock(return_value={"success": False, "error": "超时"})
         self.f.client.turn = AsyncMock()

@@ -1078,7 +1078,8 @@ export function apply(ctx) {
 """, encoding='utf-8')
         profile = Path(self.temp.name) / 'masked-profile.yml'
         original = (self.f.dsh.code / 'profile.yml').read_text('utf-8')
-        original = original.replace('name: ./plugin.mjs', 'name: ' + json.dumps((self.f.dsh.code / 'plugin.mjs').as_posix()))
+        original = re.sub(r'name: \./([\w.-]+\.mjs)',
+            lambda match:'name: '+json.dumps((self.f.dsh.code/match[1]).as_posix()),original)
         profile.write_text(original + '\n    - id: mask-send\n      name: ' + json.dumps(mask.as_posix()) + '\n', encoding='utf-8')
         launch = asyncio.create_subprocess_exec
         async def launch_masked(*args, **kwargs):
@@ -1321,6 +1322,110 @@ export function apply(ctx) {
         self.assertEqual(result['finish_reason'], 'completed')
         self.assertFalse(outside.exists())
         self.assertNotIn('write', {t['name'] for t in self.requests[0]['tools']})
+
+    async def test_official_browser_renders_clicks_and_saves_screenshot_lazily(self):
+        probe = await asyncio.create_subprocess_exec(shutil.which('node'),'--input-type=module','-e',
+            "import {browserExecutable} from './browser.mjs';console.log(browserExecutable()||'')",
+            cwd=self.f.dsh.code,stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
+        available, _ = await probe.communicate()
+        if probe.returncode or not available.strip():
+            self.skipTest('install Chromium/Chrome to run real browser UI integration')
+        async def page(reader, writer):
+            while await reader.readline() not in (b'\r\n', b''):
+                pass
+            body = b'''<!doctype html><html><body><div id="app"></div><script>
+                const title=document.createElement('h1');title.textContent='Dynamic test page';
+                const button=document.createElement('button');button.textContent='Count 0';
+                button.onclick=()=>button.textContent='Count 1';document.querySelector('#app').append(title,button);
+                </script></body></html>'''
+            writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nConnection: close\r\nContent-Length: '+str(len(body)).encode()+b'\r\n\r\n'+body)
+            await writer.drain()
+            writer.close()
+            await writer.wait_closed()
+        website = await asyncio.start_server(page, '127.0.0.1', 0)
+        url = 'http://127.0.0.1:' + str(website.sockets[0].getsockname()[1])
+        steps = 0
+        screenshot = self.f.sandbox.scene_dir('private:123') / 'browser-test.png'
+        prefix = 'mcp__playwright-mcp__'
+        async def respond(request):
+            nonlocal steps
+            steps += 1
+            tools = {tool['name'] for tool in request['tools']}
+            latest = json.dumps(request['messages'][-1], ensure_ascii=False)
+            if steps == 1:
+                self.assertIn('open_browser', tools)
+                self.assertFalse(any(name.startswith(prefix) for name in tools))
+                return self.tool('open_browser')
+            self.assertIn(prefix + 'browser_navigate', tools, latest)
+            if steps == 2:
+                return self.tool(prefix + 'browser_navigate', url=url)
+            if steps in (3, 5):
+                if steps == 5:
+                    self.assertNotIn('"is_error": true', latest, latest)
+                snapshots = sorted((screenshot.parent / '.playwright-mcp').glob('page-*.yml'))
+                self.assertTrue(snapshots, latest)
+                return self.tool('read', file_path=str(snapshots[-1]))
+            if steps == 4:
+                self.assertIn('Dynamic test page', latest)
+                match = re.search(r'button[^\n]*?ref=(e\d+)', latest)
+                self.assertIsNotNone(match, latest)
+                return self.tool(prefix + 'browser_click', target=match[1])
+            if steps == 6:
+                self.assertIn('Count 1', latest)
+                return self.tool(prefix + 'browser_take_screenshot', filename=str(screenshot), type='png')
+            self.assertTrue(screenshot.exists(), latest)
+            return '浏览器已渲染动态页面、点击按钮并保存截图。'
+        self.dispatcher = respond
+        try:
+            result = await asyncio.wait_for(self.f.dsh.run('chat', 'test browser', task_id='browser-test',
+                handler=AsyncMock(), current=lambda:True, owner=True, qq='123',
+                scene_dir=screenshot.parent.name, role='worker'), 45)
+            self.assertEqual(result['finish_reason'], 'completed', result)
+            self.assertEqual(steps, 7)
+            self.assertGreater(screenshot.stat().st_size, 100)
+        finally:
+            website.close()
+            await website.wait_closed()
+
+    async def test_browser_spawn_and_scheduled_fork_release_session_resources(self):
+        main_steps = browser_starts = 0
+        async def respond(request):
+            nonlocal main_steps, browser_starts
+            tools = {tool['name'] for tool in request['tools']}
+            if 'write' in tools:
+                if not any(name.startswith('mcp__playwright-mcp__') for name in tools):
+                    browser_starts += 1
+                    return self.tool('open_browser')
+                results = [block for message in request['messages'] for block in message.get('content', [])
+                    if isinstance(block, dict) and block.get('type') == 'tool_result']
+                latest = results[-1]['content'][0]['text']
+                if latest.startswith('{'):
+                    self.assertTrue(json.loads(latest)['success'],latest)
+                    return self.tool('mcp__playwright-mcp__browser_run_code_unsafe',code="async (page) => { throw new Error('UNSAFE_DISPATCH_EXECUTED'); }")
+                self.assertIn('OWNER_REQUIRED',latest)
+                self.assertNotIn('UNSAFE_DISPATCH_EXECUTED',latest)
+                return '浏览器工具就绪，本任务检查结束，不发送QQ消息。'
+            main_steps += 1
+            self.assertNotIn('open_browser', tools)
+            self.assertFalse(any(name.startswith('mcp__playwright-mcp__') for name in tools))
+            if main_steps == 1:
+                return self.tool('spawn_task', title='浏览器检查', prompt='启用浏览器，检查后静默返回')
+            return '内部记录。'
+        self.dispatcher = respond
+        bot = SimpleNamespace(reply=AsyncMock(), master_service=SimpleNamespace(is_master=lambda qq:False))
+        ctx = MessageContext(bot=bot, event={}, websocket=None, msg='浏览器检查', message_type='group',user_id=123,group_id=12)
+        await asyncio.wait_for(self.f.engine._turn(ctx,'group:12',True),20)
+        async with asyncio.timeout(15):
+            while self.f.engine.background or self.f.engine.tasks:
+                await asyncio.sleep(.05)
+        # A second temporary Session must acquire the released single browser slot.
+        result = await asyncio.wait_for(self.f.engine.run_scheduled(ctx,{
+            'id':'browser-schedule','run_id':'browser-schedule-run','scheduled_at':time.time(),
+            'prompt':'启用浏览器，检查后静默结束','delivery':'silent','owner_grant':False,
+        },lambda:True),20)
+        self.assertEqual(result['finish_reason'],'completed',result)
+        self.assertEqual(browser_starts,2)
+        bot.reply.assert_not_awaited()
 
     async def test_native_spawn_and_background_delivery_do_not_leak_final_text(self):
         began, release = asyncio.Event(), asyncio.Event()

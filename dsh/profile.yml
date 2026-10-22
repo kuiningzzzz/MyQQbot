@@ -36,6 +36,7 @@
     - { id: tool-timeout, name: '@deepseek-ai/dsh-tool-call-timeout-policy' }
     - { id: fs, name: '@deepseek-ai/dsh-fs-local' }
     - { id: working-directory, name: '@deepseek-ai/dsh-working-directory' }
+    - { id: browser-use, name: ./browser-use.mjs }
     - { id: fs-policy, name: '@deepseek-ai/dsh-fs-observation-policy' }
     - { id: fs-tools, name: '@deepseek-ai/dsh-tool-fs' }
     - { id: subprocess, name: '@deepseek-ai/dsh-subprocess-local' }
@@ -66,4 +67,4 @@
     - { id: tool-skill, name: '@deepseek-ai/dsh-tool-skill' }
     - id: qqbot
       name: ./plugin.mjs
-      inject: [agents, sessions, agentLoop, tools, systemPrompt, sessionPersistence, fs, compaction, subagents, workingDirectory, shellEnv]
+      inject: [agents, sessions, agentLoop, tools, systemPrompt, sessionPersistence, fs, compaction, subagents, workingDirectory, shellEnv, browserUse]

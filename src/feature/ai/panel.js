@@ -49,7 +49,7 @@ featureAdminControls.ai = async function (row) {
   field($('[data-ai-switches]'),'stickers_enabled','启用表情库自动同步、后台理解与Agent发送',config.stickers_enabled);
   initStickerPanel(row);
   for(const [key,label] of Object.entries({bot_qq:'机器人QQ号',nickname:'网名／唤醒姓名',account_description:'账号身份说明'}))field($('[data-ai-identity]'),key,label,config[key]);
-  for(const [key,label] of Object.entries({chat_enabled:'启用聊天',summary_enabled:'启用群聊总结',memory_enabled:'启用长时记忆',memory_auto_learn:'自动整理消息队列',workspace_enabled:'启用文件下载与发送',ocr_enabled:'启用图片／PDF OCR',audio_enabled:'启用云端声音理解',voice_enabled:'启用语音合成与QQ语音发送',vector_index_enabled:'启用本地向量检索'}))field($('[data-ai-switches]'),key,label,config[key]);
+  for(const [key,label] of Object.entries({chat_enabled:'启用聊天',summary_enabled:'启用群聊总结',memory_enabled:'启用长时记忆',memory_auto_learn:'自动整理消息队列',workspace_enabled:'启用文件下载与发送',browser_enabled:'启用后台网页浏览与界面操作',ocr_enabled:'启用图片／PDF OCR',audio_enabled:'启用云端声音理解',voice_enabled:'启用语音合成与QQ语音发送',vector_index_enabled:'启用本地向量检索'}))field($('[data-ai-switches]'),key,label,config[key]);
   for(const [key,label] of Object.entries({embedding_model:'嵌入模型名称或本地目录',timezone:'时间显示时区'}))field($('[data-ai-memory]'),key,label,config[key]);
   $('[data-ai-prompt]').value=config.agent_prompt;
   function renderRuntime(data) {

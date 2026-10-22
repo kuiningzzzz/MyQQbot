@@ -43,6 +43,7 @@ class Settings(BaseModel):
     ocr_enabled: bool = True
     audio_enabled: bool = True
     voice_enabled: bool = True
+    browser_enabled: bool = True
     audio_api_key: str = Field(default='', repr=False)
     audio_api_url: str = 'https://dashscope.aliyuncs.com/compatible-mode/v1'
     tts_api_url: str = 'https://dashscope.aliyuncs.com/api/v1'
@@ -116,7 +117,7 @@ class Config:
             value = os.getenv("AI_" + name.upper())
             if value is None and name in {"vector_index_enabled", "timezone"}:
                 value = os.getenv(name.upper())
-            if value is not None and (value != '' or name not in {'audio_enabled', 'voice_enabled'}):
+            if value is not None and (value != '' or name not in {'audio_enabled', 'voice_enabled', 'browser_enabled'}):
                 data[name] = value
         data.update(api_key=os.getenv('DEEPSEEK_API_KEY') or os.getenv('AI_API_KEY') or '',
             api_url=os.getenv('AI_API_URL') or 'https://api.deepseek.com',

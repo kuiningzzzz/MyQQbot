@@ -9,6 +9,8 @@
     "node": ">=24"
   },
   "dependencies": {
-    "@deepseek-ai/dsh": "0.2.1-rc.2"
+    "@deepseek-ai/dsh": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-browser-use": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-experimental-browser-use-playwright-mcp": "0.2.1-rc.2"
   }
 }

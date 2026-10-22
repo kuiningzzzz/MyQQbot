@@ -26,6 +26,7 @@ ENV_NAMES = {
     'MYQQBOT_PUBLIC_BASE_URL',
     'DASHSCOPE_API_KEY', 'DASHSCOPE_BASE_URL', 'DASHSCOPE_HTTP_BASE_URL',
     'AI_AUDIO_MODEL', 'AI_TTS_MODEL', 'AI_TTS_VOICE', 'AI_TTS_INSTRUCTION', 'AI_AUDIO_ENABLED', 'AI_VOICE_ENABLED',
+    'AI_BROWSER_ENABLED', 'AI_BROWSER_EXECUTABLE_PATH',
 }
 # Match Settings without importing it (that imports dotenv and changes os.environ).
 ENV_NAMES |= {'AI_' + key.upper() for key in (

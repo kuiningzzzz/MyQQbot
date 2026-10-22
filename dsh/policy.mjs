@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import ipaddr from 'ipaddr.js';
+const BROWSER_PREFIX = 'mcp__playwright-mcp__';
 
 export function canonical(value) {
   let target = path.resolve(value);
@@ -35,6 +37,8 @@ export function denial(task, name, args, workspace) {
     if (!task.owner && (args.sandbox_permissions !== undefined || args.run_in_background)) return 'PERMISSION_DENIED: 普通命令不能提升权限或脱离任务后台运行';
     return;
   }
+  if (name === 'open_browser' || name.startsWith(BROWSER_PREFIX)) return browserDenial(task, name, args, workspace);
+  if (name === 'read_browser_image') return task.kind === 'chat' && ['worker', 'scheduled'].includes(task.role) && task.browser_enabled ? undefined : 'PERMISSION_DENIED: 当前任务不允许浏览器截图理解';
   if (task.owner) return;
   const fileTools = new Set(['read', 'write', 'edit', 'glob', 'grep']);
   const qqTools = new Set(['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', 'synthesize_voice', 'recall_message', 'inspect_message', 'get_bot_help', 'list_attachments', 'download_attachment', 'send_file', 'web_search', 'web_fetch', 'search_memory', 'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'integrate_memory']);
@@ -81,4 +85,29 @@ export function denial(task, name, args, workspace) {
   if (memoryFile && within(path.join(workspace, 'memory/user', task.qq), target)) return;
   if (memoryFile && /^[0-9]+$/.test(task.group_id || '') && within(path.join(workspace, 'memory/group', task.group_id), target)) return;
   return 'PERMISSION_DENIED: 只能修改自己的记忆、当前群记忆、soul人格与当前会话文件；宿主规则和他人资料需要主人';
+}
+
+export function browserDenial(task, name, args, workspace) {
+  if (name !== 'open_browser' && !name.startsWith(BROWSER_PREFIX)) return;
+  if (!(task?.kind === 'chat' && ['worker', 'scheduled'].includes(task.role) && !task.cancelled)) return 'PERMISSION_DENIED: 浏览器仅供聊天执行者和定时分支使用';
+  if (!task.browser_enabled) return 'BROWSER_DISABLED: 浏览器功能已关闭';
+  if (name === 'open_browser') return;
+  const tool = name.slice(BROWSER_PREFIX.length);
+  // Node-side arbitrary code is not the same authority as a DOM interaction.
+  if (['browser_run_code', 'browser_run_code_unsafe', 'browser_evaluate'].includes(tool) && !task.owner) return 'OWNER_REQUIRED: 网页脚本执行仅供主人任务，普通任务请使用页面快照和界面操作';
+  if (tool === 'browser_install') return 'PERMISSION_DENIED: 浏览器在部署时安装，任务不能安装可执行文件';
+  if (tool === 'browser_navigate' || tool === 'browser_tabs' && args.url) {
+    try {
+      const url = new URL(args.url);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) return 'PERMISSION_DENIED: 仅允许无内嵌凭据的HTTP(S)网页';
+      const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+      const literal = ipaddr.isValid(host) ? ipaddr.process(host) : null;
+      if (!task.owner && (host === 'localhost' || host.endsWith('.localhost') || literal && literal.range() !== 'unicast')) return 'OWNER_REQUIRED: 访问本机与内网网页需要主人任务';
+    } catch { return 'PERMISSION_DENIED: 网页URL无效'; }
+  }
+  const directory = path.join(workspace, 'files', task.scene_dir);
+  for (const file of [...(Array.isArray(args.paths) ? args.paths : []), ...(args.filename ? [args.filename] : [])]) {
+    const target = path.resolve(directory, file);
+    if (!within(directory, target) || fs.existsSync(target) && fs.statSync(target).nlink > 1) return 'PERMISSION_DENIED: 浏览器上传与导出仅限当前会话files目录，不能使用越界路径或硬链接';
+  }
 }
