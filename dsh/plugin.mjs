@@ -6,6 +6,7 @@ import {defineTool} from '@deepseek-ai/dsh-tools';
 import {denial, within} from './policy.mjs';
 import {bindShellTasks} from './shell-policy.mjs';
 import {mountBrowser} from './browser.mjs';
+import {activationError, observeActivationErrors} from './activation-errors.mjs';
 
 export const name = 'myqqbot-bridge';
 export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt', 'sessionPersistence', 'fs', 'compaction', 'subagents', 'workingDirectory', 'shellEnv', 'browserUse'];
@@ -92,6 +93,15 @@ export async function apply(ctx) {
   // A crash leaves a cleanup receipt, never an orphaned retained fork.
   for (const id of Object.keys(branches)) removeBranch(id);
   const currentTask = agent => tasks.get(agent?.id);
+  // Native activation.result preserves only stopReason. Observe the scoped
+  // failure while the child still exists, before its disposable log is removed.
+  observeActivationErrors(ctx, agent => currentTask(agent) || pendingChildren.get(agent?.id));
+  function branchFailure(task, phase, error) {
+    const message = activationError(error);
+    process.stderr.write('QQBOT_ACTIVATION_ERROR ' + JSON.stringify({task_id: task.task_id,
+      agent_id: task.agent_id, role: task.role, phase, error: message}) + '\n');
+    return message;
+  }
   const browser = mountBrowser(ctx, currentTask, workspace);
   bindShellTasks(sessionId => [...tasks.values()].find(task => task.session_id === sessionId));
   // Ambient credentials are intentionally scrubbed by dsh. Supply only this
@@ -366,8 +376,12 @@ export async function apply(ctx) {
       // The native activation reports a stop reason without the original
       // exception. Preserve this diagnostic for the scheduler/admin run log.
       if (task.tool_surface_error) throw new Error(task.tool_surface_error);
+      const failure = result.stopReason === 'error' ? branchFailure(task, 'execution', task.activation_error || task.tool_surface_error) : undefined;
       return {cancelled:task.cancelled,finish_reason:result.stopReason,
+        ...(failure ? {error:failure} : {}),
         final_response:(result.output||[]).filter(b=>b.type==='text').map(b=>b.text).join('\n')};
+    } catch (error) {
+      throw new Error(branchFailure(task, job.run ? 'execution' : 'admission', error));
     } finally {
       clearTimeout(job.timer);
       try {

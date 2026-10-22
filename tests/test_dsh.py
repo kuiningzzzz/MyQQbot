@@ -1605,6 +1605,48 @@ export function apply(ctx) {
         callback.assert_not_awaited()
         self.assertIn('PERMISSION_DENIED', json.dumps(self.requests[-1]['messages']))
 
+    async def test_memory_startup_failure_preserves_cause_queue_and_cleans_branch(self):
+        await self.f.record('group', '12', '123', '甲', '记忆整理失败后仍需保留', message_id='startup-failure')
+        self.f.workspace.write_memory('group/12/原有.md', '不能丢失')
+        fault = Path(self.temp.name) / 'memory-startup-error.mjs'
+        fault.write_text("""export const inject = ['workingDirectory'];
+export function apply(ctx) {
+  ctx.on('agent/pre-step', ({agent}, next) => {
+    if (ctx.workingDirectory.get(agent.session).replaceAll('\\\\','/').endsWith('/tmp/memory-stage')) {
+      throw new Error('MEMORY_STAGE_INIT_TEST: ' + process.env.DEEPSEEK_API_KEY);
+    }
+    return next();
+  });
+}
+""", encoding='utf-8')
+        profile = Path(self.temp.name) / 'memory-fault-profile.yml'
+        original = (self.f.dsh.code / 'profile.yml').read_text('utf-8')
+        original = re.sub(r'name: \./([\w.-]+\.mjs)',
+            lambda match: 'name: ' + json.dumps((self.f.dsh.code / match[1]).as_posix()), original)
+        profile.write_text(original + '\n    - id: memory-startup-fault\n      name: ' + json.dumps(fault.as_posix()) + '\n', encoding='utf-8')
+        launch = asyncio.create_subprocess_exec
+        async def launch_fault(*args, **kwargs):
+            args = list(args)
+            if '--patch' in args:
+                args[args.index('--patch') + 1] = str(profile)
+            return await launch(*args, **kwargs)
+        with patch('src.feature.ai.dsh_runtime.asyncio.create_subprocess_exec', side_effect=launch_fault):
+            with self.assertLogs('src.feature.ai.dsh_runtime', level='ERROR') as logs:
+                with self.assertRaisesRegex(RuntimeError, 'MEMORY_STAGE_INIT_TEST:') as raised:
+                    await asyncio.wait_for(self.f.runtime.full(), 15)
+                async with asyncio.timeout(3):
+                    while not logs.output:
+                        await asyncio.sleep(.01)
+        self.assertNotIn('local-test-key', str(raised.exception))
+        self.assertNotIn('local-test-key', '\n'.join(logs.output))
+        self.assertEqual(self.requests, [])  # Failure before the first model request.
+        self.assertEqual(self.f.journal.pending_count(), 1)
+        self.assertEqual(self.f.workspace.read_memory('group/12/原有.md'), '不能丢失')
+        self.assertFalse((self.f.workspace.root / 'tmp/memory-stage').exists())
+        self.assertEqual(json.loads((self.f.dsh.home / 'qqbot-branches.json').read_text('utf-8')), {})
+        self.assertEqual(self.f.dsh.active, {})
+        self.assertFalse([p for p in (self.f.dsh.home / 'sessions').glob('*/*') if not p.name.startswith('chat-')])
+
     async def test_native_memory_batch_edits_markdown_and_acknowledges(self):
         await self.f.record('group', '12', '123', '甲', '大三学生，喜欢摄影', message_id='1')
         stage = self.f.workspace.root / 'tmp/memory-stage'

@@ -152,6 +152,11 @@ class DshRuntime:
                 # Names and host-issued identifiers only; never log prompts,
                 # tool arguments, chat content or model credentials here.
                 logger.info('dsh工具注入：%s', entry.removeprefix('QQBOT_TOOL_SURFACE '))
+            elif entry.startswith('QQBOT_ACTIVATION_ERROR '):
+                # The bridge emits a bounded, credential-redacted exception,
+                # not the model input. systemd/application logs retain it even
+                # after the temporary fork's physical log is deleted.
+                logger.error('dsh分支失败：%s', entry.removeprefix('QQBOT_ACTIVATION_ERROR '))
         if process:
             await process.wait()
         if self.process is process:

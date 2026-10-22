@@ -37,6 +37,8 @@ class MemoryRuntime:
         self.running = False
         self.worker = self.scheduler = None
         self.last_error = ''
+        self.failure_count = 0
+        self.retry_after = 0.0
         self.lock = asyncio.Lock()
 
     def set_enabled(self, enabled):
@@ -44,7 +46,7 @@ class MemoryRuntime:
 
     def trigger(self):
         settings = self.feature.config.load()
-        if self.running and self.enabled and settings.memory_enabled and settings.memory_auto_learn and self.ready() and (not self.worker or self.worker.done()):
+        if self.running and self.enabled and settings.memory_enabled and settings.memory_auto_learn and time.monotonic() >= self.retry_after and self.ready() and (not self.worker or self.worker.done()):
             self.worker = asyncio.create_task(self._drain())
 
     def ready(self):
@@ -64,7 +66,10 @@ class MemoryRuntime:
             raise
         except Exception as exc:
             self.last_error = str(exc)
-            logger.exception('记忆整理失败，保留队列，稍后重试')
+            self.failure_count += 1
+            delay = min(1800, 60 * 2 ** min(self.failure_count - 1, 5))
+            self.retry_after = time.monotonic() + delay
+            logger.exception('记忆整理失败，保留队列，%s秒后重试（连续失败%s次）', delay, self.failure_count)
 
     async def full(self, date=None, current=None):
         if date:
@@ -93,6 +98,7 @@ class MemoryRuntime:
             receipt = self.workspace.load_state('memory-batch-receipt', {})
             if receipt.get('batch') == batch:
                 f.journal.acknowledge([] if media_only else [r['seq'] for r in rows], revisions)
+                self.failure_count, self.retry_after, self.last_error = 0, 0.0, ''
                 return {'success': True, **receipt, 'processed': processed, 'media_updated': media_updated}
             transaction = MemoryTransaction(self.workspace, batch, f.identity.ids)
             try:
@@ -107,6 +113,7 @@ class MemoryRuntime:
                 f.journal.acknowledge([] if media_only else [r['seq'] for r in rows], revisions)
                 self.workspace.save_state('index', {'dirty': True})
                 self.last_error = ''
+                self.failure_count, self.retry_after = 0, 0.0
                 return {'success': True, 'processed': processed, 'media_updated': media_updated, 'batch': batch, 'updated_files': changed}
             finally:
                 transaction.close()

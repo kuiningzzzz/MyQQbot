@@ -83,6 +83,38 @@ class SoulRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.ai.stop()
         self.temp.cleanup()
 
+    async def test_automatic_memory_failure_backs_off_and_manual_retry_recovers(self):
+        runtime = self.ai.runtime
+        await self.ai.record('group', '12', '123', '甲', '待整理内容', message_id='retry')
+        self.ai.config.save({'memory_auto_learn': True})
+        runtime.running = True
+        runtime.MEDIA_DEBOUNCE_SECONDS = 0
+        # Exercise automatic scheduling without generating 100 raw records.
+        runtime.ready = lambda: self.ai.journal.pending_count() > 0
+        self.ai.dsh.run = AsyncMock(side_effect=RuntimeError('MEMORY_STAGE_INIT_TEST'))
+        clock = 100.0
+        for attempt, delay in enumerate([60, 120, 240, 480, 960, 1800, 1800], 1):
+            with patch('src.feature.ai.runtime.time', SimpleNamespace(monotonic=lambda: clock)):
+                runtime.trigger()
+                with self.assertLogs('src.feature.ai.runtime', level='ERROR'):
+                    await runtime.worker
+                self.assertEqual(runtime.failure_count, attempt)
+                self.assertEqual(runtime.retry_after, clock + delay)
+                self.assertEqual(self.ai.journal.pending_count(), 1)
+                previous = runtime.worker
+                for _ in range(5):
+                    runtime.trigger()
+                self.assertIs(runtime.worker, previous)
+            clock += delay
+        self.assertEqual(self.ai.dsh.run.await_count, 7)
+        # An explicit admin/tool retry bypasses the automatic cooldown.
+        self.ai.dsh.run.side_effect = None
+        self.ai.dsh.run.return_value = {'finish_reason': 'completed', 'final_response': '{"completed":true,"batch":"1-1"}'}
+        result = await runtime.full()
+        self.assertEqual(result['processed'], 1)
+        self.assertEqual(self.ai.journal.pending_count(), 0)
+        self.assertEqual((runtime.failure_count, runtime.retry_after, runtime.last_error), (0, 0.0, ''))
+
     async def test_all_roles_reload_all_soul_files_without_vector_indexing(self):
         w = self.ai.workspace
         w.write_memory('soul/notes/相处.md', 'SOUL_MARKER_ONE')
