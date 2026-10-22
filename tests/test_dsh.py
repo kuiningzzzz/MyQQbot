@@ -432,6 +432,14 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             request = json.loads(await reader.readexactly(int(headers['content-length'])))
             self.requests.append(request)
             self.model_started.set()
+            # Match the production Messages API. Previously this mock accepted
+            # invalid all-deferred catalogs and concealed the memory-fork bug.
+            if request.get('tools') and all(tool.get('defer_loading') is True for tool in request['tools']):
+                data = json.dumps({'type':'error','error':{'type':'invalid_request_error',
+                    'message':'tools: at least one tool must have defer_loading=false. All tools cannot be deferred.'}}).encode()
+                writer.write(b'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: ' + str(len(data)).encode() + b'\r\n\r\n' + data)
+                await writer.drain()
+                return
             response = self.dispatcher if hasattr(self, 'dispatcher') else self.responses.pop(0)
             if callable(response):
                 response = response(request)
@@ -1604,6 +1612,53 @@ export function apply(ctx) {
         await self.native('memory', cwd=stage, handler=callback)
         callback.assert_not_awaited()
         self.assertIn('PERMISSION_DENIED', json.dumps(self.requests[-1]['messages']))
+
+    async def test_all_deferred_memory_failure_recovers_without_resetting_parent_or_data(self):
+        # First reproduce using the unwrapped official rc.2 provider. Then
+        # restart with the compatibility adapter against the SAME data/session.
+        profile = Path(self.temp.name) / 'official-provider-profile.yml'
+        content = (self.f.dsh.code / 'profile.yml').read_text('utf-8')
+        content = content.replace('name: ./deepseek.mjs', "name: '@deepseek-ai/dsh-llm-deepseek-api-key'")
+        content = re.sub(r'name: \./([\w.-]+\.mjs)',
+            lambda match: 'name: ' + json.dumps((self.f.dsh.code / match[1]).as_posix()), content)
+        profile.write_text(content, encoding='utf-8')
+        launch = asyncio.create_subprocess_exec
+        async def launch_official(*args, **kwargs):
+            args = list(args)
+            if '--patch' in args:
+                args[args.index('--patch') + 1] = str(profile)
+            return await launch(*args, **kwargs)
+        await self.f.record('group','12','123','甲','我喜欢茶',message_id='deferred-regression')
+        self.f.workspace.write_memory('group/12/已有.md', '之前的记忆')
+        self.responses = ['PARENT_DEFERRED_HISTORY']
+        with patch('src.feature.ai.dsh_runtime.asyncio.create_subprocess_exec', side_effect=launch_official):
+            await self.native(role='main', prompt='PARENT_DEFERRED_SEED')
+            parent = json.loads((self.f.dsh.home / 'qqbot-sessions.json').read_text('utf-8'))['chat']['id']
+            with self.assertLogs('src.feature.ai.dsh_runtime', level='ERROR'):
+                with self.assertRaisesRegex(RuntimeError, 'at least one tool must have defer_loading=false'):
+                    await asyncio.wait_for(self.f.runtime.full(), 15)
+                await self.f.dsh.stop()
+        self.assertTrue(all(tool.get('defer_loading') is True for tool in self.requests[-1]['tools']))
+        self.assertEqual(self.f.journal.pending_count(), 1)
+        self.assertEqual(self.f.workspace.read_memory('group/12/已有.md'), '之前的记忆')
+        start = len(self.requests)
+        stage = self.f.workspace.root / 'tmp/memory-stage'
+        self.responses = [self.tool('read',file_path=str(stage/'batch.json')),
+            self.tool('write',file_path=str(stage/'memory/user/123/PREFERENCE.md'),content='- 喜欢茶'),
+            '{"completed":true,"batch":"1-1"}']
+        result = await asyncio.wait_for(self.f.runtime.full(), 15)
+        self.assertEqual(result['processed'], 1)
+        self.assertEqual(self.f.journal.pending_count(), 0)
+        self.assertEqual(self.f.workspace.read_memory('user/123/PREFERENCE.md'), '- 喜欢茶')
+        self.assertEqual(self.f.workspace.read_memory('group/12/已有.md'), '之前的记忆')
+        self.assertEqual(json.loads((self.f.dsh.home/'qqbot-sessions.json').read_text('utf-8'))['chat']['id'], parent)
+        for request in self.requests[start:]:
+            self.assertTrue(any(tool.get('defer_loading') is not True for tool in request['tools']))
+            self.assertEqual({tool['name'] for tool in request['tools']},
+                {'delete_memory_file','edit','glob','grep','read','search_memory','skill','write'})
+            self.assertIn('PARENT_DEFERRED_SEED', model_instructions(request))
+        self.assertFalse((self.f.workspace.root/'tmp/memory-stage').exists())
+        self.assertEqual(json.loads((self.f.dsh.home/'qqbot-branches.json').read_text('utf-8')), {})
 
     async def test_memory_startup_failure_preserves_cause_queue_and_cleans_branch(self):
         await self.f.record('group', '12', '123', '甲', '记忆整理失败后仍需保留', message_id='startup-failure')
