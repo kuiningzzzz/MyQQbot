@@ -1,4 +1,5 @@
 """Group observation, addressing evidence, and queue boundaries."""
+import asyncio
 import json
 import tempfile
 import unittest
@@ -169,13 +170,67 @@ class ParticipationTests(unittest.IsolatedAsyncioTestCase):
         self.f.engine.reset_transient()
         self.assertFalse(self.f.engine.has_pending())
 
+    async def test_injected_sender_has_own_frozen_spawn_authority(self):
+        began, release = asyncio.Event(), asyncio.Event()
+        self.f.dsh.observe = AsyncMock(return_value=1)
+        async def run(kind, prompt, **kwargs):
+            began.set()
+            await release.wait()
+            grant = await kwargs['handler']('__source', {'source_message_id':'B','_host_input_revision':1})
+            self.assertEqual(grant['qq'], '456')
+            self.assertFalse(grant['owner'])
+            with self.assertRaises(PermissionError):
+                await kwargs['spawn']('ambiguous','任务')
+            child = await kwargs['spawn']('selected','任务',source_message_id='B')
+            self.assertFalse(child['owner'])
+            self.assertEqual(child['context']['requester_qq'], '456')
+            self.assertEqual(child['context']['observed_event']['text'], 'B的请求')
+            child['revoke']()
+            return {'finish_reason':'completed'}
+        self.f.dsh.run = run
+        a, b = self.ctx('A的请求', identifier='A'), self.ctx('B的请求',user=456,identifier='B')
+        a.event['_ai_arrival_forced'] = b.event['_ai_arrival_forced'] = True
+        await self.f.engine.handle(a)
+        await began.wait()
+        await self.f.engine.handle(b)
+        self.assertTrue(self.f.engine.pending.empty())
+        release.set()
+        await asyncio.gather(*self.f.engine.tasks.values())
+        self.f.dsh.observe.assert_awaited_once()
+
+    async def test_other_scene_and_already_sending_turn_keep_queue_boundary(self):
+        for already_sending, other_scene in [(False,True),(True,False)]:
+            began, release = asyncio.Event(), asyncio.Event()
+            self.f.dsh.observe = AsyncMock(return_value=1)
+            calls = []
+            async def run(kind, prompt, **kwargs):
+                calls.append(json.loads(prompt)['observed_event']['text'])
+                if len(calls) == 1:
+                    if already_sending:
+                        await kwargs['handler']('send_message',{'message':'A已发出'})
+                    began.set()
+                    await release.wait()
+                return {'finish_reason':'completed'}
+            self.f.dsh.run = run
+            a = self.ctx('A',identifier='A')
+            b = self.ctx('B',identifier='B',group=34 if other_scene else 12)
+            a.event['_ai_arrival_forced'] = b.event['_ai_arrival_forced'] = True
+            await self.f.engine.handle(a)
+            await began.wait()
+            await self.f.engine.handle(b)
+            self.assertEqual(self.f.engine.pending.qsize(),1)
+            release.set()
+            await asyncio.gather(*self.f.engine.tasks.values())
+            self.assertEqual(calls,['A','B'])
+            self.f.dsh.observe.assert_not_awaited()
+
     async def test_original_requester_can_still_correct_running_request_without_repeating_name(self):
         engine = self.f.engine
         engine.current = {'key': 'group:12', 'qq': '123', 'id': 'running', 'valid': True, 'explicit_request': True}
         engine._start_worker = lambda: None
         self.f.dsh.cancel = AsyncMock()
         self.assertTrue(await engine.handle(self.ctx('等等，取消刚才')))
-        self.f.dsh.cancel.assert_awaited_once_with('running')
+        self.f.dsh.cancel.assert_not_awaited()
         queued, forced, _ = engine.pending.get_nowait()
         self.assertTrue(forced)
         self.assertEqual(queued.event['_ai_address_hint'], 'request_correction')

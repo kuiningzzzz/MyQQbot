@@ -78,12 +78,14 @@ class DshRuntime:
                     if not task['current']():
                         raise PermissionError('任务已结束或权限已撤销')
                     if name == '__spawn' and task.get('spawn'):
-                        child = await task['spawn'](args['task_id'], args['title'])
-                        child.update(owner=task.get('owner', False), expires_at=task.get('expires_at', 0),
-                                     sticker_capability=secrets.token_hex(32) if task.get('owner') else '')
+                        child = await task['spawn'](args['task_id'], args['title'], **({'source_message_id':args['source_message_id']} if args.get('source_message_id') else {}))
+                        child.update(owner=child.get('owner', task.get('owner', False)), expires_at=task.get('expires_at', 0))
+                        child['sticker_capability'] = secrets.token_hex(32) if child['owner'] else ''
                         self.active[args['task_id']] = child
                         result = {'context': child['context'], 'sticker_capability': child['sticker_capability']}
                     else:
+                        if task.get('live_observations'):
+                            args = {**args, '_host_input_revision':payload.get('input_revision', 0)}
                         result = await task['handler'](name, args)
                 data = json.dumps({"ok": True, "result": result}, ensure_ascii=False).encode()
         except Exception as exc:
@@ -278,6 +280,16 @@ class DshRuntime:
         finally:
             if gate is not None:
                 gate.release()
+
+    async def observe(self, task_id, scene_dir, prompt):
+        """Return the admitted native input revision, or False if the turn closed."""
+        if not self.url or task_id not in self.active:
+            return False
+        result = await self.request('/observe', {'task_id':task_id, 'scene_dir':scene_dir, 'prompt':prompt}, timeout=5)
+        if result.get('accepted') is True:
+            self.active[task_id]['live_observations'] = True
+            return result['input_revision']
+        return False
 
     async def cancel(self, task_id):
         task = self.active.pop(task_id, None)

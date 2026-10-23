@@ -48,9 +48,9 @@ const definitions = {
   send_file: ['将files_directory内已创建、下载或修改的文件发送为当前群的群文件或当前私聊文件；path为文件路径，name为可选显示文件名；单文件最多20MiB，等待NapCat回执。需文件开关开启且当前为明确请求', {path: {type: 'string', required: true}, name: {type: 'string'}}],
   search_memory: ['本地向量与文本检索；scope为auto/user/group/common，auto搜索全部正式记忆。target_qq仅筛选用户记忆，target_group仅筛选群记忆；只查指定群时用scope=group和target_group。也可原生grep/read', {query: {type: 'string', required: true}, target_qq: {type: 'string'}, target_group: {type: 'string'}, scope: {type: 'string'}}],
   delete_memory_file: ['仅供记忆维护分支删除暂存副本中的合法记忆文件，path相对cwd/memory，例如user/123/memory/过时主题.md；先读取并确认有效信息已合并。正式记忆在整个维护成功后才提交删除，不能删除原文或任意服务器文件', {path:{type:'string',required:true}}],
-  spawn_task: ['主对话的执行入口：联网/查最新/读链接、记忆读写、文件/附件处理与发送、撤回、定时/表情管理、复杂分析或长文均委派。普通用户也可委派联网及权限内工作；主对话缺少执行工具不代表机器人不能做。prompt写目标、必要事实与交付要求；立即返回内部task_id，结果自动回主对话，文字由主对话交付、文件由执行者send_file。不自动发受理回执，不继承后续请求、不提升权限；检查启动回执', {title: {type: 'string', required: true}, prompt: {type: 'string', required: true}}],
-  task_status: ['查询当前请求者在当前QQ会话的后台任务状态，省略task_id列出最近任务', {task_id: {type: 'string'}}],
-  cancel_task: ['取消当前请求者在当前QQ会话的指定后台任务；文件修改不回滚', {task_id: {type: 'string', required: true}}],
+  spawn_task: ['主对话的执行入口：联网/查最新/读链接、记忆读写、文件/附件处理与发送、撤回、定时/表情管理、复杂分析或长文均委派。普通用户也可委派联网及权限内工作；主对话缺少执行工具不代表机器人不能做。prompt写目标、必要事实与交付要求；立即返回内部task_id，结果自动回主对话，文字由主对话交付、文件由执行者send_file。不自动发受理回执，不继承后续请求、不提升权限；检查启动回执', {title: {type: 'string', required: true}, prompt: {type: 'string', required: true}, source_message_id:{type:'string'}}],
+  task_status: ['查询当前请求者在当前QQ会话的后台任务状态，省略task_id列出最近任务', {task_id: {type: 'string'}, source_message_id:{type:'string'}}],
+  cancel_task: ['取消当前请求者在当前QQ会话的指定后台任务；文件修改不回滚', {task_id: {type: 'string', required: true}, source_message_id:{type:'string'}}],
   schedule_create: ['建立当前会话任务：固定原文kind=fixed/content，动态生成或工作kind=ai/prompt（默认ai）。AI须显式选择delivery：播报、提醒、交付结果用message；允许按条件静默用auto；内部维护用silent。北京时间；-y 月-日-时-分-秒，-m 日-时-分-秒，-w 星期1至7-时-分-秒，-d 时-分-秒，-o 年-月-日-时-分-秒。农历加-cn，个位数无需补零；循环取下一次，一次性过去时间拒绝。content保留空白，群艾特用[CQ:at,qq=QQ号]；fixed不能传delivery。闰月等细则见qqbot-guide', {kind:{type:'string'},flag:{type:'string',required:true},time:{type:'string',required:true},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string',enum:['message','auto','silent']}}],
   schedule_list: ['列出当前QQ会话定时任务、类型、内容、唯一ID和下次时间；省略kind列出固定消息和AI两类，可传fixed或ai筛选。不能查看其他会话', {kind:{type:'string'}}],
   schedule_update: ['修改当前会话任务，只传变化字段；task_id来自list，保持原类型。fixed用content、ai用prompt，时间格式同create。AI的delivery：明确要求播报/交付用message，允许按条件静默用auto，内部维护用silent；仅改时间等字段时保留原模式。enabled暂停/启用；授权按当前请求者重算，不能跨会话', {task_id:{type:'string',required:true},flag:{type:'string'},time:{type:'string'},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string',enum:['message','auto','silent']},enabled:{type:'boolean'}}],
@@ -118,6 +118,7 @@ export async function apply(ctx) {
   ctx.on('agent/pre-step', ({agent}, next) => {
     const task = currentTask(agent);
     if (task) {
+      task.step_revision = task.input_revision || 0;
       const names = ctx.tools.schemas(agent).map(tool => tool.name).sort();
       const signature = JSON.stringify(names);
       if (task.tool_surface !== signature) {
@@ -136,7 +137,7 @@ export async function apply(ctx) {
   });
   ctx.tools.guard(exec => denial(currentTask(exec.agent), exec.name, exec.arguments, workspace));
   async function callback(task, toolName, args, signal) {
-    const response = await fetch(process.env.QQBOT_CALLBACK, {method: 'POST', headers: {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}, body: JSON.stringify({task_id: task.task_id, name: toolName, arguments: args}), signal});
+    const response = await fetch(process.env.QQBOT_CALLBACK, {method: 'POST', headers: {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}, body: JSON.stringify({task_id: task.task_id, name: toolName, arguments: args, input_revision:task.step_revision || 0}), signal});
     const result = await response.json();
     if (!result.ok) throw new Error(result.error);
     return result.result;
@@ -214,6 +215,12 @@ export async function apply(ctx) {
     } finally { pendingChildren.delete(childId); }
   }
   async function dispatch(name, args, exec, parent) {
+    if (parent.live_inputs) {
+      const grant = await callback(parent, '__source', {source_message_id:args.source_message_id}, exec.signal);
+      if (grant.code === 'new_observations_pending') return grant;
+      if (typeof grant.qq !== 'string' || typeof grant.owner !== 'boolean') throw new Error('SOURCE_AUTHORITY_INVALID');
+      parent = {...parent, ...grant};
+    }
     for (const [id, job] of jobs) if (job.finished && Date.now() - job.finished > 3600000) jobs.delete(id);
     if (name !== 'spawn_task') {
       if (args.task_id && !owned(jobs.get(args.task_id), parent)) return {success: false, code: 'task_not_found'};
@@ -235,7 +242,8 @@ export async function apply(ctx) {
     const job = {task, parent_id: exec.agent.id, title: args.title, state: 'starting', controller: new AbortController()};
     jobs.set(id, job);
     try {
-      const prepared = await callback(parent, '__spawn', {task_id: id, title: args.title}, exec.signal);
+      const prepared = await callback(parent, '__spawn', {task_id: id, title: args.title,
+        ...(args.source_message_id ? {source_message_id:args.source_message_id} : {})}, exec.signal);
       task.sticker_capability = prepared.sticker_capability || '';
       // Only scope creation is serialized. Model/tool execution is independent.
       const start = creation.then(async () => {
@@ -259,9 +267,14 @@ export async function apply(ctx) {
       output: {schema: {type: 'json'}, render: (_args, value) => text(JSON.stringify(value))},
       async execute(args, exec) {
         const task = currentTask(exec.agent);
+        if (task?.role === 'main' && ['send_message','send_forward_message','send_sticker','send_voice','spawn_task'].includes(toolName)) {
+          if (exec.agent.inbox.nextStep.length) return {success:false,code:'new_observations_pending',error:'先阅读刚插入的发言，再决定回复或委派。'};
+        }
         if (!task || task.cancelled) throw new Error('TASK_EXPIRED');
         if (['spawn_task', 'task_status', 'cancel_task'].includes(toolName)) return dispatch(toolName, args, exec, task);
-        return callback(task, toolName, args, exec.signal);
+        const result = await callback(task, toolName, args, exec.signal);
+        if (task.role === 'main' && ['send_message','send_forward_message','send_sticker','send_voice'].includes(toolName) && result.code !== 'new_observations_pending') task.reply_started = true;
+        return result;
       }}));
   }
   let rootCreation = Promise.resolve();
@@ -404,6 +417,18 @@ export async function apply(ctx) {
       for await (const chunk of request) { body += chunk; if (body.length > 2 * 1024 * 1024) throw new Error('请求过大'); }
       const data = JSON.parse(body);
       if (request.url === '/run') result = await run(data);
+      else if (request.url === '/observe') {
+        const handle = handles.get('chat');
+        const task = handle && currentTask(handle.agent);
+        if (!task || task.task_id !== data.task_id || task.role !== 'main' || task.delivery || task.cancelled ||
+            task.reply_started || task.scene_dir !== data.scene_dir || handle.agent.status === 'idle') result = {accepted:false};
+        else {
+          handle.agent.inject({id:randomUUID(),role:'user',source:{kind:'user'},content:text(data.prompt)});
+          task.live_inputs = true;
+          task.input_revision = (task.input_revision || 0) + 1;
+          result = {accepted:true, input_revision:task.input_revision};
+        }
+      }
       else if (request.url === '/scheduled' || request.url === '/maintenance') {
         if ((request.url === '/maintenance') !== (data.kind === 'memory' && data.role === 'memory')) throw new Error('分支角色无效');
         const execution = runFork(data);

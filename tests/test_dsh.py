@@ -252,7 +252,7 @@ class StateTests(unittest.IsolatedAsyncioTestCase):
                 migrate(root)
             self.assertEqual((root / 'user/123/PERSON.md').read_text(), 'old')
 
-    async def test_explicit_correction_cancels_stale_send_and_other_scene_queues(self):
+    async def test_correction_queues_without_cancelling_when_injection_is_unavailable(self):
         began, release = asyncio.Event(), asyncio.Event()
         results = []
         calls = 0
@@ -277,10 +277,10 @@ class StateTests(unittest.IsolatedAsyncioTestCase):
         await self.f.engine.handle(context('other scene', 34))
         self.f.dsh.cancel.assert_not_awaited()
         await self.f.engine.handle(context('等等，补充一下'))
-        self.f.dsh.cancel.assert_awaited_once()
+        self.f.dsh.cancel.assert_not_awaited()
         release.set()
         await asyncio.gather(*self.f.engine.tasks.values())
-        self.assertEqual(results, [(34, 'other scene'), (12, '等等，补充一下')])
+        self.assertEqual(results, [(12, 'first'), (34, 'other scene'), (12, '等等，补充一下')])
 
 
     async def test_automatic_queue_resumes_after_restart_and_keeps_remainder(self):
@@ -925,6 +925,76 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             if not branch.done():
                 branch.cancel()
             await asyncio.gather(branch, return_exceptions=True)
+
+    async def test_live_group_observation_interrupts_stale_send_without_an_extra_turn(self):
+        began, release = asyncio.Event(), asyncio.Event()
+        bot = SimpleNamespace(reply=AsyncMock(), master_service=SimpleNamespace(is_master=lambda qq: qq == 123))
+        def context(text, qq, mid, group=12):
+            return MessageContext(bot=bot, websocket=None, msg=text, raw_msg=text, user_id=qq, group_id=group,
+                message_type='group', event={'message_id':mid,'_ai_arrival_forced':True,'message':[]})
+        calls = 0
+        async def respond(request):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                began.set()
+                await release.wait()
+                return self.tool('send_message',message='只回答A的过时回复')
+            if calls == 2:
+                self.assertIn('LIVE_MESSAGE_B', model_instructions(request))
+                self.assertIn('live_observation', model_instructions(request))
+                return self.tool('send_message',message='结合A和B的回复')
+            return '内部完成'
+        self.dispatcher = respond
+        await self.f.engine.handle(context('LIVE_MESSAGE_A',123,'A'))
+        try:
+            await asyncio.wait_for(began.wait(),15)
+            await self.f.engine.handle(context('LIVE_MESSAGE_B',456,'B'))
+            self.assertTrue(self.f.engine.pending.empty())
+            release.set()
+            await asyncio.wait_for(asyncio.gather(*self.f.engine.tasks.values()),15)
+            self.assertEqual([c.args[1] for c in bot.reply.await_args_list], ['结合A和B的回复'])
+            self.assertEqual(calls,3)
+        finally:
+            release.set()
+
+    async def test_live_other_sender_spawn_does_not_inherit_owner_authority(self):
+        began, release = asyncio.Event(), asyncio.Event()
+        worker_seen = asyncio.Event()
+        bot = SimpleNamespace(reply=AsyncMock(), master_service=SimpleNamespace(is_master=lambda qq: qq == 123))
+        def context(text, qq, mid):
+            return MessageContext(bot=bot,websocket=None,msg=text,raw_msg=text,user_id=qq,group_id=12,
+                message_type='group',event={'message_id':mid,'_ai_arrival_forced':True,'message':[]})
+        main_calls = 0
+        async def respond(request):
+            nonlocal main_calls
+            if 'write' in {t['name'] for t in request.get('tools',[])}:
+                state = host_state(model_instructions(request))
+                self.assertFalse(state['owner'])
+                self.assertEqual(state['requester_qq'],'456')
+                worker_seen.set()
+                return '后台完成'
+            main_calls += 1
+            if main_calls == 1:
+                began.set()
+                await release.wait()
+                return '暂不回复'
+            if main_calls == 2:
+                return self.tool('spawn_task',title='B的任务',prompt='处理B的任务',source_message_id='B')
+            return '内部完成'
+        self.dispatcher = respond
+        await self.f.engine.handle(context('主人A的发言',123,'A'))
+        try:
+            await asyncio.wait_for(began.wait(),15)
+            await self.f.engine.handle(context('普通用户B的任务',456,'B'))
+            release.set()
+            await asyncio.wait_for(worker_seen.wait(),15)
+            async with asyncio.timeout(15):
+                while self.f.engine.tasks or self.f.engine.background:
+                    await asyncio.sleep(.02)
+            bot.reply.assert_not_awaited()
+        finally:
+            release.set()
 
     async def test_memory_fork_inherits_main_silently_and_deletes_its_logs(self):
         self.responses = ['MAIN_MEMORY_CONTEXT_REPLY']
