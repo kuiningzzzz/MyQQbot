@@ -1015,6 +1015,28 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(r['kind']=='tool/result' for r in records))
         self.f.autonomy.bot.reply.assert_not_awaited()
 
+    async def test_native_ordinary_executor_creates_nested_world_knowledge_and_assets(self):
+        note=self.f.workspace.memory_root/'world/科技/人工智能/知识.md'
+        asset=note.parent/'sources.json'
+        self.responses=[[{'type':'tool_use','id':'world-skill','name':'skill','input':{'name':'memory-management'}}],
+            self.tool('write',file_path=str(note),content='- 公开模型知识；来源：https://example.com；核验：2026-10-28'),
+            self.tool('write',file_path=str(asset),content='{"source":"https://example.com"}'),'学习笔记已保存']
+        result=await self.native(owner=False)
+        self.assertEqual(result['finish_reason'],'completed')
+        self.assertIn('公开模型知识',note.read_text('utf-8'))
+        self.assertEqual(json.loads(asset.read_text('utf-8'))['source'],'https://example.com')
+        self.assertIn('world/科技/人工智能/知识.md',self.f.workspace.files())
+        self.assertNotIn('world/科技/人工智能/sources.json',self.f.workspace.files())
+        self.assertIn('全局世界知识',json.dumps(self.requests[-1],ensure_ascii=False))
+        self.assertEqual((await self.f.query_memory('公开模型知识',scope='world'))['memories'][0]['source'],'world/科技/人工智能/知识.md')
+
+    async def test_native_non_owner_scheduled_fork_can_save_global_world_knowledge(self):
+        note=self.f.workspace.memory_root/'world/自然科学/物理/学习.md'
+        self.responses=[self.tool('write',file_path=str(note),content='- 已核验的公开科学知识'),'完成']
+        result=await self.native(role='scheduled',owner=False,prompt='[定时任务] 整理已核验的公开知识，不发送QQ消息')
+        self.assertEqual(result['finish_reason'],'completed')
+        self.assertEqual(note.read_text('utf-8'),'- 已核验的公开科学知识')
+
     async def test_native_sleep_context_merges_completed_idle_rest_exchanges(self):
         self.f.autonomy.running=True
         self.f.autonomy.bot=SimpleNamespace(reply=AsyncMock(),connected_clients={'ws'},master_service=SimpleNamespace(is_master=lambda qq:False))

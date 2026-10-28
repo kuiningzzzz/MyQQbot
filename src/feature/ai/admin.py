@@ -212,14 +212,14 @@ class AiAdmin:
                 if qq in f.identity.ids:
                     continue
                 group_id = parts[1] if parts[0] == 'group' else ''
-                category = 'SOUL' if parts[0] == 'soul' else 'GROUP' if group_id else 'EVENT' if len(parts) == 4 else Path(path).stem
+                category = 'WORLD' if parts[0] == 'world' else 'SOUL' if parts[0] == 'soul' else 'GROUP' if group_id else 'EVENT' if len(parts) == 4 else Path(path).stem
                 file = f.workspace.memory_path(path)
                 try:
                     info = file.stat()
                 except FileNotFoundError:
                     continue  # Agent may delete a file while the list is read.
                 items.append({'path': path, 'qq': qq, 'group_id': group_id, 'nickname': nicknames.get(qq, qq), 'category': category,
-                    'title': Path(path).stem if category in {'EVENT', 'GROUP', 'SOUL'} else labels.get(category, category),
+                    'title': Path(path).stem if category in {'EVENT', 'GROUP', 'SOUL', 'WORLD'} else labels.get(category, category),
                     'updated_at': info.st_mtime, 'size': info.st_size})
             return {'files': [item['path'] for item in items], 'items': items}
 
@@ -248,6 +248,12 @@ class AiAdmin:
             try:
                 if data.category == 'GLOSSARY':
                     path = 'common/GLOSSARY.md'
+                elif data.category == 'WORLD':
+                    title = data.title.strip()
+                    stem = title.removesuffix('.md')
+                    if not stem or '\\' in title or '\n' in title or '\r' in title or any(part in {'','.', '..'} for part in stem.split('/')):
+                        raise ValueError('请填写世界知识主题路径，如科技/人工智能/模型进展')
+                    path = 'world/' + stem + '.md'
                 elif data.category == 'SOUL':
                     if not data.title.strip() or '/' in data.title or '\\' in data.title or '\n' in data.title or '\r' in data.title:
                         raise ValueError('请填写不含路径分隔符或换行的人格主题名称')
@@ -272,7 +278,7 @@ class AiAdmin:
                 target = f.workspace.memory_path(path)
                 if target.exists():
                     raise ValueError('该记忆文件已存在，请从列表打开')
-                text = '# ' + (data.title.strip() if data.category in {'EVENT', 'GROUP', 'SOUL'} else labels[data.category]) + '\n\n'
+                text = '# ' + (Path(path).stem if data.category == 'WORLD' else data.title.strip() if data.category in {'EVENT', 'GROUP', 'SOUL'} else labels[data.category]) + '\n\n'
                 await asyncio.to_thread(f.workspace.write_memory, path, text, digest(''))
                 f.workspace.save_state('index', {'dirty': True})
                 return {'path': path, 'content': text, 'hash': digest(text)}

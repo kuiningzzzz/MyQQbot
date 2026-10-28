@@ -34,6 +34,8 @@ class MemoryTransaction:
         changes = []
         present = set()
         for file in (self.root / "memory").rglob("*.md"):
+            if file.is_dir() and not file.is_symlink():
+                continue
             path = file.relative_to(self.root / "memory").as_posix()
             self.workspace.memory_path(path)
             if file.is_symlink() or file.resolve() != file.absolute() or file.stat().st_nlink > 1:

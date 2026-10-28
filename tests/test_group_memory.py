@@ -117,7 +117,7 @@ class GroupFeatureTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(ValueError):
                 await f.query_memory('项目', scope='group', target_group=target)
         f.config.save({'vector_index_enabled': True})
-        collections = {scope: Collection() for scope in ('user', 'group', 'common')}
+        collections = {scope: Collection() for scope in ('user', 'group', 'common', 'world')}
         f.index._model_name = f.config.load().embedding_model
         with patch.object(f.index, '_collection', side_effect=lambda scope: collections[scope]), patch.object(f.index, '_encode', side_effect=lambda texts, **kw: [[1.0, 0.0] for _ in texts]):
             result = await f.query_memory('项目', scope='group', target_group='12')

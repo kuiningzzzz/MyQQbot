@@ -65,9 +65,12 @@ data/ai/workspace/memory/
 │   ├── RECENTNESS.md            近期状态、计划
 │   └── memory/<主题>.md         经历、事件和项目背景
 ├── group/<群号>/<主题>.md       群规、活动、共同项目等
-├── common/GLOSSARY.md           通用术语与公共知识
+├── common/GLOSSARY.md           通用术语解释
+├── world/**/*.md                世界知识，可自由建立多层主题目录
 └── soul/**/*.md                自身人格，每轮全文加载；admin人设为soul/AGENT.md
 ```
+
+`world` 用于自主上网学习后的公开知识整理，如 `world/科技/人工智能/模型进展.md`。Markdown会进入向量索引、文本检索、admin和记忆维护；其他资料文件可保留，但不直接索引或自动维护。学习笔记保留来源和核验日期，最新信息重新联网核实；不放私人聊天事实，也不每轮全文注入。旧数据保持原样，新目录启动时自动建立。
 
 群记忆只支持这一层 Markdown 文件，不支持继续嵌套目录。详细的分类、检索范围、SKILL 和权限规则见 [AI 服务说明](docs/AI服务架构与运行说明.md)。
 

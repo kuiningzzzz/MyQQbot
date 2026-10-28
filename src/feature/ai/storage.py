@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from filelock import FileLock
 
 logger = logging.getLogger(__name__)
+MEMORY_AREAS = ('user', 'group', 'common', 'world')
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -57,7 +58,7 @@ class Workspace:
         self.root = self.data_root / "workspace"
         self.memory_root = self.root / "memory"
         (self.data_root / ".state").mkdir(parents=True, exist_ok=True)
-        for directory in ("memory/raw", "memory/user", "memory/group", "memory/common", "memory/soul", "files", "tmp"):
+        for directory in ("memory/raw", "memory/user", "memory/group", "memory/common", "memory/world", "memory/soul", "files", "tmp"):
             path = self.root / directory
             if path.resolve() != path.absolute():
                 raise ValueError("记忆目录不能是符号链接")
@@ -68,8 +69,8 @@ class Workspace:
             atomic_write(self.memory_root / "common/GLOSSARY.md", "# 网络黑话与通用知识\n")
 
     def memory_path(self, relative: str) -> Path:
-        if "\\" in relative or not re.fullmatch(r"(?:user/[0-9]+/(?:PERSON|PREFERENCE|RECENTNESS)\.md|user/[0-9]+/memory/[^/]+\.md|group/[0-9]+/[^/\r\n]+\.md|common/GLOSSARY\.md|soul/(?:[^/\r\n]+/)*[^/\r\n]+\.md)", relative):
-            raise ValueError("只允许访问合法用户、群聊、公共记忆和 soul 下的 Markdown 文件")
+        if "\\" in relative or not re.fullmatch(r"(?:user/[0-9]+/(?:PERSON|PREFERENCE|RECENTNESS)\.md|user/[0-9]+/memory/[^/]+\.md|group/[0-9]+/[^/\r\n]+\.md|common/GLOSSARY\.md|(?:world|soul)/(?:[^/\r\n]+/)*[^/\r\n]+\.md)", relative):
+            raise ValueError("只允许访问合法用户、群聊、公共记忆、世界知识和 soul 下的 Markdown 文件")
         path = self.memory_root / relative
         if path.resolve() != path.absolute() or not path.resolve().is_relative_to(self.root) or any(part in {"..", "."} for part in Path(relative).parts) or any(char in relative for char in '<>:"|?*'):
             raise ValueError("路径越界")
@@ -101,7 +102,7 @@ class Workspace:
                              for relative in self._files(('soul',)))
 
     def files(self, *, include_soul=False) -> list[str]:
-        return self._files(('user', 'group', 'common') + (('soul',) if include_soul else ()))
+        return self._files(MEMORY_AREAS + (('soul',) if include_soul else ()))
 
     def _files(self, folders) -> list[str]:
         result = []

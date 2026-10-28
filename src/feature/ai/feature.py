@@ -382,7 +382,7 @@ class AiFeature(Feature):
                     atomic_write(dest, content)
 
     async def query_memory(self, query, target_qq=None, scope='auto', target_group=None):
-        if scope not in {'auto', 'user', 'group', 'common'} or any(value is not None and (not str(value).isascii() or not str(value).isdigit()) for value in (target_qq, target_group)):
+        if scope not in {'auto', 'user', 'group', 'common', 'world'} or any(value is not None and (not str(value).isascii() or not str(value).isdigit()) for value in (target_qq, target_group)):
             raise ValueError('检索范围、QQ号或群号无效')
         if not self.config.load().memory_enabled:
             return {'success': False, 'error': '记忆已关闭'}

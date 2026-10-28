@@ -55,6 +55,8 @@ class BackupTests(unittest.TestCase):
 
     def test_complete_archive_roundtrip_excludes_other_backups_and_dependencies(self):
         self.put('data/ai/workspace/memory/group/123/主题.md', '群记忆')
+        self.put('data/ai/workspace/memory/world/科技/专题.md', '世界知识')
+        self.put('data/ai/workspace/memory/world/科技/资料.csv', 'source,value\nexample,1')
         self.put('data/ai/workspace/files/项目.txt', '文件内容')
         self.put('data/ai/workspace/empty/.keep', '')
         self.put('data/pixiv/config.key', 'encrypted-key')
@@ -69,11 +71,15 @@ class BackupTests(unittest.TestCase):
         manifest = archive.inspect(path)
         files = manifest['files']
         self.assertIn('data/ai/workspace/memory/group/123/主题.md', files)
+        self.assertIn('data/ai/workspace/memory/world/科技/专题.md', files)
+        self.assertIn('data/ai/workspace/memory/world/科技/资料.csv', files)
         self.assertIn('data/pixiv/config.key', files)
         self.assertIn('configuration/.env', files)
         self.assertIn('project/src/example.py', files)
         self.assertFalse(any('node_modules' in f or 'data/backups' in f for f in files))
         archive.extract(path, self.root / 'unpacked')
+        self.assertEqual((self.root/'unpacked/data/ai/workspace/memory/world/科技/专题.md').read_text('utf-8'),'世界知识')
+        self.assertEqual((self.root/'unpacked/data/ai/workspace/memory/world/科技/资料.csv').read_text('utf-8'),'source,value\nexample,1')
         self.assertEqual(read_json(self.root / 'unpacked/configuration/environment.json')['DEEPSEEK_API_KEY'], 'test-secret')
         self.assertTrue((self.root / 'unpacked/data/empty-dir').is_dir())
         self.assertEqual(self.store.list()[0]['files'], len(files))

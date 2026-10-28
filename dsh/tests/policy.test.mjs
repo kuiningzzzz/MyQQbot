@@ -39,6 +39,20 @@ test('group memory writes require the actual current group, private chats cannot
   }
   assert.equal(check('write', 'memory/group/42/群规.md', {owner:true}), undefined);
 });
+
+test('world knowledge is shared for native writes without widening other memories or shell authority',()=>{
+  for(const role of ['worker','scheduled']) {
+    assert.equal(check('write','memory/world/科技/人工智能/模型.md',{role,qq:'0'}),undefined);
+    assert.equal(check('edit','memory/world/资料/来源.json',{role,qq:'0'}),undefined);
+    assert.match(check('write','memory/world/../user/456/PERSON.md',{role,qq:'0'}),/PERMISSION_DENIED/);
+    assert.match(check('write','memory/world/../../.agents/规则.md',{role,qq:'0'}),/PERMISSION_DENIED/);
+  }
+  assert.match(check('write','memory/world/知识.md',{role:'main',owner:true}),/DELEGATION_REQUIRED/);
+  const maintenance={...task,kind:'memory',cwd:path.join(work,'tmp/memory-stage')};
+  assert.equal(denial(maintenance,'write',{file_path:'memory/world/科技/知识.md'},work),undefined);
+  assert.match(denial(maintenance,'write',{file_path:path.join(work,'memory/world/科技/知识.md')},work),/PERMISSION_DENIED/);
+  assert.match(denial(maintenance,'write',{file_path:'memory/world/资料.json'},work),/PERMISSION_DENIED/);
+});
 test('soul can evolve in any chat without owner authority, but host rules still cannot', () => {
   for (const role of ['worker', 'scheduled']) {
     assert.equal(check('write', 'memory/soul/AGENT.md', {role}), undefined);

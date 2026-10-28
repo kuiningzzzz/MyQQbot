@@ -108,6 +108,7 @@ data/ai/
       user/<QQ>/memory/<主题>.md
       group/<群号>/<任意主题>.md    群规、专属梗、共同活动与群体项目；仅一层.md
       common/GLOSSARY.md
+      world/**/*.md                 全局世界知识，支持多层主题目录
       raw/<日期>/<消息身份哈希>.json 原始QQ事件及原文，不用模型转述替代
       raw/<日期>/*.rendered.txt      单独保存的OCR/转发展开内容，同样保留30天
       raw/legacy/                  原样迁移的旧Markdown聊天档案
@@ -245,3 +246,10 @@ Python测试使用临时数据、本地Messages模拟服务器和实际安装的
 ## 官方浏览器接入
 
 使用与内核匹配的官方Playwright MCP provider，QQ接入层只负责按需激活、权限、目录和单任务准入；浏览器工具及Session清理复用上游。主聊天委派后，执行者用open_browser动态加入官方工具，普通聊天和记忆不初始化MCP。使用及部署见[浏览器与网页操作](浏览器与网页操作.md)。
+
+
+## 世界知识
+
+`data/ai/workspace/memory/world/` 是全局公开知识库，允许执行者自由规划多层目录与文件。正式笔记使用Markdown，递归参与索引、`search_memory(scope="world")`、全范围检索、admin管理和记忆维护；普通聊天、自主工作和定时执行均可使用。其他资料文件可保存，但不直接索引或交给自动维护，重要内容另做Markdown摘要。全部data仍由原有备份功能覆盖。
+
+上网学习后记录提炼结果、来源URL、核验日期、适用版本和不确定性；世界知识不是每轮系统提示，也不是权限来源。用户画像、私聊内容、群内私有事实和soul人格仍分别保存，不迁入全局知识。主对话仍用Spawn委派，普通命令写入范围不变，知识笔记通过原生工具读写；详细规范在memory-management SKILL的宿主管理附录。

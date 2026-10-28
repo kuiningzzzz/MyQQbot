@@ -3,7 +3,7 @@ featureAdminControls.ai = async function (row) {
   const $$ = selector => [...row.querySelectorAll(selector)];
   const fields = {};
   let items = [], openedPath = '', fileHash = '', savedContent = '', openRevision = 0;
-  const hints = {PERSON:'职业、称呼、关系等稳定背景。', PREFERENCE:'长期喜好、习惯与沟通偏好。', RECENTNESS:'近期计划、状态与待办，建议注明日期。', EVENT:'具体经历、项目背景或持续更新的主题。', GROUP:'本群群规、专属梗、共同活动与项目；群号为身份主键，主题名称可自由命名。', GLOSSARY:'跨群、跨用户通用的术语与公共知识。', SOUL:'自身人格，每轮作为系统人格全文加载。保持简洁、稳定，可由Agent自主适度更新，不参与向量检索。'};
+  const hints = {PERSON:'职业、称呼、关系等稳定背景。', PREFERENCE:'长期喜好、习惯与沟通偏好。', RECENTNESS:'近期计划、状态与待办，建议注明日期。', EVENT:'具体经历、项目背景或持续更新的主题。', GROUP:'本群群规、专属梗、共同活动与项目；群号为身份主键，主题名称可自由命名。', GLOSSARY:'跨群、跨用户通用的术语解释。', WORLD:'全局共享的公开知识；可填写多层主题路径，如科技/人工智能/模型进展。Markdown进入索引和维护，其他资料文件不直接索引。', SOUL:'自身人格，每轮作为系统人格全文加载。保持简洁、稳定，可由Agent自主适度更新，不参与向量检索。'};
   function status(message, error=false) {
     $('[data-ai-status]').textContent=message;
     $('[data-ai-status]').dataset.error=String(error);
@@ -155,7 +155,7 @@ featureAdminControls.ai = async function (row) {
     $('[data-memory-empty]').hidden=true;$('[data-memory-editor]').hidden=false;
     const item=items.find(item=>item.path===openedPath);
     $('[data-memory-title]').textContent=item?.title||openedPath.split('/').at(-1);
-    $('[data-memory-meta]').textContent=(item?.category==='SOUL'?'自身人格 · 每轮加载 · ':item?.group_id?`群 ${item.group_id} · `:item?.qq?`${item.nickname} · QQ ${item.qq} · `:'公共记忆 · ')+openedPath+(item?.updated_at?' · '+new Date(item.updated_at*1000).toLocaleString():'');
+    $('[data-memory-meta]').textContent=(item?.category==='WORLD'?'世界知识 · ':item?.category==='SOUL'?'自身人格 · 每轮加载 · ':item?.group_id?`群 ${item.group_id} · `:item?.qq?`${item.nickname} · QQ ${item.qq} · `:'公共记忆 · ')+openedPath+(item?.updated_at?' · '+new Date(item.updated_at*1000).toLocaleString():'');
     updateDirty();renderList();
   }
   async function openFile(path,force=false){
@@ -172,11 +172,11 @@ featureAdminControls.ai = async function (row) {
     const visible=items.filter(item=>(!category||item.category===category)&&`${item.nickname} ${item.qq} ${item.group_id||''} ${item.title} ${item.path}`.toLowerCase().includes(query));
     let previous=null;
     for(const item of visible){
-      const group=item.category==='SOUL'?'soul':item.group_id?`group:${item.group_id}`:item.qq?`user:${item.qq}`:'common';
-      if(group!==previous){const heading=document.createElement('div');heading.className='ai-file-group';heading.textContent=item.category==='SOUL'?'自身人格 · 每轮加载':item.group_id?`群聊 · ${item.group_id}`:item.qq?`${item.nickname} · ${item.qq}`:'公共记忆';container.append(heading);previous=group;}
+      const group=item.category==='WORLD'?'world':item.category==='SOUL'?'soul':item.group_id?`group:${item.group_id}`:item.qq?`user:${item.qq}`:'common';
+      if(group!==previous){const heading=document.createElement('div');heading.className='ai-file-group';heading.textContent=item.category==='WORLD'?'世界知识':item.category==='SOUL'?'自身人格 · 每轮加载':item.group_id?`群聊 · ${item.group_id}`:item.qq?`${item.nickname} · ${item.qq}`:'公共记忆';container.append(heading);previous=group;}
       const button=document.createElement('button');button.type='button';button.className='ai-file';button.setAttribute('aria-pressed',String(item.path===openedPath));
       button.append(document.createTextNode(item.title));
-      if(['EVENT','GROUP'].includes(item.category)){const subtitle=document.createElement('small');subtitle.textContent=item.category==='GROUP'?'群聊记忆':'主题与事件';button.append(subtitle);}
+      if(['EVENT','GROUP','WORLD'].includes(item.category)){const subtitle=document.createElement('small');subtitle.textContent=item.category==='WORLD'?item.path.slice('world/'.length):item.category==='GROUP'?'群聊记忆':'主题与事件';button.append(subtitle);}
       button.onclick=async()=>{try{await openFile(item.path);}catch(error){status(error.message,true);}};container.append(button);
     }
     if(!visible.length){const empty=document.createElement('p');empty.className='ai-muted';empty.textContent=items.length?'没有匹配的记忆。':'暂无记忆，点击“新建记忆”开始。';container.append(empty);}
@@ -206,9 +206,9 @@ featureAdminControls.ai = async function (row) {
   const dialog=$('[data-memory-create]');
   function createCategory(){
     const category=$('[data-create-category]').value;
-    $('[data-create-user-field]').hidden=['GLOSSARY','GROUP','SOUL'].includes(category);$('[data-create-qq]').required=!['GLOSSARY','GROUP','SOUL'].includes(category);
+    $('[data-create-user-field]').hidden=['GLOSSARY','GROUP','SOUL','WORLD'].includes(category);$('[data-create-qq]').required=!['GLOSSARY','GROUP','SOUL','WORLD'].includes(category);
     $('[data-create-group-field]').hidden=category!=='GROUP';$('[data-create-group]').required=category==='GROUP';
-    $('[data-create-title-field]').hidden=!['EVENT','GROUP','SOUL'].includes(category);$('[data-create-title]').required=['EVENT','GROUP','SOUL'].includes(category);$('[data-create-hint]').textContent=hints[category];
+    $('[data-create-title-field]').hidden=!['EVENT','GROUP','SOUL','WORLD'].includes(category);$('[data-create-title]').required=['EVENT','GROUP','SOUL','WORLD'].includes(category);$('[data-create-hint]').textContent=hints[category];$('[data-create-title]').placeholder=category==='WORLD'?'例如：科技/人工智能/模型进展':'例如：摄影项目';
   }
   $('[data-create-category]').onchange=createCategory;
   $('[data-memory-new]').onclick=()=>{

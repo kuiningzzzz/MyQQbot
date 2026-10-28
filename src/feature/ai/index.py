@@ -5,7 +5,7 @@ import re
 import threading
 import time
 
-from .storage import digest
+from .storage import MEMORY_AREAS, digest
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ class VectorIndex:
                 paths = self.workspace.files() if relative is None or rebuild else [relative]
                 hashes = {} if rebuild else state.get("hashes", {})
                 if rebuild:
-                    for scope in ("user", "group", "common"):
+                    for scope in MEMORY_AREAS:
                         collection = self._collection(scope)
                         all_ids = collection.get()["ids"]
                         if all_ids:
@@ -174,7 +174,7 @@ class VectorIndex:
                             return self._lexical(query, scope, qq, limit, group_id)
                     vector = self._encode([query], query=True)
                     hits = []
-                    for area in ("user", "group", "common") if scope == "auto" else (scope,):
+                    for area in MEMORY_AREAS if scope == "auto" else (scope,):
                         collection = self._collection(area)
                         if not collection.count():
                             continue

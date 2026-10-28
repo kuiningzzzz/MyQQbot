@@ -34,13 +34,15 @@
 
 .ai-panel .ai-file-list{max-height:580px;overflow:auto;display:grid;gap:5px;align-content:start}
 .ai-panel .ai-file-group{font-size:12px;color:#667085;padding:12px 6px 4px;overflow-wrap:anywhere}
-.ai-panel .ai-file{background:transparent;color:#344054;text-align:left;font-weight:500;padding:9px 10px;width:100%}
+.ai-panel .ai-file{background:transparent;color:#344054;text-align:left;font-weight:500;padding:9px 10px;width:100%;overflow-wrap:anywhere}
 .ai-panel .ai-file:hover{background:#e8eef8}
 .ai-panel .ai-file[aria-pressed="true"]{background:#dbeafe;color:#1d4ed8}
 .ai-panel .ai-file small{display:block;font-weight:400;color:#667085}
 
 .ai-panel .ai-editor{padding:20px;min-width:0}
 .ai-panel .ai-editor-heading{display:flex;justify-content:space-between;gap:12px;align-items:start;margin-bottom:12px}
+.ai-panel .ai-editor-heading>div{min-width:0}
+.ai-panel [data-memory-dirty]{white-space:nowrap;flex-shrink:0}
 .ai-panel .ai-editor-meta{font-size:12px;color:#667085;overflow-wrap:anywhere;margin-top:5px}
 .ai-panel .ai-editor textarea{font:14px/1.85 ui-monospace,SFMono-Regular,Consolas,monospace;min-height:380px}
 .ai-panel .ai-editor-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px}
@@ -147,7 +149,8 @@
 <option value="RECENTNESS">近期状态</option>
 <option value="EVENT">主题与事件</option>
 <option value="GROUP">群聊记忆</option>
-<option value="GLOSSARY">公共知识</option>
+<option value="GLOSSARY">通用术语</option>
+<option value="WORLD">世界知识（支持多层目录）</option>
 <option value="SOUL">自身人格（每轮加载）</option>
 </select>
 </div>
@@ -222,7 +225,7 @@
 <label class="ai-field">限定群聊（可选）<input type="text" data-memory-group inputmode="numeric" placeholder="仅筛选群记忆，留空不限群号">
 </label>
 <label class="ai-field">检索范围<select data-memory-scope>
-<option value="auto">全部正式记忆</option><option value="user">用户记忆</option><option value="group">群聊记忆</option><option value="common">公共知识</option>
+<option value="auto">全部正式记忆</option><option value="user">用户记忆</option><option value="group">群聊记忆</option><option value="common">通用术语</option><option value="world">世界知识</option>
 </select></label>
 </div>
 <div class="ai-editor-actions">
@@ -254,7 +257,8 @@
 <option value="RECENTNESS">近期状态</option>
 <option value="EVENT">主题与事件</option>
 <option value="GROUP">群聊记忆</option>
-<option value="GLOSSARY">公共知识</option>
+<option value="GLOSSARY">通用术语</option>
+<option value="WORLD">世界知识（支持多层目录）</option>
 <option value="SOUL">自身人格（每轮加载）</option>
 </select>
 </label>

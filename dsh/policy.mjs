@@ -73,7 +73,7 @@ export function denial(task, name, args, workspace) {
   if (fs.existsSync(target) && fs.statSync(target).isFile() && fs.statSync(target).nlink > 1) return 'PERMISSION_DENIED: 禁止硬链接';
   if (name === 'read') return;
   const memoryRelative = path.relative(path.join(task.cwd, 'memory'), target).split(path.sep).join('/');
-  const memoryFile = /^(user\/[0-9]+\/(PERSON|PREFERENCE|RECENTNESS)\.md|user\/[0-9]+\/memory\/[^/<>:"|?*]+\.md|group\/[0-9]+\/[^/\r\n<>:"|?*]+\.md|common\/GLOSSARY\.md|soul\/(?:[^/\r\n<>:"|?*]+\/)*[^/\r\n<>:"|?*]+\.md)$/.test(memoryRelative);
+  const memoryFile = /^(user\/[0-9]+\/(PERSON|PREFERENCE|RECENTNESS)\.md|user\/[0-9]+\/memory\/[^/<>:"|?*]+\.md|group\/[0-9]+\/[^/\r\n<>:"|?*]+\.md|common\/GLOSSARY\.md|(world|soul)\/(?:[^/\r\n<>:"|?*]+\/)*[^/\r\n<>:"|?*]+\.md)$/.test(memoryRelative);
   if (task.kind === 'memory') {
     for (const qq of task.self_ids || []) {
       if (within(path.join(task.cwd, 'memory/user', qq), target)) return 'PERMISSION_DENIED: 不能给机器人建立画像';
@@ -82,10 +82,11 @@ export function denial(task, name, args, workspace) {
     return 'PERMISSION_DENIED: 整理任务只能修改本批暂存记忆';
   }
   if (within(path.join(workspace, 'files', task.scene_dir), target)) return;
+  if (within(path.join(workspace, 'memory/world'), target)) return;
   if (memoryFile && memoryRelative.startsWith('soul/')) return;
   if (memoryFile && within(path.join(workspace, 'memory/user', task.qq), target)) return;
   if (memoryFile && /^[0-9]+$/.test(task.group_id || '') && within(path.join(workspace, 'memory/group', task.group_id), target)) return;
-  return 'PERMISSION_DENIED: 只能修改自己的记忆、当前群记忆、soul人格与当前会话文件；宿主规则和他人资料需要主人';
+  return 'PERMISSION_DENIED: 只能修改自己的记忆、当前群记忆、世界知识、soul人格与当前会话文件；宿主规则和他人资料需要主人';
 }
 
 export function browserDenial(task, name, args, workspace) {
