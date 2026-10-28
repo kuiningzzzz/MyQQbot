@@ -52,7 +52,9 @@ def self_context(feature, kind, *, cwd=None, scene=None, requester=None,
     }
     if feature.autonomy.active:
         state['autonomy'] = {'mode':feature.autonomy.state['mode'], 'self_initiated':autonomous,
-                             'contact_policy_timezone':'Asia/Shanghai'}
+                             'contact_policy_timezone':'Asia/Shanghai', 'conversation_waits':{
+                                 key:{'until':value['until'],'participants':value['participants']}
+                                 for key,value in feature.autonomy.chat.leases().items()}}
         if autonomous:
             state['file_transfer_allowed'] = bool(chat and settings.workspace_enabled)
     provider = feature.application_context

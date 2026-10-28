@@ -8,10 +8,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from src.feature.atom import MessageContext
+from .conversation_wait import ConversationWait
 
 logger = logging.getLogger(__name__)
 EVENTS = {'mention_self', 'reply_self', 'nickname_address', 'private_message', 'group_message', 'task_completed'}
 STATUS = {'awake':'醒着醒着，有什么事？', 'sleeping':'zzz...（正在睡觉）', 'deep_sleep':'zzz...（深度睡眠，叫不醒的那种）'}
+STATUS['waiting'] = STATUS['awake']
+SLEEP_MODES = {'sleeping', 'deep_sleep'}
 
 
 class AutonomyRuntime:
@@ -27,6 +30,7 @@ class AutonomyRuntime:
         self.error = ''
         self.retry_at = 0
         self.failures = 0
+        self.chat = ConversationWait(self)
 
     @property
     def active(self):
@@ -37,15 +41,15 @@ class AutonomyRuntime:
 
     def status(self):
         if self.state.get('mode') != 'awake' and self.state.get('until', 0) <= time.time():
-            self.wake('sleep_expired')
+            self.wake('conversation_wait_expired' if self.state['mode'] == 'waiting' else 'sleep_expired')
         rendered = dict(self.state)
         if self.state.get('sleep_chain'):
             rendered['sleep_chain'] = dict(self.state['sleep_chain'])
-            if self.state['mode'] != 'awake':
+            if self.state['mode'] in SLEEP_MODES:
                 rendered['sleep_chain']['seconds'] += max(0, min(time.time(),self.state['until']) - self.state['started'])
         return {**rendered, 'text':STATUS[self.state['mode']], 'running':self.running,
                 'enabled':self.f.enabled, 'active':self.active, 'focus':self.focus, 'last_error':self.error,
-                'retry_at':self.retry_at, 'contacts':self.contacts}
+                'retry_at':self.retry_at, 'contacts':self.contacts, 'conversation_waits':self.chat.leases()}
 
     def may_run(self):
         return not self.suspended and (not self.running or self.status()['mode'] == 'awake')
@@ -56,10 +60,15 @@ class AutonomyRuntime:
         previous = self.state['mode']
         now = time.time()
         chain = self.state.get('sleep_chain')
-        if previous != 'awake' and chain:
+        if previous in SLEEP_MODES and chain:
             chain['seconds'] += max(0, min(now, self.state['until']) - self.state['started'])
             chain['end'] = now
             self.f.activity.update(chain['log_id'], chain)
+        if previous == 'waiting':
+            self.state['wait_resume'] = {'reason':reason, 'scenes':list(self.state.get('conversations', {})), 'time':now}
+            self.f.activity.add('conversation_wait_end', self.state['wait_resume'])
+        if force:
+            self.chat.clear()
         self.state.update(mode='awake', until=0, wake_on=[], reason=reason,
                           revision=self.state.get('revision', 0) + 1)
         self.save()
@@ -78,7 +87,9 @@ class AutonomyRuntime:
         return bool(set(event) & set(self.state.get('wake_on', [])))
 
     def notify(self, event, *, scene=None, user=None):
-        if self.active and self.state['mode'] != 'awake' and self.matches({event}, scene=scene, user=user):
+        if self.active and self.state['mode'] == 'waiting' and event == 'task_completed':
+            self.wake(event)
+        elif self.active and self.state['mode'] != 'awake' and self.matches({event}, scene=scene, user=user):
             self.wake(event)
         self.signal.set()
 
@@ -89,6 +100,12 @@ class AutonomyRuntime:
         self.status()
         hint = ctx.event.get('_ai_address_hint', '')
         events = {hint, 'private_message' if ctx.message_type == 'private' else 'group_message'}
+        if self.state['mode'] == 'waiting':
+            if not self.chat.accepts(ctx):
+                self.f.activity.add('waiting_observation', {'message_id':ctx.event.get('message_id'), 'sender':ctx.user_id}, scene=self.f.scene_key(ctx))
+                return False
+            ctx.event['_ai_conversation_followup'] = True
+            self.wake('conversation_followup')
         if self.state['mode'] != 'awake':
             matched = self.matches(events, scene=self.f.scene_key(ctx), user=ctx.user_id)
             if matched and events & set(self.state.get('wake_on', [])) == {'group_message'}:
@@ -102,10 +119,10 @@ class AutonomyRuntime:
         self.signal.set()
         return True
 
-    def sleep(self, seconds, deep=False, wake_on=None, reason='', revision=None, filters=None, *, check_pending=True):
+    def sleep(self, seconds, deep=False, wake_on=None, reason='', revision=None, filters=None, *, check_pending=True, end_conversation=True):
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not 1 <= seconds <= 365 * 86400:
             raise ValueError('睡眠时长须为1秒至365天')
-        if not isinstance(deep, bool) or not isinstance(reason, str) or len(reason) > 2000:
+        if not isinstance(deep, bool) or not isinstance(end_conversation, bool) or not isinstance(reason, str) or len(reason) > 2000:
             raise ValueError('睡眠参数无效')
         events = list(EVENTS & {'mention_self', 'reply_self', 'nickname_address', 'private_message', 'task_completed'}) if wake_on is None else wake_on
         if not isinstance(events, list) or any(e not in EVENTS for e in events):
@@ -119,6 +136,10 @@ class AutonomyRuntime:
         for scene in scenes:self.valid_scene(scene)
         if any(not isinstance(user,str) or not re.fullmatch(r'[1-9][0-9]*',user) for user in users):
             raise ValueError('唤醒联系人使用QQ号字符串')
+        if revision is not None and revision != self.state.get('revision', 0):
+            return {'success':False, 'code':'sleep_interrupted', 'error':'睡眠决定期间发生了唤醒，请重新判断'}
+        if not deep and not end_conversation and self.chat.leases():
+            return self.chat.start()
         # Check accepted but not yet consumed events atomically before parking.
         # Nonmatching observations may remain queued/archived until the wake.
         queued = list(self.f.engine.pending._queue)
@@ -133,10 +154,9 @@ class AutonomyRuntime:
                 if (types & set(events) and (not scenes or self.f.scene_key(c) in scenes)
                         and (not users or str(c.user_id) in users)):
                     return {'success':False,'code':'observations_pending','error':'已有符合唤醒条件的消息或任务结果待处理，请先观察。'}
-        if revision is not None and revision != self.state.get('revision', 0):
-            return {'success':False, 'code':'sleep_interrupted', 'error':'睡眠决定期间发生了唤醒，请重新判断'}
         if self.state['mode'] != 'awake':
             self.wake('reschedule_sleep', force=True)
+        self.chat.clear()
         now = time.time()
         chain = self.state.get('sleep_chain')
         if not chain or not chain.get('mergeable'):
@@ -220,7 +240,8 @@ class AutonomyRuntime:
         kind, identifier = scene.split(':')
         clients = getattr(self.bot, 'connected_clients', set())
         return MessageContext(bot=self.bot, websocket=next(iter(clients), None),
-            event={'_ai_autonomous':True, '_ai_arrival_forced':False, 'message_id':'life-' + uuid.uuid4().hex, 'message':[]},
+            event={'_ai_autonomous':True, '_ai_arrival_forced':False, 'message_id':'life-' + uuid.uuid4().hex, 'message':[],
+                   '_ai_wait_resume':self.state.get('wait_resume')},
             msg='[自主活动] 观察当前变化，继续感兴趣的事情，或安排睡眠。', raw_msg='',
             message_type=kind, user_id=int(identifier) if kind == 'private' else 0,
             group_id=int(identifier) if kind == 'group' else None)

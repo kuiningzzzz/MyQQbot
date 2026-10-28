@@ -1063,6 +1063,68 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('proactive_contact_denied',json.dumps(self.requests[-1]))
         bot.reply.assert_not_awaited()
 
+    async def test_native_reply_then_sleep_keeps_unaddressed_group_followup_available(self):
+        bot=SimpleNamespace(reply=AsyncMock(),connected_clients={'ws'},master_service=SimpleNamespace(is_master=lambda qq:False))
+        self.f.autonomy.running=True
+        self.f.autonomy.bot=bot
+        self.f.engine._start_worker=lambda:None
+        def message(text,identifier):
+            return MessageContext(bot=bot,websocket='ws',event={'post_type':'message','message_type':'group',
+                'user_id':456,'group_id':12,'self_id':999,'message_id':identifier,
+                'message':[{'type':'text','data':{'text':text}}]},msg=text,raw_msg=text,message_type='group',user_id=456,group_id=12)
+        first=message('奎大宁，这个容器怎么配置？','wait-first')
+        self.responses=[self.tool('send_message',message='可以这样配置。'),self.tool('sleep',duration_seconds=3600)]
+        await asyncio.wait_for(self.f.engine._turn(first,'group:12',True),15)
+        self.assertEqual(self.f.autonomy.state['mode'],'waiting')
+        self.assertNotIn('sleep_chain',self.f.autonomy.state)
+        self.assertEqual(len(self.requests),2)
+        follow=message('那数据放哪里？','wait-followup')
+        await self.f.observe(follow)
+        await self.f.engine.handle(follow)
+        accepted,direct,result=await self.f.engine.pending.get()
+        self.assertIs(accepted,follow)
+        self.assertFalse(direct)
+        self.responses=[self.tool('send_message',message='数据放在挂载目录里。'),self.tool('wait_for_chat')]
+        await asyncio.wait_for(self.f.engine._turn(accepted,'group:12',direct),15)
+        self.assertEqual(len(self.requests),4)
+        self.assertEqual(self.f.autonomy.state['mode'],'waiting')
+        wire=json.dumps(self.requests[-1],ensure_ascii=False)
+        self.assertIn('conversation_followup',wire)
+        self.assertIn('这个容器怎么配置',wire)
+        self.assertIn('那数据放哪里',wire)
+        self.assertEqual(bot.reply.await_count,2)
+
+    async def test_native_reply_without_wait_tool_automatically_parks(self):
+        bot=SimpleNamespace(reply=AsyncMock(),master_service=SimpleNamespace(is_master=lambda qq:False))
+        self.f.autonomy.running=True
+        ctx=MessageContext(bot=bot,websocket='ws',event={'message_id':'auto-wait'},msg='你好',message_type='private',user_id=456,group_id=None)
+        self.responses=[self.tool('send_message',message='你好呀。'),'内部结束本轮']
+        await asyncio.wait_for(self.f.engine._turn(ctx,'private:456',True),15)
+        self.assertEqual(len(self.requests),2)
+        self.assertEqual(self.f.autonomy.state['mode'],'waiting')
+        self.assertGreater(self.f.autonomy.state['until']-time.time(),170)
+        bot.reply.assert_awaited_once()
+
+    async def test_native_wait_finish_and_explicit_rest_commit_without_another_step(self):
+        bot=SimpleNamespace(reply=AsyncMock(),master_service=SimpleNamespace(is_master=lambda qq:False))
+        self.f.autonomy.running=True
+        ctx=MessageContext(bot=bot,websocket='ws',event={'message_id':'explicit-wait'},msg='稍等我一下',message_type='group',user_id=456,group_id=12)
+        self.responses=[self.tool('wait_for_chat',duration_seconds=120)]
+        await asyncio.wait_for(self.f.engine._turn(ctx,'group:12',True),15)
+        self.assertEqual(len(self.requests),1)
+        self.assertEqual(self.f.autonomy.state['mode'],'waiting')
+        bot.reply.assert_not_awaited()
+        for tool,mode in [(self.tool('wait_for_chat',action='finish'),'awake'),
+                          (self.tool('sleep',duration_seconds=3600,end_conversation=True),'sleeping'),
+                          (self.tool('sleep',duration_seconds=3600,deep=True),'deep_sleep')]:
+            self.f.autonomy.wake('test',force=True)
+            before=len(self.requests)
+            self.responses=[self.tool('send_message',message='这句话已经说完。'),tool]
+            await asyncio.wait_for(self.f.engine._turn(ctx,'group:12',True),15)
+            self.assertEqual(len(self.requests)-before,2)
+            self.assertEqual(self.f.autonomy.state['mode'],mode)
+            self.assertFalse(self.f.autonomy.chat.leases())
+
     async def test_memory_fork_inherits_main_silently_and_deletes_its_logs(self):
         self.responses = ['MAIN_MEMORY_CONTEXT_REPLY']
         await self.native(role='main', prompt='MAIN_MEMORY_CONTEXT_SEED')

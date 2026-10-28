@@ -25,12 +25,12 @@ export function denial(task, name, args, workspace) {
   if (task.expires_at && task.expires_at <= Date.now()) return 'TASK_EXPIRED: 上下文已过保留期';
   const dispatch = new Set(['spawn_task', 'task_status', 'cancel_task']);
   if (task.role === 'main') {
-    const allowed = ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', ...(task.delivery ? [] : dispatch), ...(!task.delivery && task.autonomy_enabled ? ['sleep','autonomy_status','contact_policy','focus_scene'] : [])];
+    const allowed = ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', ...(task.delivery ? [] : dispatch), ...(!task.delivery && task.autonomy_enabled ? ['sleep','autonomy_status','contact_policy','focus_scene','wait_for_chat'] : [])];
     if (allowed.includes(name)) return;
     return 'DELEGATION_REQUIRED: 主对话只能聊天和分派，执行工作必须spawn子Agent';
   }
   if (dispatch.has(name)) return 'PERMISSION_DENIED: 只有主对话可分派任务，子Agent只能一次性返回';
-  if (['sleep','autonomy_status','contact_policy','focus_scene'].includes(name)) return 'PERMISSION_DENIED: 生活控制仅供主对话';
+  if (['sleep','autonomy_status','contact_policy','focus_scene','wait_for_chat'].includes(name)) return 'PERMISSION_DENIED: 生活控制仅供主对话';
   if (task.role === 'worker' && ['send_message', 'send_forward_message', 'send_sticker', 'send_voice'].includes(name)) return 'PERMISSION_DENIED: 子任务结果由主对话交付，文件使用send_file';
   if (name === 'delete_memory_file') return task.kind === 'memory' && task.role === 'memory' ? undefined : 'PERMISSION_DENIED: 仅记忆维护可删除暂存文件';
   if (['bash', 'pwsh'].includes(name)) {

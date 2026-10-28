@@ -13,6 +13,15 @@ fs.mkdirSync(path.join(work, 'tmp/memory-stage/memory/user/123'), {recursive:tru
 const task = {kind:'chat', role:'worker', cwd:work, qq:'123', scene_dir:'scene', self_ids:['999']};
 const check = (name, file, override={}) => denial({...task,...override}, name, {file_path:file}, work);
 
+test('conversation standby control belongs only to the active main conversation',()=>{
+  assert.equal(check('wait_for_chat','.',{role:'main',autonomy_enabled:true}),undefined);
+  for(const override of [{role:'main',autonomy_enabled:false},
+    {role:'main',autonomy_enabled:true,delivery:true},{role:'worker',owner:true},
+    {role:'scheduled',owner:true},{role:'memory',kind:'memory'}]) {
+    assert.ok(check('wait_for_chat','.',override));
+  }
+});
+
 test('ordinary user can use native own-memory and scene writes', () => {
   assert.equal(check('write', 'memory/user/123/PERSON.md'), undefined);
   assert.equal(check('edit', 'files/scene/result.txt'), undefined);

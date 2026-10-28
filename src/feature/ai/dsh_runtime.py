@@ -161,7 +161,7 @@ class DshRuntime:
                         self.feature.activity.add(item['kind'], data, task=item['task'], role=item['role'], scene=item['scene'])
                         if item['kind'] == 'tool/call':
                             tool = data.get('call', data)
-                            if tool.get('name') not in {'sleep','autonomy_status','contact_policy'}:
+                            if tool.get('name') not in {'sleep','autonomy_status','contact_policy','wait_for_chat'}:
                                 self.feature.autonomy.activity('tool', at=item.get('time'))
                         self.audit_packets.pop(item['packet'], None)
                 except Exception:

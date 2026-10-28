@@ -65,7 +65,9 @@ featureAdminControls.ai = async function (row) {
   function showLife(data){
     const until=data.until?new Date(data.until*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'—';
     const chain=data.sleep_chain;
-    $('[data-life-state]').textContent=`${data.text}\n主动模式：${data.active?'运行中':'未运行'} · 当前目标：${data.focus} · 休息至：${until}（北京时间）${data.mode!=='awake'?'\n休息原因：'+(data.reason||'未填写')+' · 唤醒事件：'+((data.wake_on||[]).join('、')||'仅到期／强制叫醒')+'\n事件筛选：'+JSON.stringify(data.filters||{}):''}${chain?'\n本段累计实际休息 '+(chain.seconds/3600).toFixed(2)+' 小时，共 '+chain.parts+' 次安排':''}${data.last_error?'\n最近错误：'+data.last_error:''}`;
+    const waiting=data.mode==='waiting';
+    const scenes=Object.entries(data.conversation_waits||{}).map(([scene,item])=>`${scene}（至 ${new Date(item.until*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai'})}，参与者：${item.participants.join('、')||'等待接话'}）`).join('\n');
+    $('[data-life-state]').textContent=`${data.text}\n主动模式：${data.active?'运行中':'未运行'} · 当前目标：${data.focus} · ${waiting?'待聊至':'休息至'}：${until}（北京时间）${waiting?'\n会话待机：等待续话，不调用模型，不计入睡眠。':''}${scenes?'\n接话窗口：\n'+scenes:''}${['sleeping','deep_sleep'].includes(data.mode)?'\n休息原因：'+(data.reason||'未填写')+' · 唤醒事件：'+((data.wake_on||[]).join('、')||'仅到期／强制叫醒')+'\n事件筛选：'+JSON.stringify(data.filters||{}):''}${chain?'\n本段累计实际休息 '+(chain.seconds/3600).toFixed(2)+' 小时，共 '+chain.parts+' 次安排':''}${data.last_error?'\n最近错误：'+data.last_error:''}`;
     const list=$('[data-life-contacts]');list.replaceChildren();
     for(const [scene,policy] of Object.entries(data.contacts)){
       const button=document.createElement('button');button.type='button';button.className='ai-secondary';button.style.margin='4px';
