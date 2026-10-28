@@ -16,6 +16,10 @@ from .audio import AUDIO_SUFFIXES
 
 logger = logging.getLogger(__name__)
 PENDING = '媒体后台解析中'
+# 网络类错误给更宽的重试预算，其他异常 3 次；两者都必须有上限，
+# 旧的图片/文件链接会永久失效，无限重试只会刷日志并占住队列。
+TRANSIENT_ATTEMPTS = 6
+PERMANENT_ATTEMPTS = 3
 
 
 def needs_media(segments):
@@ -200,6 +204,26 @@ class MediaQueue:
             message_type=record['scene_type'], user_id=int(record['qq']),
             group_id=int(record['scene_id']) if record['scene_type'] == 'group' else None)
 
+    async def _finalize_failed(self, seq, reason):
+        """把任务收尾为 failed 并在原文留下提示。
+
+        只能从 worker 的失败路径调用，因此这里自己吞掉所有异常：收尾时再抛错
+        会让 worker 协程直接退出，任务停在 running，下次重启又被重新捡起。
+        """
+        try:
+            with self.connect() as db:
+                db.execute("UPDATE jobs SET status='failed',error=? WHERE seq=?", (reason, seq))
+            source = self._source(seq)
+            if source:
+                notice = self.feature.journal.load(source).get('rendered_content', '') or ''
+                if PENDING in notice:
+                    notice = notice.replace(PENDING, '媒体后台解析失败，可用read_media重试')
+                    await asyncio.to_thread(self.feature.journal.annotate, seq, notice, media_update=True)
+                    self.feature.runtime.trigger()
+                    await self.deliver_audio(seq, self._context(self.feature.journal.load(source)), notice)
+        except Exception:
+            logger.exception('媒体任务收尾失败：seq=%s', seq)
+
     async def _worker(self):
         while self.running:
             selected = None
@@ -210,6 +234,10 @@ class MediaQueue:
                         selected = db.execute("SELECT * FROM jobs WHERE status IN ('queued','retry') AND due<=? ORDER BY priority DESC,seq LIMIT 1", (time.time(),)).fetchone()
                         if selected:
                             db.execute("UPDATE jobs SET status='running' WHERE seq=?", (selected['seq'],))
+                if selected and selected['attempts'] >= TRANSIENT_ATTEMPTS:
+                    # 已经超过重试上限的任务不再重做（旧链接永久失效时每次重做都必然失败）。
+                    await self._finalize_failed(selected['seq'], '重试次数超限')
+                    continue
                 if selected is None:
                     self.wake.clear()
                     try:
@@ -255,28 +283,27 @@ class MediaQueue:
                         db.execute("UPDATE jobs SET status='queued' WHERE seq=? AND status='running'", (selected['seq'],))
                 raise
             except Exception as exc:
-                if selected:
-                    # 网络类错误通常是瞬时的，给更宽的重试预算；但必须有上限：
-                    # 旧的图片/文件链接会永久失效，无限重试只会刷日志、占住队列。
-                    transient = isinstance(exc, ConnectionError)
-                    attempt = selected['attempts'] + 1
-                    limit = 6 if transient else 3
-                    delay = (30 if transient else 10) * 2 ** min(attempt, 3)
-                    with self.connect() as db:
-                        db.execute('UPDATE jobs SET status=?,attempts=?,due=?,error=? WHERE seq=?',
-                            ('retry' if attempt < limit else 'failed', attempt, time.time() + delay, type(exc).__name__, selected['seq']))
-                    logger.warning('媒体后台处理失败：seq=%s type=%s attempt=%s/%s', selected['seq'], type(exc).__name__, attempt, limit)
-                    if attempt >= limit:
-                        source = self._source(selected['seq'])
-                        if source:
-                            notice = self.feature.journal.load(source).get('rendered_content', '')
-                            notice = notice.replace(PENDING, '媒体后台解析失败，可用read_media重试')
-                            await asyncio.to_thread(self.feature.journal.annotate, source['seq'], notice, media_update=True)
-                            self.feature.runtime.trigger()
-                            await self.deliver_audio(source['seq'], self._context(self.feature.journal.load(source)), notice)
-                else:
-                    logger.warning('媒体队列暂不可用：%s', type(exc).__name__)
-                await asyncio.sleep(1)
+                # 失败处理本身也可能再抛错（例如写盘失败）；它逃出去会直接杀死
+                # worker，让任务停在 running 并在下次重启被重新捡起，形成死循环。
+                try:
+                    if selected:
+                        transient = isinstance(exc, ConnectionError)
+                        attempt = selected['attempts'] + 1
+                        limit = TRANSIENT_ATTEMPTS if transient else PERMANENT_ATTEMPTS
+                        delay = (30 if transient else 10) * 2 ** min(attempt, 3)
+                        with self.connect() as db:
+                            db.execute('UPDATE jobs SET status=?,attempts=?,due=?,error=? WHERE seq=?',
+                                ('retry' if attempt < limit else 'failed', attempt, time.time() + delay, type(exc).__name__, selected['seq']))
+                        logger.warning('媒体后台处理失败：seq=%s type=%s attempt=%s/%s', selected['seq'], type(exc).__name__, attempt, limit)
+                        if attempt >= limit:
+                            await self._finalize_failed(selected['seq'], type(exc).__name__)
+                    else:
+                        logger.warning('媒体队列暂不可用：%s', type(exc).__name__)
+                    await asyncio.sleep(1)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception('媒体任务失败处理异常：seq=%s', selected['seq'] if selected else None)
             finally:
                 if selected is not None:
                     self.errors.discard(selected['seq'])

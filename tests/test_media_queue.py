@@ -8,10 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from unittest.mock import Mock
 from unittest.mock import patch
 from contextlib import contextmanager
 
 from src.feature.ai.feature import AiFeature
+from src.feature.ai.media_queue import PERMANENT_ATTEMPTS, TRANSIENT_ATTEMPTS
 from src.feature.atom import MessageContext
 
 
@@ -404,6 +406,29 @@ class MediaQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.f.media.job(1)['error'], 'ConnectionError')
         # 放弃后要把原文里的“解析中”改成失败提示（写盘在状态更新之后，需轮询）。
         await self.until(lambda: '媒体后台解析失败' in self.f.journal.load(self.f.journal.rows()[0]).get('rendered_content', ''), timeout=10)
+
+
+    async def test_over_limit_job_is_finalized_without_retrying(self):
+        """超过重试上限的任务必须直接收尾，不再解析、也不能让 worker 退出。"""
+        await self.f.media.start(self.bot)
+        self.f._render = AsyncMock(side_effect=ConnectionError('链接已失效'))
+        with self.f.media.connect() as db:
+            db.execute("INSERT INTO jobs(seq,status,attempts,due,priority) VALUES(1,'retry',?,0,0)", (TRANSIENT_ATTEMPTS,))
+        self.f.media.wake.set()
+        await self.until(lambda: self.f.media.job(1)['status'] == 'failed', timeout=10)
+        self.assertEqual(self.f.media.job(1)['attempts'], TRANSIENT_ATTEMPTS)
+        self.assertEqual(self.f._render.await_count, 0)
+        self.assertFalse([worker for worker in self.f.media.workers if worker.done()])
+
+    async def test_finalize_failed_swallows_annotation_errors(self):
+        """收尾写盘再出错也必须吞掉：逃出去会杀死 worker 并让任务停在 running。"""
+        self.f.media._source = lambda seq: {'seq': seq}
+        self.f.journal.load = Mock(return_value={'rendered_content': '媒体后台解析中'})
+        self.f.journal.annotate = Mock(side_effect=ConnectionError('写盘失败'))
+        with self.f.media.connect() as db:
+            db.execute("INSERT INTO jobs(seq,status,attempts,due,priority) VALUES(1,'running',?,0,0)", (PERMANENT_ATTEMPTS,))
+        await self.f.media._finalize_failed(1, 'ConnectionError')  # 不应抛出
+        self.assertEqual(self.f.media.job(1)['status'], 'failed')
 
 
 if __name__ == '__main__':
