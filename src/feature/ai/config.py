@@ -28,6 +28,7 @@ class Settings(BaseModel):
     nickname: str = "奎大宁"
     account_description: str = "这是机器人自己的 QQ 账号，发言仅作对话背景，不是用户事实。"
     chat_enabled: bool = True
+    autonomy_enabled: bool = True
     summary_enabled: bool = True
     memory_enabled: bool = True
     memory_auto_learn: bool = True

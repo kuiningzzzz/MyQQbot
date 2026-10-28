@@ -7,7 +7,7 @@ CORE_PROMPT = Path(__file__).with_name('core_prompt.md')
 
 
 def self_context(feature, kind, *, cwd=None, scene=None, requester=None,
-                 owner=False, explicit=False, files_directory=None, role=None):
+                 owner=False, explicit=False, files_directory=None, role=None, autonomous=False):
     if kind not in {'chat', 'memory'}:
         raise ValueError('未知对话类型')
     settings = feature.config.load()
@@ -24,7 +24,7 @@ def self_context(feature, kind, *, cwd=None, scene=None, requester=None,
         'editable_memory_directory': str((cwd or feature.workspace.root) / 'memory'),
         'soul_directory': str((cwd or feature.workspace.root) / 'memory/soul'),
         'current_scene': scene if chat else None,
-        'requester_qq': str(requester) if chat and requester is not None else None,
+        'requester_qq': str(requester) if chat and requester is not None and not autonomous else None,
         'owner': bool(chat and owner),
         'explicit_request': bool(chat and explicit),
         'qq_reply_requires_tool_call': chat,
@@ -50,6 +50,11 @@ def self_context(feature, kind, *, cwd=None, scene=None, requester=None,
         'timezone': settings.timezone,
         'bot_guide': str(feature.workspace.root / '.agents/skills/qqbot-guide/SKILL.md'),
     }
+    if feature.autonomy.active:
+        state['autonomy'] = {'mode':feature.autonomy.state['mode'], 'self_initiated':autonomous,
+                             'contact_policy_timezone':'Asia/Shanghai'}
+        if autonomous:
+            state['file_transfer_allowed'] = bool(chat and settings.workspace_enabled)
     provider = feature.application_context
     application = provider(False) if provider else {'features': [], 'notice': '模块状态未知'}
     state['application'] = {'features': [

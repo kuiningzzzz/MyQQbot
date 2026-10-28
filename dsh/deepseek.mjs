@@ -1,6 +1,7 @@
 // Reuse the official provider, credentials, replay and transport. Only repair
-// the rc.2 projection edge where every declared tool becomes deferred.
+// the rc.2 all-deferred-tool edge and project adjacent idle sleeps for requests.
 import * as OfficialProvider from '@deepseek-ai/dsh-llm-deepseek-api-key';
+import {mergeSleepContext} from './sleep-context.mjs';
 
 export const name = 'qqbot-deepseek';
 export const inject = OfficialProvider.inject;
@@ -32,9 +33,9 @@ export function compatibleAdapter(adapter) {
     // AFTER native tool-history projection. Preserve the bound model metadata.
     if (key === 'prepareCall') return async (...args) => {
       const prepared = await target.prepareCall(...args);
-      return {...prepared, stream: options => prepared.stream(ensureImmediateTool(options))};
+      return {...prepared, stream: options => prepared.stream(ensureImmediateTool(mergeSleepContext(options)))};
     };
-    if (key === 'stream') return options => target.stream(ensureImmediateTool(options));
+    if (key === 'stream') return options => target.stream(ensureImmediateTool(mergeSleepContext(options)));
     const value = Reflect.get(target, key, target);
     return typeof value === 'function' ? value.bind(target) : value;
   }});

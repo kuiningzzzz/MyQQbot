@@ -13,12 +13,12 @@ DEFAULT_PUBLIC_HELP_MESSAGES = [
     "/set-master 鉴别码 - 将当前 QQ 用户绑定为机器人主人",
     "/jm 号码 - 下载对应 JM 漫画，导出 PDF 并发送到当前会话\n/jm status - 查看 JM 当前处理队列",
     "/pixiv 作品ID - 获取对应 Pixiv 图片或图片集\n/pixiv status - 查看 Pixiv 当前处理队列",
-    "/short 10至200 - AI 总结当前群聊仍保留的最近消息\n@机器人或提到机器人网名 - 唤醒AI聊天，60秒内可连续交谈",
+    "/short 10至200 - AI 总结当前群聊仍保留的最近消息\nAI默认主动生活，清醒时观察群聊和私聊，自行决定参与或休息。\n/ai-status - 查看清醒、睡眠或深度睡眠状态；可用自然语言设置当前会话的主动联系时段。",
     "/hello - 回复 hello",
     "/timing-task 选项 时间 文本 - 北京时间定时消息，保留空格和群聊艾特\n/timing-task-AI 选项 时间 提示词 - 定时AI任务\n选项：-y每年 MM-DD-HH-MM-SS；-m每月 DD-HH-MM-SS；-w每周 01至07-HH-MM-SS；-d每天 HH-MM-SS；-o一次 YY-MM-DD-HH-MM-SS（也支持四位年份）\n中国农历给选项加-cn，如-y-cn 08-15-00-00-00表示每年农历八月十五零点；-m-cn每农历月（含闰月），-o-cn指定农历日期。时分秒仍为北京时间；年循环只用普通月份，没有三十的月份跳过。\n两类指令均支持 list 查看、del ID 删除，只管理当前群聊或私聊；循环时间已过安排下一次。",
 ]
 
-DEFAULT_MASTER_HELP_MESSAGES = [*DEFAULT_PUBLIC_HELP_MESSAGES, "AI账号、人设与记忆文件请在管理WebUI的AI服务中配置。"]
+DEFAULT_MASTER_HELP_MESSAGES = [*DEFAULT_PUBLIC_HELP_MESSAGES, "/ai-wakeup - 主人强制叫醒AI（含深度睡眠）。\nAI账号、人设、主动生活、日志与记忆文件可在管理WebUI的AI服务中配置。"]
 
 
 class HelpFeature(Feature):

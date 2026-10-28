@@ -133,6 +133,43 @@ class TimingTests(unittest.IsolatedAsyncioTestCase):
     def create(self, **extra):
         return self.f.save({'kind':'ai','scene':'group:12','flag':'-d','time':'08-00-00','prompt':'核实新闻并播报', **extra})
 
+    async def test_self_initiated_schedule_preserves_source_authority_and_contact_window(self):
+        ctx=self.ctx(group=None,qq=123)  # Recipient is the owner, requester is not.
+        task={'worker':True,'qq':'0','owner':False,'autonomous':True}
+        handler=self.ai.engine.make_handler(ctx,'private:123',False,task,lambda:True)
+        fixed=(await handler('schedule_create',{'kind':'fixed','flag':'-d','time':'08-00-00','content':'自主提醒'}))['task']
+        self.assertEqual(fixed['requester'],'0')
+        self.assertFalse(fixed['owner_grant'])
+        self.assertTrue(fixed['autonomous'])
+        job=self.f.store.claim(fixed['id'],fixed['next_run'])
+        await self.f.execute(job)
+        self.bot.reply.assert_not_awaited()
+        self.assertEqual(self.f.store.list()[0]['last_run']['status'],'failed')
+        self.ai.autonomy.contact('set','private:123',{'start':'00:00','end':'00:00'},admin=True)
+        next_fixed=self.f.store.get(fixed['id'])
+        job=self.f.store.claim(fixed['id'],next_fixed['next_run'])
+        await self.f.execute(job)
+        self.bot.reply.assert_awaited_once()
+        ai=(await handler('schedule_create',{'kind':'ai','flag':'-d','time':'09-00-00','prompt':'维护项目','delivery':'silent'}))['task']
+        self.assertFalse(ai['owner_grant'])
+        self.assertEqual(ai['requester'],'0')
+        captured=[]
+        async def run(kind,prompt,**kwargs):
+            captured.append((json.loads(prompt.removeprefix('[定时任务]\n')),kwargs))
+            return {'finish_reason':'completed'}
+        self.ai.dsh.run=run
+        await self.ai.engine.run_scheduled(ctx,{**ai,'run_id':'test-life','scheduled_at':time.time()},lambda:True)
+        self.assertFalse(captured[0][1]['owner'])
+        self.assertEqual(captured[0][1]['qq'],'0')
+        self.assertIsNone(captured[0][0]['requester_qq'])
+
+    async def test_non_owner_scheduled_context_cannot_regrant_owner_through_schedule_tools(self):
+        ctx=self.ctx(group=None,qq=123)
+        handler=self.ai.engine.make_handler(ctx,'private:123',True,{'worker':True,'scheduled':True,'owner':False},lambda:True)
+        result=await handler('schedule_create',{'kind':'ai','flag':'-d','time':'09-00-00','prompt':'普通任务','delivery':'silent'})
+        self.assertTrue(result['success'])
+        self.assertFalse(result['task']['owner_grant'])
+
     async def test_commands_preserve_case_spaces_newlines_and_real_at(self):
         segments = [{'type':'text','data':{'text':'/timing-task -d 08-00-00 Hello World\nHappy Birthday '}}, {'type':'at','data':{'qq':'789'}}, {'type':'text','data':{'text':'  End'}}]
         await self.f.handle(self.ctx('/timing-task -d 08-00-00 Hello World\nHappy Birthday   End',segments=segments))

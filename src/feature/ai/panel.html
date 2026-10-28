@@ -19,7 +19,8 @@
 .ai-panel .ai-secondary{background:#eef2f6;color:#344054}
 .ai-panel .ai-danger{color:#b42318;background:#fff1f0}
 
-.ai-panel input[type="text"],.ai-panel select,.ai-panel textarea{margin:0;font-family:inherit;padding:10px 12px}
+.ai-panel input[type="text"],.ai-panel input[type="number"],.ai-panel input[type="time"],.ai-panel select,.ai-panel textarea{margin:0;font-family:inherit;padding:10px 12px;box-sizing:border-box;width:100%;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#1f2937;min-width:0}
+.ai-panel .ai-toolbar select{width:auto;max-width:100%}
 .ai-panel .ai-field{display:flex;flex-direction:column;gap:7px;min-width:0;color:#344054;font-size:14px}
 .ai-panel .ai-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
 .ai-panel .ai-check{display:flex;gap:10px;align-items:center;padding:10px 0}
@@ -84,12 +85,32 @@
 <strong data-ai-file-count>—</strong>记忆文件 / 原文保留30天</div>
 </div>
 <div class="ai-tabs" role="tablist" aria-label="AI管理">
+<button type="button" id="ai-tab-life" data-ai-tab="life" role="tab" aria-controls="ai-view-life" aria-selected="false" tabindex="-1">AI生活与日志</button>
 <button type="button" id="ai-tab-memory" data-ai-tab="memory" role="tab" aria-controls="ai-view-memory" aria-selected="true">记忆库</button>
 <button type="button" id="ai-tab-settings" data-ai-tab="settings" role="tab" aria-controls="ai-view-settings" aria-selected="false" tabindex="-1">账号与功能</button>
 <button type="button" id="ai-tab-maintenance" data-ai-tab="maintenance" role="tab" aria-controls="ai-view-maintenance" aria-selected="false" tabindex="-1">检索与维护</button>
 <button type="button" id="ai-tab-stickers" data-ai-tab="stickers" role="tab" aria-controls="ai-view-stickers" aria-selected="false" tabindex="-1">表情库</button>
 <button type="button" id="ai-tab-audio" data-ai-tab="audio" role="tab" aria-controls="ai-view-audio" aria-selected="false" tabindex="-1">语音听说</button>
 </div>
+<section id="ai-view-life" data-ai-view="life" role="tabpanel" aria-labelledby="ai-tab-life" hidden>
+<div class="ai-card">
+<div class="ai-toolbar"><h3>当前状态</h3><button type="button" data-life-refresh class="ai-secondary">刷新</button><button type="button" data-life-wake>强制叫醒</button></div>
+<p data-life-state class="ai-status" aria-live="polite"></p>
+<p class="ai-muted">主动模式开启后持续推进同一主会话；睡眠期间继续记录QQ消息，深度睡眠只在到期或被主人／admin强制叫醒时结束。没有额外预算限制。日志包含模型实际返回的推理、文本、原生工具调用、结果和活动状态，不会生成模型未返回的隐藏思考。保留30天，仅登录后的admin可访问。</p>
+<div class="ai-toolbar"><label class="ai-field">休息秒数<input type="number" data-life-seconds min="1" max="31536000" value="3600"></label><label class="ai-check"><input type="checkbox" data-life-deep>深度睡眠</label><button type="button" class="ai-secondary" data-life-sleep>安排休息</button></div>
+</div>
+<div class="ai-card">
+<h3>主动联系许可</h3><p class="ai-muted">时间使用北京时间，起止相同表示全天，支持跨午夜。群友可用自然语言让Agent管理当前群或自己的私聊许可。</p>
+<div class="ai-grid"><label class="ai-field">会话<input type="text" data-life-scene placeholder="private:QQ号 或 group:群号"></label><label class="ai-check"><input type="checkbox" data-life-contact-enabled checked>允许主动联系</label><label class="ai-field">开始<input type="time" data-life-start value="09:00"></label><label class="ai-field">结束<input type="time" data-life-end value="23:00"></label></div>
+<div class="ai-toolbar" style="margin-top:14px"><button type="button" data-life-contact-save>保存许可</button><button type="button" data-life-contact-delete class="ai-danger">删除许可</button></div>
+<div data-life-contacts></div>
+</div>
+<div class="ai-card">
+<div class="ai-toolbar"><h3>AI行为日志</h3><select data-life-filter aria-label="日志类型"><option value="">全部行为</option><option value="model_stream">实时模型输出</option><option value="assistant/message">完整推理与文本</option><option value="tool/call">工具调用</option><option value="tool/result">工具结果</option><option value="sleep_summary">合并休息记录</option><option value="autonomy_error">自主活动错误</option></select><button type="button" class="ai-secondary" data-life-older>更早记录</button><button type="button" class="ai-secondary" data-life-logs>最新记录</button></div>
+<label class="ai-check"><input type="checkbox" data-life-live checked>自动刷新（展开此页时）</label>
+<div data-life-log-list style="max-height:700px;overflow:auto" aria-live="polite"></div>
+</div>
+</section>
 <section id="ai-view-audio" data-ai-view="audio" role="tabpanel" aria-labelledby="ai-tab-audio" hidden>
 <div class="ai-card">
 <div class="ai-toolbar"><h3>云端语音服务</h3><button type="button" class="ai-secondary" data-audio-refresh>刷新状态</button></div>

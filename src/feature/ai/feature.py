@@ -30,6 +30,8 @@ from .stickers import StickerLibrary
 from .media import IMAGE_SUFFIXES
 from .media_queue import MediaQueue, needs_media, PENDING
 from .audio import CloudAudio, AUDIO_SUFFIXES
+from .activity import ActivityLog
+from .autonomy import AutonomyRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +46,8 @@ class AiFeature(Feature):
         self.workspace = Workspace(root)
         self.journal = Journal(self.workspace)
         self.config = Config(root)
+        self.activity = ActivityLog(self.workspace)
+        self.autonomy = AutonomyRuntime(self)
         self.client = client or ModelClient()
         self.identity = Identity(self.config, self.workspace)
         self.index = index or VectorIndex(self.workspace, self.config)
@@ -71,6 +75,7 @@ class AiFeature(Feature):
     def on_enabled_changed(self, enabled: bool) -> None:
         self.enabled = enabled
         self.runtime.set_enabled(enabled)
+        self.autonomy.signal.set()
         if not enabled:
             self.engine.reset_transient()
             self.engine.active.clear()
@@ -309,6 +314,7 @@ class AiFeature(Feature):
         await self.runtime.start()
         await self.media.start(bot)
         await self.stickers.start(bot)
+        await self.autonomy.start(bot)
         if not self.config.load().vector_index_enabled:
             return
         ok, error = await asyncio.to_thread(self.index.preload)
@@ -318,6 +324,7 @@ class AiFeature(Feature):
             logger.warning("AI 向量索引预加载失败：%s（记忆检索已降级为纯文本检索，每 %s 秒自动重试）", error, self.index.MODEL_RETRY_SECONDS)
 
     async def stop(self):
+        await self.autonomy.stop()
         await self.stickers.stop()
         await self.media.stop()
         await self.engine.stop()

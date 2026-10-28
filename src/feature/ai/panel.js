@@ -49,7 +49,7 @@ featureAdminControls.ai = async function (row) {
   field($('[data-ai-switches]'),'stickers_enabled','启用表情库自动同步、后台理解与Agent发送',config.stickers_enabled);
   initStickerPanel(row);
   for(const [key,label] of Object.entries({bot_qq:'机器人QQ号',nickname:'网名／唤醒姓名',account_description:'账号身份说明'}))field($('[data-ai-identity]'),key,label,config[key]);
-  for(const [key,label] of Object.entries({chat_enabled:'启用聊天',summary_enabled:'启用群聊总结',memory_enabled:'启用长时记忆',memory_auto_learn:'自动整理消息队列',workspace_enabled:'启用文件下载与发送',browser_enabled:'启用后台网页浏览与界面操作',ocr_enabled:'启用图片／PDF OCR',audio_enabled:'启用云端声音理解',voice_enabled:'启用语音合成与QQ语音发送',vector_index_enabled:'启用本地向量检索'}))field($('[data-ai-switches]'),key,label,config[key]);
+  for(const [key,label] of Object.entries({chat_enabled:'启用聊天',autonomy_enabled:'启用主动生活（持续循环，可自主休息）',summary_enabled:'启用群聊总结',memory_enabled:'启用长时记忆',memory_auto_learn:'自动整理消息队列',workspace_enabled:'启用文件下载与发送',browser_enabled:'启用后台网页浏览与界面操作',ocr_enabled:'启用图片／PDF OCR',audio_enabled:'启用云端声音理解',voice_enabled:'启用语音合成与QQ语音发送',vector_index_enabled:'启用本地向量检索'}))field($('[data-ai-switches]'),key,label,config[key]);
   for(const [key,label] of Object.entries({embedding_model:'嵌入模型名称或本地目录',timezone:'时间显示时区'}))field($('[data-ai-memory]'),key,label,config[key]);
   $('[data-ai-prompt]').value=config.agent_prompt;
   function renderRuntime(data) {
@@ -61,6 +61,57 @@ featureAdminControls.ai = async function (row) {
     }
   }
   renderRuntime(config);
+  let lifeBusy=false,lifeCursor=0,lifeFirst=0,lifeGeneration=0;
+  function showLife(data){
+    const until=data.until?new Date(data.until*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'}):'—';
+    const chain=data.sleep_chain;
+    $('[data-life-state]').textContent=`${data.text}\n主动模式：${data.active?'运行中':'未运行'} · 当前目标：${data.focus} · 休息至：${until}（北京时间）${data.mode!=='awake'?'\n休息原因：'+(data.reason||'未填写')+' · 唤醒事件：'+((data.wake_on||[]).join('、')||'仅到期／强制叫醒')+'\n事件筛选：'+JSON.stringify(data.filters||{}):''}${chain?'\n本段累计实际休息 '+(chain.seconds/3600).toFixed(2)+' 小时，共 '+chain.parts+' 次安排':''}${data.last_error?'\n最近错误：'+data.last_error:''}`;
+    const list=$('[data-life-contacts]');list.replaceChildren();
+    for(const [scene,policy] of Object.entries(data.contacts)){
+      const button=document.createElement('button');button.type='button';button.className='ai-secondary';button.style.margin='4px';
+      button.textContent=`${scene} · ${policy.enabled?'允许':'暂停'} · ${policy.start}—${policy.end}`;
+      button.onclick=()=>{$('[data-life-scene]').value=scene;$('[data-life-start]').value=policy.start;$('[data-life-end]').value=policy.end;$('[data-life-contact-enabled]').checked=policy.enabled;};list.append(button);
+    }
+    if(!list.childElementCount)list.textContent='尚未设置主动联系许可；Agent仍可在自己的工作区活动。';
+  }
+  async function lifeLogs(mode='latest'){
+    if(mode==='live'&&$('[data-life-filter]').value==='sleep_summary')mode='latest';
+    if(lifeBusy)return;lifeBusy=true;
+    const generation=lifeGeneration;
+    try{
+      const params=new URLSearchParams({limit:100,kind:$('[data-life-filter]').value});
+      if(mode==='live'&&lifeCursor)params.set('after',lifeCursor);
+      if(mode==='older'&&lifeFirst)params.set('before',lifeFirst);
+      const data=await request('/api/ai/activity?'+params);
+      if(generation!==lifeGeneration)return;
+      showLife(data.state);
+      const list=$('[data-life-log-list]');
+      if(mode!=='live'){list.replaceChildren();lifeCursor=0;lifeFirst=0;}
+      if(mode==='live'&&data.entries.length&&!list.childElementCount)list.replaceChildren();
+      for(const entry of data.entries){
+        lifeCursor=Math.max(lifeCursor,entry.id);lifeFirst=lifeFirst?Math.min(lifeFirst,entry.id):entry.id;
+        const detail=document.createElement('details'),summary=document.createElement('summary'),pre=document.createElement('pre');
+        detail.className='ai-result';summary.textContent=`#${entry.id} ${new Date(entry.time*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai'})} · ${entry.kind} · ${entry.role||'宿主'} ${entry.scene} ${entry.task.slice(0,8)}`;
+        pre.textContent=JSON.stringify(entry.data,null,2);detail.append(summary,pre);list.append(detail);
+      }
+      while(list.childElementCount>300)list.firstElementChild.remove();
+      if(!list.childElementCount)list.textContent='暂无符合条件的日志。';
+    }finally{lifeBusy=false;}
+  }
+  action('[data-life-refresh]',async()=>showLife(await request('/api/ai/life')));
+  action('[data-life-wake]',async()=>{showLife(await request('/api/ai/life/wakeup',{}));status('已强制叫醒。');});
+  action('[data-life-sleep]',async()=>{await request('/api/ai/life/sleep',{duration_seconds:Number($('[data-life-seconds]').value),deep:$('[data-life-deep]').checked});showLife(await request('/api/ai/life'));status('休息状态已保存。');});
+  action('[data-life-contact-save]',async()=>{await request('/api/ai/life/contacts',{action:'set',scene:$('[data-life-scene]').value,policy:{enabled:$('[data-life-contact-enabled]').checked,start:$('[data-life-start]').value,end:$('[data-life-end]').value}});showLife(await request('/api/ai/life'));status('主动联系许可已保存。');});
+  action('[data-life-contact-delete]',async()=>{await request('/api/ai/life/contacts',{action:'delete',scene:$('[data-life-scene]').value});showLife(await request('/api/ai/life'));});
+  action('[data-life-logs]',async()=>{lifeGeneration++;await lifeLogs();});
+  action('[data-life-older]',async()=>{$('[data-life-live]').checked=false;await lifeLogs('older');});
+  $('[data-life-filter]').onchange=async()=>{lifeGeneration++;try{await lifeLogs();}catch(error){status(error.message,true);}};
+  row.addEventListener('ai-tab-open',async event=>{if(event.detail==='life'){try{await lifeLogs();}catch(error){status(error.message,true);}}});
+  const lifeTimer=setInterval(async()=>{
+    if(!row.isConnected){clearInterval(lifeTimer);return;}
+    if(document.hidden||$('[data-ai-view="life"]').hidden||!$('[data-life-live]').checked)return;
+    try{await lifeLogs('live');}catch(error){status(error.message,true);}
+  },2000);
   async function renderAudio(){
     const data=await request('/api/ai/audio/status');
     $('[data-audio-state]').textContent=`百炼Key：${data.configured?'已配置':'未配置'}；声音理解：${data.hearing_enabled?'开启':'关闭'}（${data.audio_model}）；语音发送：${data.voice_enabled?'开启':'关闭'}（${data.tts_model} / ${data.voice}）。临时语音缓存最多${data.cache_limit_mib}MiB，保留${data.cache_hours}小时。${data.last_error?'最近错误：'+data.last_error:''}`;

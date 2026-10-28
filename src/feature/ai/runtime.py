@@ -180,6 +180,7 @@ class MemoryRuntime:
                 transaction.close()
 
     async def tick(self):
+        await asyncio.to_thread(self.feature.activity.prune)
         await asyncio.to_thread(self.feature.journal.prune)
         await self.feature.context.prune(time.time() - 30 * 86400)
         await self.feature.media.prune()

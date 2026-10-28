@@ -75,6 +75,49 @@ class AiAdmin:
         from . import sticker_admin
         sticker_admin.register(app, f)
 
+        @app.get('/api/ai/life')
+        async def life_status():
+            return f.autonomy.status()
+
+        @app.post('/api/ai/life/wakeup')
+        async def life_wakeup():
+            f.autonomy.wake('admin', force=True)
+            f.engine._start_worker()
+            return f.autonomy.status()
+
+        @app.post('/api/ai/life/sleep')
+        async def life_sleep(data: dict = Body(...)):
+            f.autonomy.suspended = True
+            try:
+                # Publish the sleep synchronously and stop admission before
+                # awaiting cancellation. Neither new messages nor the life
+                # driver may restart a turn while the old worker unwinds.
+                result = f.autonomy.sleep(data.get('duration_seconds'), data.get('deep',False), data.get('wake_on'), data.get('reason','admin'), filters=data.get('filters'), check_pending=False)
+                await f.engine.stop()
+                return result
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(400,str(exc)) from None
+            finally:
+                f.autonomy.suspended = False
+                f.autonomy.signal.set()
+
+        @app.get('/api/ai/activity')
+        async def ai_activity(after: int=0, before: int=0, limit: int=100, kind: str='', task: str=''):
+            if not f.enabled:
+                raise HTTPException(409,'请先启用AI模块')
+            try:
+                entries = await asyncio.to_thread(f.activity.read,after,limit,kind,task,before)
+            except ValueError as exc:
+                raise HTTPException(400,str(exc)) from None
+            return {'entries':entries,'state':f.autonomy.status()}
+
+        @app.post('/api/ai/life/contacts')
+        async def life_contacts(data: dict = Body(...)):
+            try:
+                return f.autonomy.contact(data.get('action','list'),data.get('scene'),data.get('policy'),admin=True)
+            except (ValueError, TypeError) as exc:
+                raise HTTPException(400,str(exc)) from None
+
         @app.exception_handler(AudioError)
         async def audio_error(_request, exc):
             f.audio.last_error = str(exc)
@@ -145,9 +188,13 @@ class AiAdmin:
                 raise HTTPException(409 if '文件已被更新' in str(exc) else 400, str(exc)) from exc
             # Saving configuration restarts the native runtime. Revoke running
             # workers first, including their in-flight QQ callback checks.
+            life_running, life_bot = f.autonomy.running, f.autonomy.bot
+            await f.autonomy.stop()
             await f.engine.stop()
             async with f.dsh.turn_lock:
                 await f.dsh.stop()
+            if life_running:
+                await f.autonomy.start(life_bot)
             return await config()
 
         @app.get("/api/ai/files")

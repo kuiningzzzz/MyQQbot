@@ -138,6 +138,9 @@ class QQBot:
 
         if await self.master_service.handle(ctx):
             return
+        ai = getattr(self.feature_manager, 'features', {}).get('ai')
+        if ai and await ai.autonomy.command(ctx):
+            return
         await self.feature_manager.handle_event(ctx)
 
     async def call_action(self, action: str, params: dict, ws: WebSocket) -> dict | list:

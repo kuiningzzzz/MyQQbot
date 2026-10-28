@@ -26,7 +26,7 @@ class TimingAdmin:
             previous = f.store.get(identifier)
             if not previous:
                 raise HTTPException(404, '任务不存在')
-            data = {k: v for k, v in previous.items() if k in {'kind', 'scene', 'flag', 'time', 'segments', 'prompt', 'enabled', 'delivery', 'requester', 'owner_grant', 'bot_qq'}}
+            data = {k: v for k, v in previous.items() if k in {'kind', 'scene', 'flag', 'time', 'segments', 'prompt', 'enabled', 'delivery', 'requester', 'owner_grant', 'bot_qq', 'autonomous'}}
             expected = body.get('revision')
             if not isinstance(expected, int):
                 raise HTTPException(400, '编辑时须提供revision版本号')

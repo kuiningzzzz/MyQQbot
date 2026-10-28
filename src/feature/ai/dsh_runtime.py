@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -32,6 +33,7 @@ class DshRuntime:
         self.stderr = []
         self.diagnostic_task = None
         self.last_error = ""
+        self.audit_packets = {}
         self.home = feature.workspace.data_root / "dsh-home"
         self.code = Path(__file__).resolve().parents[3] / "dsh"
         self.upgrade = RuntimeUpgrade(feature.workspace.data_root)
@@ -149,6 +151,22 @@ class DshRuntime:
                 break
             # Keep bounded diagnostics, never print model requests or credentials.
             entry = line.decode(errors="replace").strip()
+            if entry.startswith('QQBOT_AI_EVENT '):
+                try:
+                    item = json.loads(entry.removeprefix('QQBOT_AI_EVENT '))
+                    packet = self.audit_packets.setdefault(item['packet'], {'meta':item, 'parts':{}, 'created':time.monotonic()})
+                    packet['parts'][item['part']] = base64.b64decode(item['data'])
+                    if len(packet['parts']) == item['parts']:
+                        data = json.loads(b''.join(packet['parts'][i] for i in range(item['parts'])).decode('utf-8'))
+                        self.feature.activity.add(item['kind'], data, task=item['task'], role=item['role'], scene=item['scene'])
+                        if item['kind'] == 'tool/call':
+                            tool = data.get('call', data)
+                            if tool.get('name') not in {'sleep','autonomy_status','contact_policy'}:
+                                self.feature.autonomy.activity('tool', at=item.get('time'))
+                        self.audit_packets.pop(item['packet'], None)
+                except Exception:
+                    logger.exception('AI行为日志写入失败')
+                continue
             self.stderr = (self.stderr + [entry])[-20:]
             if entry.startswith('QQBOT_TOOL_SURFACE '):
                 # Names and host-issued identifiers only; never log prompts,
@@ -244,6 +262,7 @@ class DshRuntime:
                     'delivery': delivery, "task_id": task_id, "owner": owner, "qq": qq,
                     'sticker_capability': capability,
                     'browser_enabled': self.feature.config.load().browser_enabled,
+                    'autonomy_enabled':self.feature.autonomy.active,
                     "prompt": prompt, "system": system, "self_ids": sorted(self.feature.identity.ids), "scene_dir": scene_dir, "group_id": group_id, "cwd": str(cwd or self.feature.workspace.root),
                     "expires_at": deadline * 1000}, timeout=turn_timeout))
                 async def watch():

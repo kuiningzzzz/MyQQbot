@@ -160,7 +160,7 @@ class TimingFeature(Feature):
         self.store.save(data, identifier=MEMORY_COMPRESSION_ID, installation='memory-compression-v1')
 
     def validate(self, body, identifier=None):
-        allowed = {'kind', 'scene', 'flag', 'time', 'content', 'segments', 'prompt', 'enabled', 'delivery', 'requester', 'owner_grant', 'bot_qq'}
+        allowed = {'kind', 'scene', 'flag', 'time', 'content', 'segments', 'prompt', 'enabled', 'delivery', 'requester', 'owner_grant', 'bot_qq', 'autonomous'}
         if set(body) - allowed:
             raise ValueError('不支持的任务字段：' + ','.join(sorted(set(body) - allowed)))
         data = dict(body)
@@ -175,6 +175,10 @@ class TimingFeature(Feature):
             raise ValueError('启用和主人授权须为布尔值')
         if data.get('delivery', 'auto') not in {'auto', 'message', 'silent'}:
             raise ValueError('AI发送方式须为auto/message/silent')
+        if not isinstance(data.get('autonomous',False),bool):
+            raise ValueError('自主任务标记须为布尔值')
+        if data.get('autonomous') and (str(data.get('requester','0')) != '0' or data.get('owner_grant')):
+            raise ValueError('自主任务没有人类请求者或主人授权')
         if data['kind'] == 'fixed':
             data['segments'] = normalize_segments(data['segments'], data['scene'].startswith('private:')) if 'segments' in data else text_segments(data.get('content', ''), data['scene'].startswith('private:'))
             data.pop('content', None)
@@ -257,7 +261,7 @@ class TimingFeature(Feature):
             await ctx.bot.reply(ctx, '发送失败：' + ('权限不足' if exc.permission_denied else exc.detail))
         return True
 
-    async def tool(self, ctx, name, args):
+    async def tool(self, ctx, name, args, *, authority=None):
         if not self.enabled:
             return {'success': False, 'code': 'feature_disabled'}
         scene = self.scene(ctx)
@@ -292,7 +296,12 @@ class TimingFeature(Feature):
             if 'content' in args:
                 data.pop('segments', None)
             data.update({k: v for k, v in args.items() if k != 'task_id'})
-            data.update(kind=kind, scene=scene, requester=str(ctx.user_id), owner_grant=kind == 'ai' and self.master.is_master(ctx.user_id), bot_qq=str(ctx.event.get('self_id') or data.get('bot_qq') or ''))
+            # The QQ delivery recipient is not necessarily a human requester:
+            # self-initiated work must not acquire the recipient's authority.
+            authority = authority or {'qq':str(ctx.user_id),'owner':self.master.is_master(ctx.user_id),'autonomous':False}
+            data.update(kind=kind, scene=scene, requester=authority['qq'],
+                owner_grant=kind == 'ai' and bool(authority['owner']) and self.master.is_master(int(authority['qq'])),
+                autonomous=bool(authority['autonomous']), bot_qq=str(ctx.event.get('self_id') or data.get('bot_qq') or ''))
             saved = self.save(data, previous['id'] if previous else None, previous['revision'] if previous else None)
             return {'success': True, 'task': saved}
         except (ValueError, KeyError) as exc:
@@ -332,6 +341,9 @@ class TimingFeature(Feature):
             qq = int(job['requester']) if scene_type == 'group' else int(scene_id)
             ctx = MessageContext(bot=self.bot, websocket=ws, event={'self_id': getattr(self.bot, '_self_ids', {}).get(ws), 'message': []}, msg=job.get('prompt', ''), raw_msg=job.get('prompt', ''), message_type=scene_type, user_id=qq, group_id=int(scene_id) if scene_type == 'group' else None)
             if job['kind'] == 'fixed':
+                if job.get('autonomous') and not self.ai.autonomy.permitted(job['scene']):
+                    detail = '主动联系许可无效或不在允许时段，未发送自主定时消息'
+                    return
                 await self.bot.reply(ctx, job['segments'])
                 status, detail = 'completed', '固定消息发送成功'
             else:

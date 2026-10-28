@@ -7,6 +7,7 @@ import {denial, within} from './policy.mjs';
 import {bindShellTasks} from './shell-policy.mjs';
 import {mountBrowser} from './browser.mjs';
 import {activationError, observeActivationErrors} from './activation-errors.mjs';
+import {mountTelemetry} from './telemetry.mjs';
 
 export const name = 'myqqbot-bridge';
 export const inject = ['agents', 'sessions', 'agentLoop', 'tools', 'systemPrompt', 'sessionPersistence', 'fs', 'compaction', 'subagents', 'workingDirectory', 'shellEnv', 'browserUse'];
@@ -32,6 +33,10 @@ function writeJSON(file, value) {
   }
 }
 const definitions = {
+  sleep: ['安排主Agent休息并结束本轮。duration_seconds为等待秒数；deep=true只允许到期、admin或主人强制唤醒。wake_on可选mention_self/reply_self/nickname_address/private_message/group_message/task_completed。普通睡眠默认被点名、私聊、任务完成唤醒；[]仅到期。filters可选scenes(group:群号/private:QQ号)、users(QQ号字符串)及message_threshold(累计普通群发言条数)。无需发QQ确认', {duration_seconds:{type:'number',required:true},deep:{type:'boolean'},wake_on:{type:'array',items:{type:'string'}},reason:{type:'string'},filters:{type:'object',additionalProperties:false,properties:{scenes:{type:'array',items:{type:'string'}},users:{type:'array',items:{type:'string'}},message_threshold:{type:'integer'}}}}],
+  autonomy_status: ['查看清醒/睡眠、当前活动目标、累计休息和主动联系许可，不发送QQ消息', {}],
+  contact_policy: ['管理主动联系许可，不是定时任务。action=list/set/delete；scene为group:群号或private:QQ号，真实聊天仅能管理当前会话。policy含enabled、北京时间start/end(HH:MM)和note；相等代表全天，支持跨午夜。多人回合须source_message_id；自主回合只能查看或删除许可', {action:{type:'string'},scene:{type:'string'},policy:{type:'object',additionalProperties:false,properties:{enabled:{type:'boolean'},start:{type:'string'},end:{type:'string'},note:{type:'string'}}},source_message_id:{type:'string'}}],
+  focus_scene: ['自主回合选择许可时段内的主动联系目标，scene为group:群号或private:QQ号。立即结束本轮，下一回合才绑定目标；真实聊天不能用它跨会话发送', {scene:{type:'string',required:true}}],
   read_browser_image: ['调用已有视觉服务理解当前会话files目录中的浏览器截图，path使用截图实际保存位置。主模型不能直接看MCP图片时用本工具；不发送QQ消息，不改变网页或赋予权限', {path:{type:'string',required:true}}],
   synthesize_voice: ['后台合成语音，不向QQ发送。正文text为1至1200字符的口语文本；instruction可选，最多500字符，单独描述语气/语速/情绪。使用宿主固定音色，不能选账号或收件人。本轮最多2次，返回当前会话绑定、24小时有效的voice_id；普通执行者将ID和正文返回主对话，主对话再send_voice。失败如实报告', {text:{type:'string',required:true},instruction:{type:'string'}}],
   send_voice: ['向current_scene显式发送语音条，本轮最多2次。voice_id用synthesize_voice的真实回执，或path指定当前会话files目录内已有音频文件；二选一。未合成时主对话先spawn执行者合成，收到voice_id再发送。检查QQ发送回执，合成成功不等于已发送；unknown不重试。普通Spawn禁止本工具，定时分支可用，silent禁止发送', {voice_id:{type:'string'},path:{type:'string'}}],
@@ -93,6 +98,7 @@ export async function apply(ctx) {
   // A crash leaves a cleanup receipt, never an orphaned retained fork.
   for (const id of Object.keys(branches)) removeBranch(id);
   const currentTask = agent => tasks.get(agent?.id);
+  mountTelemetry(ctx, id=>[...tasks.values()].find(t=>t.session_id===id), currentTask);
   // Native activation.result preserves only stopReason. Observe the scoped
   // failure while the child still exists, before its disposable log is removed.
   observeActivationErrors(ctx, agent => currentTask(agent) || pendingChildren.get(agent?.id));
@@ -160,8 +166,8 @@ export async function apply(ctx) {
     // rc.2 removed request.toolFilter. Bind the child scope before its first
     // model step, independently of the changing shared parent's authority.
     agent.ctx.tools.restrict(task.role === 'memory' ? {allow: ['read', 'write', 'edit', 'glob', 'grep', 'skill', 'search_memory', 'delete_memory_file']} : {deny: task.role === 'worker'
-      ? ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file', 'send_message', 'send_forward_message', 'send_sticker', 'send_voice']
-      : ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file']});
+      ? ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file', 'send_message', 'send_forward_message', 'send_sticker', 'send_voice','sleep','autonomy_status','contact_policy','focus_scene']
+      : ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file','sleep','autonomy_status','contact_policy','focus_scene']});
     if (['scheduled', 'memory'].includes(task.role)) {
       branches[agent.id] = true;
       writeJSON(branchFile, branches);
@@ -267,12 +273,13 @@ export async function apply(ctx) {
       output: {schema: {type: 'json'}, render: (_args, value) => text(JSON.stringify(value))},
       async execute(args, exec) {
         const task = currentTask(exec.agent);
-        if (task?.role === 'main' && ['send_message','send_forward_message','send_sticker','send_voice','spawn_task'].includes(toolName)) {
+        if (task?.role === 'main' && ['send_message','send_forward_message','send_sticker','send_voice','spawn_task','sleep','focus_scene'].includes(toolName)) {
           if (exec.agent.inbox.nextStep.length) return {success:false,code:'new_observations_pending',error:'先阅读刚插入的发言，再决定回复或委派。'};
         }
         if (!task || task.cancelled) throw new Error('TASK_EXPIRED');
         if (['spawn_task', 'task_status', 'cancel_task'].includes(toolName)) return dispatch(toolName, args, exec, task);
         const result = await callback(task, toolName, args, exec.signal);
+        if (result.success && ['sleep','focus_scene'].includes(toolName)) exec.concludeTurn();
         if (task.role === 'main' && ['send_message','send_forward_message','send_sticker','send_voice'].includes(toolName) && result.code !== 'new_observations_pending') task.reply_started = true;
         return result;
       }}));
@@ -350,8 +357,8 @@ export async function apply(ctx) {
       tasks.set(agent.id, task);
       task.session_id = agent.session.header.id;
       lift = agent.ctx.tools.restrict(data.role === 'main'
-        ? {allow: data.delivery ? ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice'] : ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', 'spawn_task', 'task_status', 'cancel_task']}
-        : {deny: ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file']});
+        ? {allow: data.delivery ? ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice'] : ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', 'spawn_task', 'task_status', 'cancel_task', ...(data.autonomy_enabled ? ['sleep','autonomy_status','contact_policy','focus_scene'] : [])]}
+        : {deny: ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file','sleep','autonomy_status','contact_policy','focus_scene']});
       const before = agent.session.snapshotEvents().length;
       agent.followup({id: randomUUID(), role: 'user', source: {kind: 'user'}, content: text(data.prompt)});
       await agent.whenIdle();

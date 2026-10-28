@@ -996,6 +996,73 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         finally:
             release.set()
 
+    async def test_native_life_sleep_concludes_without_another_request_and_logs_reasoning(self):
+        self.f.autonomy.running=True
+        self.f.autonomy.bot=SimpleNamespace(reply=AsyncMock(),connected_clients={'ws'},master_service=SimpleNamespace(is_master=lambda qq:True))
+        self.responses=[[{'type':'thinking','thinking':'VISIBLE_LIFE_REASONING'},
+            {'type':'tool_use','id':'sleep-native','name':'sleep','input':{'duration_seconds':3600,'deep':True}}]]
+        ctx=self.f.autonomy.context()
+        await asyncio.wait_for(self.f.engine._turn(ctx,'private:0',False),15)
+        self.assertEqual(self.f.autonomy.state['mode'],'deep_sleep')
+        self.assertEqual(len(self.requests),1)
+        state=host_state(model_instructions(self.requests[0]))
+        self.assertFalse(state['owner'])
+        self.assertIsNone(state['requester_qq'])
+        async with asyncio.timeout(3):
+            while not self.f.activity.read(kind='assistant/message'):await asyncio.sleep(.01)
+        records=self.f.activity.read(limit=300)
+        self.assertIn('VISIBLE_LIFE_REASONING',json.dumps(records))
+        self.assertTrue(any(r['kind']=='tool/result' for r in records))
+        self.f.autonomy.bot.reply.assert_not_awaited()
+
+    async def test_native_sleep_context_merges_completed_idle_rest_exchanges(self):
+        self.f.autonomy.running=True
+        self.f.autonomy.bot=SimpleNamespace(reply=AsyncMock(),connected_clients={'ws'},master_service=SimpleNamespace(is_master=lambda qq:False))
+        clock=time.time()
+        with patch('src.feature.ai.autonomy.time',SimpleNamespace(time=lambda:clock)):
+            for i,seconds in enumerate([4*3600,2*3600]):
+                self.responses=[[{'type':'tool_use','id':f'sleep-{i}','name':'sleep','input':{'duration_seconds':seconds,'wake_on':[]}}]]
+                await asyncio.wait_for(self.f.engine._turn(self.f.autonomy.context(),'private:0',False),15)
+                clock+=seconds
+                self.assertEqual(self.f.autonomy.status()['mode'],'awake')
+            self.responses=['醒来之后的内部判断']
+            await asyncio.wait_for(self.f.engine._turn(self.f.autonomy.context(),'private:0',False),15)
+        wire=json.dumps(self.requests[-1]['messages'],ensure_ascii=False)
+        self.assertNotIn('"id": "sleep-0"',wire)
+        self.assertNotIn('"tool_use_id": "sleep-0"',wire)
+        self.assertIn('sleep-1',wire)
+        self.assertEqual(self.f.autonomy.status()['sleep_chain']['seconds'],6*3600)
+
+    async def test_native_life_focus_contact_does_not_turn_recipient_into_owner(self):
+        bot=SimpleNamespace(reply=AsyncMock(),connected_clients={'ws'},master_service=SimpleNamespace(is_master=lambda qq:qq==123))
+        self.f.autonomy.running=True;self.f.autonomy.bot=bot
+        self.f.autonomy.contact('set','private:123',{'start':'00:00','end':'00:00'},admin=True)
+        self.responses=[self.tool('focus_scene',scene='private:123')]
+        await asyncio.wait_for(self.f.engine._turn(self.f.autonomy.context(),'private:0',False),15)
+        self.assertEqual(len(self.requests),1)
+        self.assertEqual(self.f.autonomy.focus,'private:123')
+        self.responses=[self.tool('send_message',message='主动问候'),self.tool('sleep',duration_seconds=3600)]
+        await asyncio.wait_for(self.f.engine._turn(self.f.autonomy.context(),'private:123',False),15)
+        self.assertFalse(host_state(model_instructions(self.requests[-1]))['owner'])
+        bot.reply.assert_awaited_once()
+        self.assertEqual(bot.reply.await_args.args[0].user_id,123)
+        self.assertEqual(bot.reply.await_args.args[1],'主动问候')
+
+    async def test_native_human_contact_consent_and_unsolicited_send_boundary(self):
+        self.f.autonomy.running=True
+        bot=SimpleNamespace(reply=AsyncMock(),connected_clients={'ws'},master_service=SimpleNamespace(is_master=lambda qq:False))
+        self.f.autonomy.bot=bot
+        ctx=MessageContext(bot=bot,websocket='ws',event={'message_id':'consent'},msg='9点到23点无聊时可以找我',message_type='private',user_id=456,group_id=None)
+        self.responses=[self.tool('contact_policy',action='set',policy={'start':'09:00','end':'23:00'}),'已保存联系时段']
+        await asyncio.wait_for(self.f.engine._turn(ctx,'private:456',True),15)
+        self.assertEqual(self.f.autonomy.contacts['private:456']['start'],'09:00')
+        bot.reply.assert_not_awaited()  # final text is still private.
+        self.f.autonomy.contact('delete','private:456',admin=True)
+        self.responses=[self.tool('send_message',message='不应送出的主动消息'),self.tool('sleep',duration_seconds=3600)]
+        await asyncio.wait_for(self.f.engine._turn(self.f.autonomy.context('private:456'),'private:456',False),15)
+        self.assertIn('proactive_contact_denied',json.dumps(self.requests[-1]))
+        bot.reply.assert_not_awaited()
+
     async def test_memory_fork_inherits_main_silently_and_deletes_its_logs(self):
         self.responses = ['MAIN_MEMORY_CONTEXT_REPLY']
         await self.native(role='main', prompt='MAIN_MEMORY_CONTEXT_SEED')
