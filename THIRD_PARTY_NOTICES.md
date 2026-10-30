@@ -16,6 +16,7 @@
 | [PixivPy](https://github.com/upbit/pixivpy) | 使用 Pixiv API 的认证、作品详情和图片下载接口 | `src/feature/pixiv/client.py` | `pixivpy3>=3.7.5`，本地核对 `3.7.5`；Unlicense。[声明副本](licenses/PixivPy-Unlicense.txt) |
 | [get-pixivpy-token](https://github.com/eggplants/get-pixivpy-token) | 调用 `gppt.login` 和浏览器支持代码获取授权；本项目另做独立进程、超时、冷却和凭据存储 | `src/feature/pixiv/login_worker.py`、`src/feature/pixiv/auth.py` | `gppt==5.1.0`；MIT，Copyright 2021 haruna。[许可证副本](licenses/get-pixivpy-token-MIT.txt) |
 | [lunar-python](https://github.com/6tail/lunar-python) | 用于农历和公历换算，周期与调度状态由本项目处理 | `src/feature/timing/schedule.py` | `1.4.8`，MIT |
+| 鱼鱼找鸡 / coser-image-search | 直接复用用户提供的1.0.0发行版搜图、解析和账号提取源码，增加QQ指令、后台队列与Linux浏览器兼容；没有启用其VPN管理、系统代理修改及额外DeepSeek搜索接口 | `src/feature/find_chicken/vendor/`；来源与本地改动见其中 `UPSTREAM.md` | MIT；Copyright (c) 2026 小鲸鱼。[许可证副本](licenses/fish-find-chicken-MIT.txt) |
 | [Sentence Transformers](https://github.com/huggingface/sentence-transformers) | 加载本地嵌入模型，计算文本向量 | `src/feature/ai/index.py` | Apache-2.0 |
 | [BAAI BGE](https://huggingface.co/BAAI/bge-small-zh-v1.5) | 默认使用 `bge-small-zh-v1.5` 模型权重；不是自训练模型 | `src/feature/ai/config.py`、`src/feature/ai/index.py` | 该模型的[模型卡](https://huggingface.co/BAAI/bge-small-zh-v1.5/raw/main/README.md)标注 MIT；更换模型后应重新核对 |
 | [Chroma](https://github.com/chroma-core/chroma) | 本地持久化向量索引 | `src/feature/ai/index.py` | Apache-2.0 |

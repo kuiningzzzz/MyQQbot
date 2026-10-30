@@ -1,0 +1,35 @@
+<template data-feature-panel="find_chicken">
+  <div class="feature-extra chicken-settings">
+    <style>
+      .chicken-settings { line-height: 1.7; }
+      .chicken-settings p { margin: 0 0 14px; }
+      .chicken-settings .chicken-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 14px 22px; margin: 16px 0; }
+      .chicken-settings .chicken-grid label { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+      .chicken-settings input:not([type=checkbox]) { width: 100%; min-height: 40px; border: 1px solid #cbd5e1; border-radius: 6px; padding: 8px 10px; font: inherit; color: #0f172a; background: white; }
+      .chicken-settings .chicken-engines { display: flex; flex-wrap: wrap; gap: 12px 22px; margin: 12px 0; }
+      .chicken-settings input[type=checkbox] { width: auto; margin-right: 5px; }
+      .chicken-settings .chicken-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; }
+      .chicken-settings .chicken-actions button { flex-shrink: 0; }
+    </style>
+    <p>引用图片发送 <code>/find-chicken</code>，群聊和私聊均可使用；也支持图片与指令同发，每次查第一张。最多排队10个任务，不占用AI。</p>
+    <p>图片会上传至所选搜图服务。结果是图源和候选账号线索，不能据此确认人物身份。引擎可能受网络、免费额度、人机验证及风控影响；重复图片的有效结果缓存30天。</p>
+    <div class="chicken-engines">
+      <label><input type="checkbox" data-engine="lens">Google Lens</label>
+      <label><input type="checkbox" data-engine="saucenao">SauceNAO</label>
+      <label><input type="checkbox" data-engine="tracemoe">trace.moe</label>
+      <label><input type="checkbox" data-engine="iqdb">IQDB</label>
+      <label><input type="checkbox" data-engine="baidu">百度识图</label>
+    </div>
+    <div class="chicken-grid">
+      <label>浏览器代理（可选）<input data-setting="proxy" placeholder="http://127.0.0.1:7890" autocomplete="off"></label>
+      <label>浏览器程序路径（留空自动发现）<input data-setting="browser_executable" placeholder="复用镜像中的Chromium" autocomplete="off"></label>
+      <label>单引擎请求超时（秒）<input type="number" data-setting="timeout_seconds" min="5" max="90" required></label>
+      <label>整个任务硬超时（秒）<input type="number" data-setting="total_timeout_seconds" min="30" max="600" required></label>
+      <label>最多显示候选账号数<input type="number" data-setting="max_accounts" min="1" max="10" required></label>
+      <label>同一用户在同一会话的冷却（秒）<input type="number" data-setting="cooldown_seconds" min="0" max="3600" required></label>
+    </div>
+    <p><label><input type="checkbox" data-setting="strict_consensus">严格过滤名字不一致的候选账号（建议开启）</label></p>
+    <p>Lens和百度需要浏览器。代理只作用于搜图浏览器，不会修改系统代理，也不会替SauceNAO、trace.moe、IQDB的HTTP请求设置代理。Docker里的127.0.0.1指容器自身。</p>
+    <div class="chicken-actions"><button type="button" class="chicken-save">保存搜图配置</button><span class="status" role="status"></span></div>
+  </div>
+</template>

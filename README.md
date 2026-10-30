@@ -265,6 +265,8 @@ MYQQBOT_WS_HOST=127.0.0.1 MYQQBOT_ADMIN_HOST=127.0.0.1 .venv/bin/python -m src.m
 
 ## 其他功能
 
+- `/find-chicken`：引用图片发送指令，或把图片与指令同发，反查图源和候选账号。支持群聊、私聊，后台排队，不调用AI；复用“鱼鱼找鸡1.0.0”。admin可选择引擎、代理和超时，Docker复用已有Chromium。图片会上传至所选搜图服务，结果只作线索，受网络、免费额度和风控影响。见[图片溯源说明](docs/图片溯源.md)。
+
 JM 和 Pixiv 默认关闭，按需在管理界面开启：
 
 - `/jm <号码>`：下载对应漫画，生成 PDF 并发送；`/jm status` 查看队列。

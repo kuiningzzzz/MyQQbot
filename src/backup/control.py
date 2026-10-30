@@ -21,7 +21,7 @@ class BackupControl:
             queue = getattr(feature, 'queue', None)
             diagnostics = getattr(feature, 'diagnostics', None)
             auth = getattr(feature, 'auth', None)
-            if (queue and queue.busy) or (diagnostics and diagnostics.running) or (auth and auth.running):
+            if getattr(feature, 'has_active_jobs', False) or (queue and queue.busy) or (diagnostics and diagnostics.running) or (auth and auth.running):
                 raise BackupError(f'{feature.title} 正在执行任务，请完成后再备份或还原')
             if feature.name == 'ai':
                 engine = feature.engine

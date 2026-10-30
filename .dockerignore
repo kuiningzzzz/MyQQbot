@@ -22,6 +22,7 @@ data/
 **/node_modules/
 !src/feature/ai/skills/**/*.md
 !src/feature/ai/*.md
+!src/feature/find_chicken/vendor/UPSTREAM.md
 !THIRD_PARTY_NOTICES.md
 !README.md
 !docs/**/*.md

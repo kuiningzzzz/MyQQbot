@@ -144,7 +144,7 @@ class QQBot:
         await self.feature_manager.handle_event(ctx)
 
     async def call_action(self, action: str, params: dict, ws: WebSocket) -> dict | list:
-        if action not in {"get_forward_msg", "get_file", "get_group_file_url", "get_private_file_url", "get_msg", "get_group_member_info", "delete_msg", "send_group_msg", "send_private_msg", "upload_group_file", "upload_private_file", "send_group_forward_msg", "send_private_forward_msg", "fetch_custom_face_detail", "fetch_custom_face", "add_custom_face", "delete_custom_face", "set_custom_face_desc", "download_file"}:
+        if action not in {"get_forward_msg", "get_image", "get_file", "get_group_file_url", "get_private_file_url", "get_msg", "get_group_member_info", "delete_msg", "send_group_msg", "send_private_msg", "upload_group_file", "upload_private_file", "send_group_forward_msg", "send_private_forward_msg", "fetch_custom_face_detail", "fetch_custom_face", "add_custom_face", "delete_custom_face", "set_custom_face_desc", "download_file"}:
             raise ValueError("不允许的动作")
         echo = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
