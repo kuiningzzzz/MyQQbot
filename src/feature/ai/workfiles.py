@@ -7,6 +7,8 @@ import time
 import uuid
 from pathlib import PurePosixPath
 
+from .media import MediaUrlExpired
+
 
 class WorkFiles:
     def __init__(self, feature):
@@ -67,12 +69,69 @@ class WorkFiles:
                     url = "base64://" + reply["base64"]
         return url
 
+    async def refresh_media(self, ctx, item):
+        """QQ 直链会过期（retmsg=download url has expired）；向 NapCat 重新索取。
+
+        QQ 事件里带的下载地址带有时效；排队处理或稍后重试时经常已经失效，
+        此时只能回到消息原文，让 NapCat 重新签发一个可用地址。
+        """
+        if not getattr(ctx, 'bot', None):
+            return ''
+        data = item.get('data') or {}
+        name = str(data.get('file') or '')
+        file_id = str(data.get('file_id') or '')
+        calls = []
+        if name:
+            calls.append(('get_image', {'file': name}))
+        if file_id:
+            calls.append(('get_image', {'file_id': file_id}))
+            calls.append(('get_file', {'file_id': file_id}))
+        for action, params in calls:
+            try:
+                reply = await ctx.bot.call_action(action, params, ctx.websocket)
+            except Exception:
+                continue
+            url = str((reply or {}).get('url') or '')
+            if url.startswith(('http://', 'https://', 'base64://', 'data:')):
+                return url
+        # 兜底：重拉整条消息，消息段里自带新的直链。
+        message_id = str(item.get('message_id') or ctx.event.get('message_id') or '')
+        if not message_id:
+            return ''
+        try:
+            reply = await ctx.bot.call_action('get_msg', {'message_id': message_id}, ctx.websocket)
+        except Exception:
+            return ''
+        for segment in (reply or {}).get('message') or []:
+            if not isinstance(segment, dict):
+                continue
+            if item.get('kind') and segment.get('type') != item['kind']:
+                continue
+            segment_data = segment.get('data') or {}
+            if name and str(segment_data.get('file') or '') not in {'', name}:
+                continue
+            url = str(segment_data.get('url') or '')
+            if url.startswith(('http://', 'https://')):
+                return url
+        return ''
+
+    async def fetch(self, ctx, item):
+        """下载附件字节；直链过期时换一个新链接再试一次。"""
+        url = await self.resolve(ctx, item)
+        try:
+            return await self.feature.files._download(url)
+        except MediaUrlExpired:
+            fresh = await self.refresh_media(ctx, item)
+            if not fresh or fresh == url:
+                raise
+            return await self.feature.files._download(fresh)
+
     async def download(self, ctx, identifier, path, is_current):
         item = self.attachments.get(identifier)
         if not item or item["scene"] != self.feature.scene_key(ctx) or time.time() - item["created"] >= 7 * 86400:
             raise ValueError("附件不存在、已过期或不属于当前会话")
         path = path or (identifier + "-" + re.sub(r"[^\w.\-]", "_", item["name"]))
-        data = await self.feature.audio.attachment_bytes(ctx, item) if item['kind'] == 'record' else await self.feature.files._download(await self.resolve(ctx, item, refresh=True))
+        data = await self.feature.audio.attachment_bytes(ctx, item) if item['kind'] == 'record' else await self.fetch(ctx, item)
         if not is_current():
             return {"success": False, "error": "新消息已到达，取消本次下载入库"}
         return await self.feature.sandbox.put(item["scene"], path, data)

@@ -23,6 +23,13 @@ class MediaDescription(str):
         return result
 
 
+class MediaUrlExpired(ValueError):
+    """QQ 图片/文件直链已过期（retmsg=download url has expired）。
+
+    这类链接无法靠重试恢复，必须回到消息原文向 NapCat 重新索取。
+    """
+
+
 class MediaReader:
     def __init__(self, config, client, identity, sandbox=None):
         self.config, self.client, self.identity = config, client, identity
@@ -183,7 +190,11 @@ class MediaReader:
                         if response.is_redirect:
                             url = urljoin(url, response.headers.get("location", ""))
                             continue
-                        response.raise_for_status()
+                        if response.status_code >= 400:
+                            body = (await response.aread())[:512].decode('utf-8', 'replace')
+                            if 'download url has expired' in body or '-5503007' in body:
+                                raise MediaUrlExpired('媒体直链已过期')
+                            response.raise_for_status()
                         chunks, size = [], 0
                         async for chunk in response.aiter_bytes():
                             size += len(chunk)

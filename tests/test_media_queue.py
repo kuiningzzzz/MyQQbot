@@ -431,6 +431,18 @@ class MediaQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.f.media.job(1)['status'], 'failed')
 
 
+
+    async def test_disconnected_napcat_waits_without_burning_retries(self):
+        """重启窗口里 NapCat 还没连上：任务应等待，不消耗重试次数。"""
+        self.bot.connected_clients = set()
+        await self.f.observe(self.ctx())
+        await asyncio.sleep(1.5)
+        job = self.f.media.job(1)
+        self.assertIsNotNone(job)
+        self.assertEqual(job['status'], 'retry')
+        self.assertEqual(job['attempts'], 0)
+
+
 if __name__ == '__main__':
     unittest.main()
 
