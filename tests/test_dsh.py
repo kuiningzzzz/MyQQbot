@@ -2067,6 +2067,25 @@ class RobustnessTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(lock.acquire(), timeout=1)
         lock.release()
 
+    async def test_stale_oldest_record_does_not_expire_every_turn(self):
+        """最老原文已过保留期时，不能把过期时间当会话期限。
+
+        否则内核每轮都判定会话到期并轮换：每轮都是全新上下文（没有缓存复用，
+        费用暴涨），上一个句柄关闭时在途 flush 还会报 flush on a closed handle。
+        """
+        self.f.journal.oldest_timestamp = lambda: time.time() - 40 * 86400
+        self.f.dsh.start = AsyncMock()
+        self.f.dsh.url = 'http://127.0.0.1:1'
+        captured = {}
+
+        async def request(endpoint, data, timeout=30):
+            captured[endpoint] = data
+            return {'ok': True, 'result': {'finish_reason': 'completed'}}
+
+        self.f.dsh.request = request
+        await self.f.dsh.run('chat', '{}', task_id='stale', handler=AsyncMock(), current=lambda: True)
+        self.assertGreater(captured['/run']['expires_at'], time.time() * 1000)
+
     async def test_leaked_gate_is_force_reset(self):
         self.f.dsh.limits = lambda: (0.2, 0.3)
         recovered = []

@@ -15,6 +15,9 @@ EVENTS = {'mention_self', 'reply_self', 'nickname_address', 'private_message', '
 STATUS = {'awake':'醒着醒着，有什么事？', 'sleeping':'zzz...（正在睡觉）', 'deep_sleep':'zzz...（深度睡眠，叫不醒的那种）'}
 STATUS['waiting'] = STATUS['awake']
 SLEEP_MODES = {'sleeping', 'deep_sleep'}
+# 连续失败这么多轮聊天后，自主活动暂停一段，避免模型/余额异常时无止境重试。
+CIRCUIT_BREAKER = 5
+CIRCUIT_BREAKER_SECONDS = 1800
 
 
 class AutonomyRuntime:
@@ -299,6 +302,15 @@ class AutonomyRuntime:
                     self.f.engine._start_worker(); await self.wait(60); continue
                 if self.retry_at > time.time():
                     await self.wait(min(60, self.retry_at - time.time())); continue
+                if self.f.engine.failures >= CIRCUIT_BREAKER:
+                    # 聊天连续失败（模型故障、余额不足、会话异常等）时不该继续每分钟重试：
+                    # 暂停一段时间并复位计数，暂停结束后最多再试一轮。
+                    self.error = '聊天连续失败 %s 次，自主活动暂停 %s 分钟' % (self.f.engine.failures, CIRCUIT_BREAKER_SECONDS // 60)
+                    self.retry_at = time.time() + CIRCUIT_BREAKER_SECONDS
+                    self.f.activity.add('autonomy_circuit_open', {'failures': self.f.engine.failures, 'retry_at': self.retry_at})
+                    logger.warning('自主活动熔断：聊天连续失败 %s 次，暂停 %s 分钟', self.f.engine.failures, CIRCUIT_BREAKER_SECONDS // 60)
+                    self.f.engine.failures = 0
+                    await self.wait(60); continue
                 await self.f.engine.pending.put((self.context(), False, None))
                 self.f.engine._start_worker()
                 await self.wait(60)

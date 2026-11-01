@@ -266,4 +266,31 @@ class AutonomyTests(unittest.IsolatedAsyncioTestCase):
             return create_admin_app(manager,self.master,[FeaturePlugin(self.f,AiAdmin(self.f))])
 
 
+    async def test_consecutive_chat_failures_open_the_circuit(self):
+        """聊天连续失败达到阈值时，自主活动必须暂停，而不是继续每分钟重试。"""
+        settings = self.f.config.load().model_copy(update={'api_key': 'test-key'})
+        self.f.config.load = lambda: settings
+        self.f.engine.failures = 5
+        task = asyncio.create_task(self.life.drive())
+        try:
+            await asyncio.sleep(.3)
+            self.assertGreater(self.life.retry_at, time.time())
+            self.assertTrue(self.f.engine.pending.empty())
+            self.assertEqual(self.f.engine.failures, 0)
+            self.assertIn('连续失败', self.life.error)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def test_successful_turn_resets_the_failure_counter(self):
+        """成功回合必须把连续失败计数清零，否则熔断会被历史失败一直触发。"""
+        ctx = MessageContext(bot=self.bot, websocket=None,
+            event={'self_id': 999, 'message_id': 1, 'message': [{'type': 'text', 'data': {'text': '在吗'}}], 'raw_message': '在吗'},
+            msg='在吗', message_type='group', user_id=123, group_id=12)
+        self.f.engine.failures = 3
+        self.f.dsh.run = AsyncMock(return_value={'finish_reason': 'completed'})
+        await self.f.engine._turn(ctx, 'group:12', True)
+        self.assertEqual(self.f.engine.failures, 0)
+
+
 if __name__=='__main__':unittest.main()

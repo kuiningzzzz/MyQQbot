@@ -253,9 +253,17 @@ class DshRuntime:
                 # Bound the entire session (including compaction/tool output)
                 # by that record's remaining lifetime, not by log file mtime.
                 oldest = self.feature.journal.oldest_timestamp()
-                deadline = expires_at or time.time() + 30 * 86400
+                now = time.time()
+                deadline = expires_at or now + 30 * 86400
                 if oldest is not None:
-                    deadline = min(deadline, oldest + 30 * 86400)
+                    # 会话期限不超过最老原文的保留期；但该上限本身已经过期时不能再用它，
+                    # 否则每一轮都会把“过去的时间”当成交付期限，内核会每轮轮换会话：
+                    # 每轮都是全新上下文（没有缓存复用，费用暴涨），上一个句柄关闭时
+                    # 在途的 flush 还会报 "flush on a closed handle"。
+                    cap = oldest + 30 * 86400
+                    if cap > now:
+                        deadline = min(deadline, cap)
+                deadline = max(deadline, now + 3600)
                 self.active[task_id]['expires_at'] = deadline
                 endpoint = '/maintenance' if kind == 'memory' else '/scheduled' if role == 'scheduled' else '/run'
                 request_task = asyncio.create_task(self.request(endpoint, {"kind": kind, "role": role, 'worker_system': worker_system,
