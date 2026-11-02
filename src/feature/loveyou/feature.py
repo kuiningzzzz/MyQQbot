@@ -1,9 +1,12 @@
 import base64
+import logging
 import re
 from pathlib import Path
 
 from src.feature.atom import Feature
 from .storage import Store
+
+logger = logging.getLogger(__name__)
 
 
 class LoveyouFeature(Feature):
@@ -45,9 +48,15 @@ class LoveyouFeature(Feature):
         if not image:
             await ctx.bot.reply(ctx, '还没有设置收款码，请管理员在“赞助打榜”中上传图片。')
             return True
+        ranking = [f"{entry['name']} 喂饭数目 {entry['amount']}" for entry in entries if entry['cents'] != 0]
         messages = [[{'type': 'image', 'data': {'file': 'base64://' + base64.b64encode(image).decode()}}]]
-        messages.extend([{'type': 'text', 'data': {'text': f"{entry['name']} 喂饭数目 {entry['amount']}"}}]
-                        for entry in entries if entry['cents'] != 0)
-        for start in range(0, len(messages), 99):
-            await ctx.bot.send_forward_msg(ctx, messages[start:start + 99])
+        messages.extend([[{'type': 'text', 'data': {'text': line}}] for line in ranking])
+        try:
+            for start in range(0, len(messages), 99):
+                await ctx.bot.send_forward_msg(ctx, messages[start:start + 99])
+        except Exception:
+            # 图片上传通道偶发不可用（例如 QQ 高速上传超时）。此时不能让整个指令
+            # 静默失败：降级成纯文本，至少把榜单发出去。
+            logger.warning('打赏码图片发送失败，降级为纯文本榜单', exc_info=True)
+            await ctx.bot.reply(ctx, '\n'.join(['打赏码暂不可用喵'] + ranking))
         return True
