@@ -10,7 +10,9 @@ Python处理QQ事件、持久消息队列、文件/OCR、记忆提交、后台�
 
 ## 一次性后台 Spawn
 
-主Agent可发送文字/聊天记录、查找/发送表情及spawn/task_status/cancel_task。文件、搜索、命令和其他执行工具由一次性子Agent使用，主人也不能绕过角色分工。普通用户同样可委派联网、受限命令、记忆和文件任务；复杂分析、长篇资料及多步骤工作也交给执行者，后台交付回合不再委派。
+主Agent可发送文字/引用回复/聊天记录、查找/发送表情及spawn/task_status/cancel_task。文件、搜索、命令和其他执行工具由一次性子Agent使用，主人也不能绕过角色分工。普通用户同样可委派联网、受限命令、记忆和文件任务；复杂分析、长篇资料及多步骤工作也交给执行者，后台交付回合不再委派。
+
+`reply_message(message_id, message)` 使用 NapCat 原生 `reply` 消息段，先读取目标并核实当前场景，再发送引用和纯文本正文；不额外构造@。只接受当前消息、会话缓存或当前引用中的真实ID，已撤回或无法读取的消息不会降级成普通发送。主聊天、结果交付和非静默定时分支都可用；普通Spawn仍把文字交回主对话。引用回复与普通文字共用每轮4次尝试限额，两者任一发送结果未知时，本轮不能换另一工具重发；成功回复会计入定时交付和待聊窗口。
 
 `spawn_task(title,prompt)` 使用官方 `dsh-subagent` 服务和 `dsh-subagent-spawn-in-process` provider，调用 `ctx.subagents.startActivation({provider:'spawn', delivery:'caller', ...})`；模型、工具循环、文件观察、网页搜索及压缩继续使用 dsh 原生实现。工具只等待子 Agent 接受任务，立即返回任务 ID，不等待 `activation.result`，因此主回合结束和新消息到达都不会取消它。普通后台任务使用Spawn；定时任务另外使用原生fork。虽然新内核支持可续聊子Agent，本项目仍只暴露一次性任务，不能继续委派，深度上限为1。
 

@@ -1203,13 +1203,36 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         await self.native(owner=False)
         self.assertIn('温和', target.read_text('utf-8'))
 
+    async def test_native_quote_reply_main_delivery_and_scheduled_surfaces(self):
+        bot = SimpleNamespace(call_action=AsyncMock(side_effect=[
+            {'message_id': -42, 'message_type': 'group', 'group_id': 12, 'sender': {'user_id': 123}},
+            {'message_id': 456}]), reply=AsyncMock())
+        ctx = MessageContext(bot=bot, event={'self_id': 999, 'message_id': -42}, websocket=None,
+            msg='回复我这条', message_type='group', user_id=123, group_id=12)
+        self.responses = [self.tool('reply_message', message_id='-42', message='收到这条了。'), '内部结束']
+        await self.f.engine._turn(ctx, 'group:12', True)
+        self.assertEqual(bot.call_action.await_args.args[0], 'send_group_msg')
+        self.assertEqual(bot.call_action.await_args.args[1]['message'][0], {'type': 'reply', 'data': {'id': '-42'}})
+        self.assertEqual(self.f.engine.current['sent'], 1)
+        bot.reply.assert_not_awaited()
+        for role, delivery in [('main', True), ('scheduled', False)]:
+            with self.subTest(role=role):
+                handler = AsyncMock(return_value={'success': True, 'message_id': 457})
+                self.responses = [self.tool('reply_message', message_id='-42', message='引用回复'), '完成']
+                result = await self.native(role=role, delivery=delivery, handler=handler,
+                    prompt='[定时任务]\n引用回复' if role == 'scheduled' else '后台结果交付')
+                self.assertEqual(result['finish_reason'], 'completed')
+                names = {tool['name'] for tool in self.requests[-1]['tools']}
+                self.assertIn('reply_message', names)
+                handler.assert_awaited_once_with('reply_message', {'message_id': '-42', 'message': '引用回复'})
+
     async def test_scheduled_fork_after_restart_from_delivery_only_parent_can_send(self):
         self.responses = ['主对话历史']
         await self.native(role='main', prompt='PRE_RESTART_CHAT')
         self.responses = ['后台结果已处理']
         await self.native(role='main', delivery=True, prompt='PRE_RESTART_DELIVERY')
         self.assertEqual({tool['name'] for tool in self.requests[-1]['tools']},
-                         {'send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice'})
+                         {'send_message', 'reply_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice'})
         await self.f.dsh.stop()
         start = len(self.requests)
         handler = AsyncMock(return_value={'success': True, 'message_id': 'news-forward'})
@@ -1219,7 +1242,7 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result['finish_reason'], 'completed')
         for request in self.requests[start:]:
             names = {tool['name'] for tool in request.get('tools', [])}
-            self.assertTrue({'send_message', 'send_forward_message', 'send_file', 'read', 'write'} <= names, names)
+            self.assertTrue({'send_message', 'reply_message', 'send_forward_message', 'send_file', 'read', 'write'} <= names, names)
             self.assertNotIn('spawn_task', names)
             instructions = model_instructions(request)
             self.assertIn('PRE_RESTART_CHAT', instructions)
@@ -1257,13 +1280,13 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(calls)
             for request in calls:
                 names = {tool['name'] for tool in request.get('tools', [])}
-                self.assertTrue({'send_message', 'send_forward_message', 'send_file', 'read', 'write', 'schedule_create'} <= names, names)
+                self.assertTrue({'send_message', 'reply_message', 'send_forward_message', 'send_file', 'read', 'write', 'schedule_create'} <= names, names)
                 self.assertNotIn('spawn_task', names)
             handler.assert_awaited_once_with('send_message', {'message': '并发定时消息'})
             logged = [json.loads(call.args[1]) for call in audit.call_args_list if call.args[0] == 'dsh工具注入：%s']
             surfaces = {entry['role']: entry for entry in logged}
             self.assertEqual(set(surfaces), {'main', 'scheduled'})
-            self.assertEqual(set(surfaces['main']['tools']), {'send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', 'spawn_task', 'task_status', 'cancel_task'})
+            self.assertEqual(set(surfaces['main']['tools']), {'send_message', 'reply_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', 'spawn_task', 'task_status', 'cancel_task'})
             self.assertIn('send_message', surfaces['scheduled']['tools'])
             self.assertNotIn('BUSY_PARENT_SCHEDULE', json.dumps(logged))
             self.assertNotIn('local-test-key', json.dumps(logged))
@@ -1441,6 +1464,7 @@ export function apply(ctx) {
             if worker:
                 self.assertNotIn('spawn_task', tools)
                 self.assertNotIn('send_message', tools)
+                self.assertNotIn('reply_message', tools)
                 self.assertIn('记忆SKILL提示', request['system'])
                 self.assertIn('999', request['system'])
                 if counts[role] == 1:

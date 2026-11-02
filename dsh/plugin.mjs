@@ -20,7 +20,7 @@ export function stickerShellEnv(task, callback) {
 }
 export function validateScheduledTools(task, names) {
   if (task.role !== 'scheduled') return;
-  const missing = ['send_message', 'send_forward_message', 'send_file', 'send_sticker', 'send_voice', 'synthesize_voice'].filter(name => !names.includes(name));
+  const missing = ['send_message', 'reply_message', 'send_forward_message', 'send_file', 'send_sticker', 'send_voice', 'synthesize_voice'].filter(name => !names.includes(name));
   if (missing.length) throw new Error('SEND_TOOLS_MISSING: 定时分支缺少发送工具：' + missing.join(', '));
 }
 function writeJSON(file, value) {
@@ -43,7 +43,8 @@ const definitions = {
   send_voice: ['向current_scene显式发送语音条，本轮最多2次。voice_id用synthesize_voice的真实回执，或path指定当前会话files目录内已有音频文件；二选一。未合成时主对话先spawn执行者合成，收到voice_id再发送。检查QQ发送回执，合成成功不等于已发送；unknown不重试。普通Spawn禁止本工具，定时分支可用，silent禁止发送', {voice_id:{type:'string'},path:{type:'string'}}],
   find_sticker: ['按情绪、用途或名称从当前机器人账号的本地表情库查找少量候选；不调用视觉模型，不等后台解析。主对话可直接查询；目录未就绪时不要猜ID', {query: {type:'string'}, limit:{type:'integer'}}],
   send_sticker: ['按find_sticker返回的sticker_id向当前QQ会话发送一张表情，本轮最多1张、会话冷却10秒；静默任务禁止发送，结果unknown不重发。增删改委派主人执行者读sticker-management SKILL', {sticker_id:{type:'string',required:true}}],
-  send_message: ['向current_scene发文字，1至4000字符，本轮最多4次；检查回执', {message: {type: 'string', required: true}}],
+  send_message: ['向current_scene发文字，1至4000字符；与reply_message共用本轮4次限额，检查回执', {message: {type: 'string', required: true}}],
+  reply_message: ['引用回复current_scene中的指定真实消息。message_id取当前发言、上下文或引用中的消息ID；message为1至4000字符正文。群聊和私聊均可，与send_message共用每轮4次限额；不能跨会话、猜ID或回复已撤回消息。unknown禁止重发。普通Spawn禁止，silent禁止；需要明确接话对象时使用，不必每条都引用', {message_id:{type:'string',required:true},message:{type:'string',required:true}}],
   send_forward_message: ['向当前会话发机器人身份的聊天记录卡片；messages顺序文本1至20条，各1至4000字符、总计最多20000，本轮最多1次。长文或用户要求时使用，成功后不重复正文，不冒充他人', {messages: {type: 'array', items: {type: 'string'}, required: true}}],
   inspect_message: ['读取当前会话中已知或引用消息的真实发送者', {message_id: {type: 'string', required: true}}],
   recall_message: ['撤回当前会话真实消息。本人申请撤回自己的消息直接批准；第三方申请结合误发、隐私、骚扰等上下文判断，不限申请者角色。对象不明先inspect_message；reason写判断依据。permission_denied是机器人QQ权限不足', {message_id: {type: 'string', required: true}, reason: {type: 'string', required: true}}],
@@ -167,7 +168,7 @@ export async function apply(ctx) {
     // rc.2 removed request.toolFilter. Bind the child scope before its first
     // model step, independently of the changing shared parent's authority.
     agent.ctx.tools.restrict(task.role === 'memory' ? {allow: ['read', 'write', 'edit', 'glob', 'grep', 'skill', 'search_memory', 'delete_memory_file']} : {deny: task.role === 'worker'
-      ? ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file', 'send_message', 'send_forward_message', 'send_sticker', 'send_voice','sleep','autonomy_status','contact_policy','focus_scene','wait_for_chat']
+      ? ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file', 'send_message', 'reply_message', 'send_forward_message', 'send_sticker', 'send_voice','sleep','autonomy_status','contact_policy','focus_scene','wait_for_chat']
       : ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file','sleep','autonomy_status','contact_policy','focus_scene','wait_for_chat']});
     if (['scheduled', 'memory'].includes(task.role)) {
       branches[agent.id] = true;
@@ -274,14 +275,14 @@ export async function apply(ctx) {
       output: {schema: {type: 'json'}, render: (_args, value) => text(JSON.stringify(value))},
       async execute(args, exec) {
         const task = currentTask(exec.agent);
-        if (task?.role === 'main' && ['send_message','send_forward_message','send_sticker','send_voice','spawn_task','sleep','focus_scene','wait_for_chat'].includes(toolName)) {
+        if (task?.role === 'main' && ['send_message', 'reply_message','send_forward_message','send_sticker','send_voice','spawn_task','sleep','focus_scene','wait_for_chat'].includes(toolName)) {
           if (exec.agent.inbox.nextStep.length) return {success:false,code:'new_observations_pending',error:'先阅读刚插入的发言，再决定回复或委派。'};
         }
         if (!task || task.cancelled) throw new Error('TASK_EXPIRED');
         if (['spawn_task', 'task_status', 'cancel_task'].includes(toolName)) return dispatch(toolName, args, exec, task);
         const result = await callback(task, toolName, args, exec.signal);
         if (result.success && ['sleep','focus_scene','wait_for_chat'].includes(toolName)) exec.concludeTurn();
-        if (task.role === 'main' && ['send_message','send_forward_message','send_sticker','send_voice'].includes(toolName) && result.code !== 'new_observations_pending') task.reply_started = true;
+        if (task.role === 'main' && ['send_message', 'reply_message','send_forward_message','send_sticker','send_voice'].includes(toolName) && result.code !== 'new_observations_pending') task.reply_started = true;
         return result;
       }}));
   }
@@ -358,7 +359,7 @@ export async function apply(ctx) {
       tasks.set(agent.id, task);
       task.session_id = agent.session.header.id;
       lift = agent.ctx.tools.restrict(data.role === 'main'
-        ? {allow: data.delivery ? ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice'] : ['send_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', 'spawn_task', 'task_status', 'cancel_task', ...(data.autonomy_enabled ? ['sleep','autonomy_status','contact_policy','focus_scene','wait_for_chat'] : [])]}
+        ? {allow: data.delivery ? ['send_message', 'reply_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice'] : ['send_message', 'reply_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', 'spawn_task', 'task_status', 'cancel_task', ...(data.autonomy_enabled ? ['sleep','autonomy_status','contact_policy','focus_scene','wait_for_chat'] : [])]}
         : {deny: ['spawn_task', 'task_status', 'cancel_task', 'delete_memory_file','sleep','autonomy_status','contact_policy','focus_scene','wait_for_chat']});
       const before = agent.session.snapshotEvents().length;
       agent.followup({id: randomUUID(), role: 'user', source: {kind: 'user'}, content: text(data.prompt)});

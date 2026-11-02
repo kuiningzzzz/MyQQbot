@@ -13,6 +13,17 @@ fs.mkdirSync(path.join(work, 'tmp/memory-stage/memory/user/123'), {recursive:tru
 const task = {kind:'chat', role:'worker', cwd:work, qq:'123', scene_dir:'scene', self_ids:['999']};
 const check = (name, file, override={}) => denial({...task,...override}, name, {file_path:file}, work);
 
+test('quote replies follow chat delivery boundaries for every owner status', () => {
+  for (const owner of [false, true]) {
+    for (const delivery of [false, true]) {
+      assert.equal(check('reply_message', '.', {role:'main', owner, delivery}), undefined);
+    }
+    assert.equal(check('reply_message', '.', {role:'scheduled', owner}), undefined);
+    assert.match(check('reply_message', '.', {role:'worker', owner}), /PERMISSION_DENIED/);
+    assert.match(check('reply_message', '.', {role:'memory', kind:'memory', owner:false}), /PERMISSION_DENIED/);
+  }
+});
+
 test('conversation standby control belongs only to the active main conversation',()=>{
   assert.equal(check('wait_for_chat','.',{role:'main',autonomy_enabled:true}),undefined);
   for(const override of [{role:'main',autonomy_enabled:false},
