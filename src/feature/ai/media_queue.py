@@ -22,6 +22,14 @@ TRANSIENT_ATTEMPTS = 6
 PERMANENT_ATTEMPTS = 3
 
 
+class MediaNotReady(ConnectionError):
+    """NapCat 还没连上（常见于重启窗口）；等待即可，不应消耗重试预算。
+
+    继承 ConnectionError：既有的“等待连接恢复”分支（例如启动时的音频补投递）
+    仍能按原逻辑捕获它，只是在本模块内会被优先识别为“不消耗重试次数”。
+    """
+
+
 def needs_media(segments):
     if not isinstance(segments, list):
         return False
@@ -198,7 +206,7 @@ class MediaQueue:
                 accounts = getattr(self.bot, '_self_ids', {})
                 ws = next((s for s in clients if not event.get('self_id') or accounts.get(s) == str(event['self_id'])), None)
             if ws is None:
-                raise ConnectionError('等待NapCat连接恢复')
+                raise MediaNotReady('等待NapCat连接恢复')
         event['message_id'] = record['id']
         return MessageContext(bot=self.bot, websocket=ws, event=event, msg='',
             message_type=record['scene_type'], user_id=int(record['qq']),
@@ -287,6 +295,12 @@ class MediaQueue:
                 # worker，让任务停在 running 并在下次重启被重新捡起，形成死循环。
                 try:
                     if selected:
+                        if isinstance(exc, MediaNotReady):
+                            # 重启窗口里 NapCat 尚未连上：等待，不消耗重试次数。
+                            with self.connect() as db:
+                                db.execute("UPDATE jobs SET status='retry',due=? WHERE seq=?", (time.time() + 15, selected['seq']))
+                            await asyncio.sleep(1)
+                            continue
                         transient = isinstance(exc, ConnectionError)
                         attempt = selected['attempts'] + 1
                         limit = TRANSIENT_ATTEMPTS if transient else PERMANENT_ATTEMPTS

@@ -22,7 +22,7 @@ from .config import Config
 from .context import ContextManager
 from .engine import ChatEngine
 from .index import VectorIndex
-from .media import MediaReader
+from .media import MediaReader, MediaUrlExpired
 from .runtime import MemoryRuntime
 from .storage import Workspace
 from .workfiles import WorkFiles
@@ -218,7 +218,15 @@ class AiFeature(Feature):
                                     description = await self.audio.understand(ctx, item, expires_at=expiry)
                                 else:
                                     url = await self.workfiles.resolve(ctx, item)
-                                    description = await self.files.understand(url, kind, item["name"], expires_at=expiry)
+                                    try:
+                                        description = await self.files.understand(url, kind, item["name"], expires_at=expiry)
+                                    except MediaUrlExpired:
+                                        # QQ 直链过期：让 NapCat 重新签发一个地址后重试一次。
+                                        fresh = await self.workfiles.refresh_media(ctx, item)
+                                        if not fresh or fresh == url:
+                                            raise
+                                        logger.info('媒体直链已过期，已向 NapCat 重新取链接：%s', item['name'])
+                                        description = await self.files.understand(fresh, kind, item["name"], expires_at=expiry)
                         result.append(description)
                         if sequence:
                             self.media.partial(sequence, identifier, description, getattr(description, 'complete', True), getattr(description, 'retryable', True))

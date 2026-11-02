@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 import httpx
 
 from src.feature.ai.feature import AiFeature
+from src.feature.ai.media import MediaUrlExpired
 from src.feature.atom.context import MessageContext
 
 
@@ -123,3 +124,35 @@ class WorkFileTests(unittest.IsolatedAsyncioTestCase):
                 self.f.sandbox.resolve('group:12', name)
         own = self.f.sandbox.resolve('group:12', 'output/report.txt')
         self.assertTrue(own.is_relative_to(self.f.sandbox.scene_dir('group:12')))
+
+    async def test_expired_media_url_is_refreshed_from_napcat(self):
+        """QQ 直链过期时必须向 NapCat 重新取地址，而不是直接失败。"""
+        _, item = self.f.workfiles.register(self.ctx, 'image', {'url': 'https://expired.example/a.jpg', 'file': 'a.jpg'})
+        self.f.files._download = AsyncMock(side_effect=[MediaUrlExpired('已过期'), b'image-bytes'])
+        self.bot.call_action = AsyncMock(return_value={'url': 'https://fresh.example/a.jpg'})
+        data = await self.f.workfiles.fetch(self.ctx, item)
+        self.assertEqual(data, b'image-bytes')
+        self.assertEqual(self.bot.call_action.await_args.args[0], 'get_image')
+        self.assertEqual(self.f.files._download.await_args.args[0], 'https://fresh.example/a.jpg')
+
+    async def test_refresh_media_falls_back_to_message_lookup(self):
+        """get_image 不可用时回退到 get_msg，从消息段里取新直链。"""
+        _, item = self.f.workfiles.register(self.ctx, 'image', {'url': 'https://expired.example/a.jpg', 'file': 'a.jpg'})
+        self.bot.call_action = AsyncMock(side_effect=[
+            RuntimeError('get_image 不可用'),
+            {'message': [{'type': 'image', 'data': {'file': 'a.jpg', 'url': 'https://fresh.example/a.jpg'}}]},
+        ])
+        url = await self.f.workfiles.refresh_media(self.ctx, item)
+        self.assertEqual(url, 'https://fresh.example/a.jpg')
+        self.assertEqual([call.args[0] for call in self.bot.call_action.await_args_list], ['get_image', 'get_msg'])
+
+    async def test_download_marks_expired_url_with_dedicated_error(self):
+        """下载遇到 download url has expired 时抛专用异常，交给上层换链接。"""
+        def handler(request):
+            return httpx.Response(400, content=b'{"retcode":-5503007,"retmsg":"download url has expired","retryflag":0}')
+        transport = httpx.MockTransport(handler)
+        original = httpx.AsyncClient
+        with patch('src.feature.ai.media.socket.getaddrinfo', return_value=[(2, 1, 6, '', ('93.184.216.34', 443))]), \
+             patch('src.feature.ai.media.httpx.AsyncClient', side_effect=lambda **kwargs: original(transport=transport, **kwargs)):
+            with self.assertRaises(MediaUrlExpired):
+                await self.f.files._download('https://example.com/a.jpg')

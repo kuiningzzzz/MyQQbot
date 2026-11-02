@@ -53,6 +53,8 @@ class ChatEngine:
         # 最近一次回合推进的时间：看门狗据此判断队列是否已经停摆。
         self.last_progress = time.monotonic()
         self.recovering = False
+        # 连续失败的聊天回合数；自主活动据此熔断，避免失败时无止境重试烧钱。
+        self.failures = 0
 
     def reset_transient(self):
         if self.current:
@@ -234,6 +236,7 @@ class ChatEngine:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    self.failures += 1
                     self.feature.activity.add('turn_error', {'error':str(exc)}, task=(self.current or {}).get('id',''), role='main', scene=self.feature.scene_key(ctx))
                     if ctx.event.get('_ai_autonomous'):
                         self.feature.autonomy.failed(exc)
@@ -493,6 +496,7 @@ class ChatEngine:
             if current() and not result.get('cancelled') and result.get('finish_reason') != 'completed':
                 raise RuntimeError('dsh本轮未完成：' + str(result.get('error') or result.get('finish_reason')))
             if current() and not result.get('cancelled') and result.get('finish_reason') == 'completed':
+                self.failures = 0
                 resume = ctx.event.get('_ai_wait_resume')
                 if resume and f.autonomy.state.get('wait_resume') == resume:
                     f.autonomy.state.pop('wait_resume',None)
