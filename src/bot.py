@@ -245,7 +245,9 @@ class QQBot:
             }
 
         logger.info("发送合并转发消息，共 %s 条", len(nodes))
-        await ctx.websocket.send_text(json.dumps(payload, ensure_ascii=False))
+        # 走 call_action：拿得到真实结果，失败会抛 OneBotError，调用方才能降级
+        # （直接 send_text 时 NapCat 上传失败的响应会被静默丢弃）。
+        await self.call_action(payload["action"], payload["params"], ctx.websocket)
 
     async def send_image_forward_msg(self, ctx: MessageContext, image_refs: list[str]):
         messages = [

@@ -59,6 +59,19 @@ class LoveyouTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual([m[0]['data']['text'] for m in messages[1:]], [
                 '多[CQ:at,qq=all] 喂饭数目 15.00', '少 喂饭数目 1.20', '负数 喂饭数目 -2.00'])
 
+    async def test_image_upload_failure_falls_back_to_text_ranking(self):
+        """图片上传失败（QQ 高速上传超时）时降级为纯文本，不能整条指令静默失败。"""
+        self.feature.store.set_image(png())
+        for name, amount in [('多', '15'), ('少', '1.2'), ('零', '0')]:
+            self.feature.store.add(name, amount)
+        self.bot.send_forward_msg.side_effect = RuntimeError('upload failed')
+        self.assertTrue(await self.feature.handle(self.ctx()))
+        text = self.bot.reply.await_args.args[1]
+        self.assertIn('打赏码暂不可用喵', text)
+        self.assertIn('多 喂饭数目 15.00', text)
+        self.assertIn('少 喂饭数目 1.20', text)
+        self.assertNotIn('零 喂饭数目', text)
+
     async def test_page_boundaries_have_no_missing_or_duplicate_people(self):
         self.feature.store.set_image(png())
         for count in (0, 98, 99, 198, 205):
