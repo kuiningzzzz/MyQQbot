@@ -20,7 +20,7 @@ export function stickerShellEnv(task, callback) {
 }
 export function validateScheduledTools(task, names) {
   if (task.role !== 'scheduled') return;
-  const missing = ['send_message', 'reply_message', 'send_forward_message', 'send_file', 'send_sticker', 'send_voice', 'synthesize_voice'].filter(name => !names.includes(name));
+  const missing = ['send_message', 'reply_message', 'send_forward_message', 'send_file', 'send_image', 'send_sticker', 'send_voice', 'synthesize_voice'].filter(name => !names.includes(name));
   if (missing.length) throw new Error('SEND_TOOLS_MISSING: 定时分支缺少发送工具：' + missing.join(', '));
 }
 function writeJSON(file, value) {
@@ -53,9 +53,10 @@ const definitions = {
   read_media: ['读取当前会话图片/PDF/语音音频/合并转发的后台解析结果，按message_id或attachment_id查询；可wait_seconds=0至30等待，未完成则返回状态；长结果用next_offset继续读取；retry=true仅明确重试失败解析。主对话须委派执行者使用，未完成前不能声称已看过或听过', {message_id:{type:'string'},attachment_id:{type:'string'},wait_seconds:{type:'integer'},retry:{type:'boolean'},offset:{type:'integer'}}],
   download_attachment: ['先发简短确认后下载附件到当前会话files目录', {attachment_id: {type: 'string', required: true}, path: {type: 'string'}}],
   send_file: ['将files_directory内已创建、下载或修改的文件发送为当前群的群文件或当前私聊文件；path为文件路径，name为可选显示文件名；单文件最多20MiB，等待NapCat回执。需文件开关开启且当前为明确请求', {path: {type: 'string', required: true}, name: {type: 'string'}}],
+  send_image: ['把files_directory内的图片作为QQ原生图片消息发送，直接显示在当前群或私聊，不是文件上传。path用已创建、下载或修改的实际图片路径，支持PNG/JPEG/GIF/WebP/BMP，单张20MiB、单帧2000万像素，本轮最多3次。保留GIF原始动图字节；不接受URL或其他会话路径。需工作区开关和明确请求或自主联系许可；普通Spawn和定时分支可用，silent禁止。检查message_id回执，unknown不能重发或换send_file重发', {path:{type:'string',required:true}}],
   search_memory: ['本地向量与文本检索；scope为auto/user/group/common/world，auto搜索全部正式记忆（含世界知识），world只查全局知识。target_qq仅筛选用户记忆，target_group仅筛选群记忆；只查指定群时用scope=group和target_group。也可原生grep/read', {query: {type: 'string', required: true}, target_qq: {type: 'string'}, target_group: {type: 'string'}, scope: {type: 'string'}}],
   delete_memory_file: ['仅供记忆维护分支删除暂存副本中的合法记忆文件，path相对cwd/memory，例如user/123/memory/过时主题.md；先读取并确认有效信息已合并。正式记忆在整个维护成功后才提交删除，不能删除原文或任意服务器文件', {path:{type:'string',required:true}}],
-  spawn_task: ['主对话的执行入口：联网/查最新/读链接、记忆读写、文件/附件处理与发送、撤回、定时/表情管理、复杂分析或长文均委派。普通用户也可委派联网及权限内工作；主对话缺少执行工具不代表机器人不能做。prompt写目标、必要事实与交付要求；立即返回内部task_id，结果自动回主对话，文字由主对话交付、文件由执行者send_file。不自动发受理回执，不继承后续请求、不提升权限；检查启动回执', {title: {type: 'string', required: true}, prompt: {type: 'string', required: true}, source_message_id:{type:'string'}}],
+  spawn_task: ['主对话的执行入口：联网/查最新/读链接、记忆读写、文件/附件处理与发送、撤回、定时/表情管理、复杂分析或长文均委派。普通用户也可委派联网及权限内工作；主对话缺少执行工具不代表机器人不能做。prompt写目标、必要事实与交付要求；立即返回内部task_id，结果自动回主对话，文字由主对话交付、图片用执行者send_image显示，其他文件用send_file。不自动发受理回执，不继承后续请求、不提升权限；检查启动回执', {title: {type: 'string', required: true}, prompt: {type: 'string', required: true}, source_message_id:{type:'string'}}],
   task_status: ['查询当前请求者在当前QQ会话的后台任务状态，省略task_id列出最近任务', {task_id: {type: 'string'}, source_message_id:{type:'string'}}],
   cancel_task: ['取消当前请求者在当前QQ会话的指定后台任务；文件修改不回滚', {task_id: {type: 'string', required: true}, source_message_id:{type:'string'}}],
   schedule_create: ['建立当前会话任务：固定原文kind=fixed/content，动态生成或工作kind=ai/prompt（默认ai）。AI须显式选择delivery：播报、提醒、交付结果用message；允许按条件静默用auto；内部维护用silent。北京时间；-y 月-日-时-分-秒，-m 日-时-分-秒，-w 星期1至7-时-分-秒，-d 时-分-秒，-o 年-月-日-时-分-秒。农历加-cn，个位数无需补零；循环取下一次，一次性过去时间拒绝。content保留空白，群艾特用[CQ:at,qq=QQ号]；fixed不能传delivery。闰月等细则见qqbot-guide', {kind:{type:'string'},flag:{type:'string',required:true},time:{type:'string',required:true},content:{type:'string'},prompt:{type:'string'},delivery:{type:'string',enum:['message','auto','silent']}}],

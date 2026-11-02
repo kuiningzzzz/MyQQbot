@@ -1203,6 +1203,56 @@ class NativeDshTests(unittest.IsolatedAsyncioTestCase):
         await self.native(owner=False)
         self.assertIn('温和', target.read_text('utf-8'))
 
+    async def test_native_spawn_and_scheduled_deliver_workspace_image(self):
+        from PIL import Image
+        target = self.f.sandbox.scene_dir('group:12') / 'chart.png'
+        Image.new('RGB', (8, 8), 'blue').save(target)
+        raw = target.read_bytes()
+        calls = {'main': 0, 'worker': 0}
+        async def respond(request):
+            names = {tool['name'] for tool in request.get('tools', [])}
+            role = 'worker' if 'write' in names else 'main'
+            calls[role] += 1
+            if role == 'worker':
+                self.assertIn('send_image', names)
+                self.assertNotIn('send_message', names)
+                if calls[role] == 1:
+                    return self.tool('send_image', path=str(target))
+                return '已发送图片，不能重复发送。'
+            self.assertNotIn('send_image', names)
+            if calls[role] == 1:
+                return self.tool('spawn_task', title='发图表', prompt='用send_image发送当前会话chart.png')
+            return '图片已交付，无需再发正文。'
+        self.dispatcher = respond
+        bot = SimpleNamespace(reply=AsyncMock(), call_action=AsyncMock(return_value={'message_id': 700}),
+            master_service=SimpleNamespace(is_master=lambda qq: False))
+        ctx = MessageContext(bot=bot, event={'self_id': 999}, websocket='ws', msg='发图表',
+            message_type='group', user_id=456, group_id=12)
+        await asyncio.wait_for(self.f.engine._turn(ctx, 'group:12', True), 20)
+        async with asyncio.timeout(20):
+            while self.f.engine.background or self.f.engine.tasks:
+                await asyncio.sleep(.05)
+        bot.call_action.assert_awaited_once()
+        action, args, _ = bot.call_action.await_args.args
+        self.assertEqual(action, 'send_group_msg')
+        self.assertEqual(base64.b64decode(args['message'][0]['data']['file'][9:]), raw)
+        bot.reply.assert_not_awaited()
+        del self.dispatcher
+        self.responses = [self.tool('send_image', path=str(target)), '已交付']
+        result = await self.f.engine.run_scheduled(ctx, {'id': 'image-job', 'run_id': 'image-run',
+            'scheduled_at': time.time(), 'delivery': 'message', 'prompt': '发图表'}, lambda: True)
+        self.assertEqual(result['finish_reason'], 'completed')
+        self.assertIsNone(result['delivery_error'])
+        self.assertEqual(bot.call_action.await_count, 2)
+        self.assertIn('send_image', {tool['name'] for tool in self.requests[-1]['tools']})
+        callback = AsyncMock()
+        self.responses = [self.tool('send_image', path=str(target)), '禁止发送']
+        stage = self.f.workspace.root / 'tmp/memory-stage'
+        stage.mkdir(parents=True)
+        await self.native('memory', cwd=stage, handler=callback)
+        self.assertNotIn('send_image', {tool['name'] for tool in self.requests[-1]['tools']})
+        callback.assert_not_awaited()
+
     async def test_native_quote_reply_main_delivery_and_scheduled_surfaces(self):
         bot = SimpleNamespace(call_action=AsyncMock(side_effect=[
             {'message_id': -42, 'message_type': 'group', 'group_id': 12, 'sender': {'user_id': 123}},

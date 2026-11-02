@@ -13,6 +13,14 @@ fs.mkdirSync(path.join(work, 'tmp/memory-stage/memory/user/123'), {recursive:tru
 const task = {kind:'chat', role:'worker', cwd:work, qq:'123', scene_dir:'scene', self_ids:['999']};
 const check = (name, file, override={}) => denial({...task,...override}, name, {file_path:file}, work);
 
+test('native image delivery belongs to executors without widening main or memory tools', () => {
+  for (const owner of [false, true]) {
+    for (const role of ['worker', 'scheduled']) assert.equal(check('send_image', '.', {role, owner}), undefined);
+    assert.match(check('send_image', '.', {role:'main', owner}), /DELEGATION_REQUIRED/);
+  }
+  assert.match(check('send_image', '.', {role:'memory', kind:'memory'}), /PERMISSION_DENIED/);
+});
+
 test('quote replies follow chat delivery boundaries for every owner status', () => {
   for (const owner of [false, true]) {
     for (const delivery of [false, true]) {

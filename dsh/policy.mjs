@@ -42,7 +42,7 @@ export function denial(task, name, args, workspace) {
   if (name === 'read_browser_image') return task.kind === 'chat' && ['worker', 'scheduled'].includes(task.role) && task.browser_enabled ? undefined : 'PERMISSION_DENIED: 当前任务不允许浏览器截图理解';
   if (task.owner) return;
   const fileTools = new Set(['read', 'write', 'edit', 'glob', 'grep']);
-  const qqTools = new Set(['send_message', 'reply_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', 'synthesize_voice', 'recall_message', 'inspect_message', 'get_bot_help', 'list_attachments', 'download_attachment', 'send_file', 'web_search', 'web_fetch', 'search_memory', 'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'integrate_memory']);
+  const qqTools = new Set(['send_message', 'reply_message', 'send_forward_message', 'find_sticker', 'send_sticker', 'send_voice', 'synthesize_voice', 'recall_message', 'inspect_message', 'get_bot_help', 'list_attachments', 'download_attachment', 'send_file', 'send_image', 'web_search', 'web_fetch', 'search_memory', 'schedule_create', 'schedule_list', 'schedule_update', 'schedule_delete', 'integrate_memory']);
   if (name === 'read_media') return task.kind === 'chat' ? undefined : 'PERMISSION_DENIED: 记忆整理只能读取已完成的媒体补充';
   if (name === 'skill' || name === 'search_memory') return;
   if (qqTools.has(name)) {
