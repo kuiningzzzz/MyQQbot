@@ -1,0 +1,28 @@
+<template data-feature-panel="loveyou">
+  <div class="feature-extra love-panel">
+    <style>
+      .love-panel {line-height:1.7;}
+      .love-panel p {margin:0 0 14px;}
+      .love-panel .love-actions {display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:14px 0;}
+      .love-panel input:not([type=file]) {padding:9px 10px;border:1px solid #cbd5e1;border-radius:6px;font:inherit;max-width:100%;min-width:0;}
+      .love-panel .love-image {display:block;max-width:min(280px,100%);max-height:320px;object-fit:contain;margin:12px 0;}
+      .love-panel .love-image[hidden] {display:none;}
+      .love-panel input[type=file] {max-width:100%;min-width:0;}
+      .love-panel .love-rows {display:grid;gap:12px;}
+      .love-panel .love-row {display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:14px;border:1px solid #e2e8f0;border-radius:8px;}
+      .love-panel .love-row input {flex:1 1 140px;width:140px;}
+      .love-panel [role=status] {display:block;white-space:pre-wrap;overflow-wrap:anywhere;}
+    </style>
+    <p><code>/loveyou</code> 向当前群聊或私聊发送全局赞助榜，首条为收款码，其后按金额降序排列，每份聊天记录最多99条。零金额保留但不展示，负金额正常展示。</p>
+    <p>金额由主人或管理员手动登记，不会自动同步支付到账。主人可发送 <code>/loveyou-add 人名 数目</code> 增减金额；下方编辑框设置的是累计总额。</p>
+    <h3>收款码图片</h3>
+    <img class="love-image" alt="尚未设置收款码" hidden>
+    <div class="love-actions"><input class="love-upload" type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择收款码图片"><button class="love-upload-save" type="button">上传收款码</button><button class="secondary love-image-delete" type="button">移除图片</button></div>
+    <p>支持PNG、JPEG、WebP，最大8 MiB。不设置图片时，指令会提示尚未配置。</p>
+    <h3>赞助名单</h3>
+    <div class="love-actions"><button class="love-refresh secondary" type="button">刷新榜单</button><button class="love-new" type="button">新增赞助人</button></div>
+    <div class="love-rows"></div>
+    <p class="love-empty" hidden>暂时没有赞助记录。</p>
+    <span class="love-status" role="status"></span>
+  </div>
+</template>

@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PUBLIC_HELP_MESSAGES = [
     "/help - 查看当前支持的指令",
+    "/loveyou - 查看收款码和赞助榜单",
     "/set-master 鉴别码 - 将当前 QQ 用户绑定为机器人主人",
     "/jm 号码 - 下载对应 JM 漫画，导出 PDF 并发送到当前会话\n/jm status - 查看 JM 当前处理队列",
     "/pixiv 作品ID - 获取对应 Pixiv 图片或图片集\n/pixiv status - 查看 Pixiv 当前处理队列",
@@ -19,7 +20,7 @@ DEFAULT_PUBLIC_HELP_MESSAGES = [
     "/timing-task 选项 时间 文本 - 北京时间定时消息，保留空格和群聊艾特\n/timing-task-AI 选项 时间 提示词 - 定时AI任务\n选项：-y每年 MM-DD-HH-MM-SS；-m每月 DD-HH-MM-SS；-w每周 01至07-HH-MM-SS；-d每天 HH-MM-SS；-o一次 YY-MM-DD-HH-MM-SS（也支持四位年份）\n中国农历给选项加-cn，如-y-cn 08-15-00-00-00表示每年农历八月十五零点；-m-cn每农历月（含闰月），-o-cn指定农历日期。时分秒仍为北京时间；年循环只用普通月份，没有三十的月份跳过。\n两类指令均支持 list 查看、del ID 删除，只管理当前群聊或私聊；循环时间已过安排下一次。",
 ]
 
-DEFAULT_MASTER_HELP_MESSAGES = [*DEFAULT_PUBLIC_HELP_MESSAGES, "/ai-wakeup - 主人强制叫醒AI（含深度睡眠）。\nAI账号、人设、主动生活、日志与记忆文件可在管理WebUI的AI服务中配置。"]
+DEFAULT_MASTER_HELP_MESSAGES = [*DEFAULT_PUBLIC_HELP_MESSAGES, "/loveyou-add 人名 数目 - 为赞助人增减金额，允许负数", "/ai-wakeup - 主人强制叫醒AI（含深度睡眠）。\nAI账号、人设、主动生活、日志与记忆文件可在管理WebUI的AI服务中配置。"]
 
 
 class HelpFeature(Feature):
